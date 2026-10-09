@@ -671,6 +671,7 @@ def _done_page(st):
 class Handler(BaseHTTPRequestHandler):
     server_version = "MusicAPI/2.0"
     require_token = False  # --public or listening beyond localhost
+    canonical_url = None  # tunnelled requests for any other hostname are redirected here
 
     def log_message(self, fmt, *args):
         if not self.path.startswith("/api/events"):
@@ -769,6 +770,11 @@ class Handler(BaseHTTPRequestHandler):
         url = urllib.parse.urlparse(self.path)
         query = dict(urllib.parse.parse_qsl(url.query))
         path = url.path.rstrip("/") or "/"
+        canonical = urllib.parse.urlparse(self.canonical_url).netloc if self.canonical_url else None
+        host = self.headers.get("Host", "")
+        # Slack doesn't follow redirects, so its callbacks keep working on old hostnames
+        if canonical and host != canonical and self.headers.get("Cf-Visitor") and not path.startswith("/slack/"):
+            return self._send(308, b"", "text/plain", [("Location", self.canonical_url.rstrip("/") + self.path)])
 
         if method == "GET" and not path.startswith(("/api", "/auth")) and path not in DOC_FILES:
             return self._static(path)
@@ -941,6 +947,8 @@ def main():
     ap.add_argument("--hidden-playlists", default=os.environ.get("MUSIC_API_HIDDEN_PLAYLISTS")
                     or os.path.expanduser("~/.config/music-api/hidden-playlists.json"),
                     help='JSON {"playlists": [id or {id, name}, ...]}: account playlists the web app never shows')
+    ap.add_argument("--canonical-url", default=os.environ.get("MUSIC_API_URL"),
+                    help="public base URL, e.g. https://music.pinewoodrobotics.org; other tunnelled hostnames redirect to it")
     ap.add_argument("--device", default=os.environ.get("MUSIC_API_DEVICE"),
                     help="connect backend: Connect device name or id to control (default: whichever is active)")
     a = ap.parse_args()
@@ -988,6 +996,7 @@ def main():
     bot.start()
 
     Handler.require_token = require
+    Handler.canonical_url = a.canonical_url
     srv = ThreadingHTTPServer((a.host, a.port), Handler)
     srv.daemon_threads = True
     print(f"Music API v2 on http://{a.host}:{a.port}/  backend={backend}  web-api={'logged in' if auth.logged_in else 'not logged in (open /auth/login)'}",

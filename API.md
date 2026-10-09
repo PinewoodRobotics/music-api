@@ -1,6 +1,6 @@
 # Music API v2 reference
 
-Base URL: `https://music-api.pinewoodrobotics.org` (or `http://127.0.0.1:8765` on the machine itself). For a self-contained guide written for LLM agents, see [llms-full.txt](https://music-api.pinewoodrobotics.org/llms-full.txt).
+Base URL: `https://music.pinewoodrobotics.org` (or `http://127.0.0.1:8765` on the machine itself). For a self-contained guide written for LLM agents, see [llms-full.txt](https://music.pinewoodrobotics.org/llms-full.txt).
 
 Every JSON response is `{"result": ...}` on success or `{"error": "..."}` with a 4xx/5xx status (exceptions: `GET /api` returns a bare array; `/api/artwork` returns a redirect or image bytes; `/auth/login` returns HTML).
 Send an API token as `Authorization: Bearer <token>` (or `?token=` for `EventSource` / `<img>` / browser links). A token is required as soon as any token exists, when started with `--public`, or when listening beyond localhost.

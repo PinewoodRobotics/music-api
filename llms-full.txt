@@ -1,8 +1,8 @@
 # Music API v2
 
-> HTTP JSON API and web remote for Spotify. It controls playback on a real speaker, searches the Spotify catalog, manages playlists and the user's library, reads listening history, and adds synced lyrics (LRCLIB) and the host machine's audio mixer. Base URL: https://music-api.pinewoodrobotics.org
+> HTTP JSON API and web remote for Spotify. It controls playback on a real speaker, searches the Spotify catalog, manages playlists and the user's library, reads listening history, and adds synced lyrics (LRCLIB) and the host machine's audio mixer. Base URL: https://music.pinewoodrobotics.org
 
-This file is the complete reference for driving the API with no other context. It follows the llms.txt convention: the short index is at https://music-api.pinewoodrobotics.org/llms.txt and the same content as this file is at /LLMS.md. Everything here was written from the server's source code (server.py, player.py, spotify.py, extras.py, soloist.py, tokens.py).
+This file is the complete reference for driving the API with no other context. It follows the llms.txt convention: the short index is at https://music.pinewoodrobotics.org/llms.txt and the same content as this file is at /LLMS.md. Everything here was written from the server's source code (server.py, player.py, spotify.py, extras.py, soloist.py, tokens.py).
 
 Contents: 1 Basics, 2 Data shapes, 3 Endpoints, 4 Server-sent events, 5 Workflows, 6 Limits and gotchas, 7 Errors, 8 Deployment.
 
@@ -12,13 +12,13 @@ Contents: 1 Basics, 2 Data shapes, 3 Endpoints, 4 Server-sent events, 5 Workflow
 
 ### Base URL
 
-- Public: `https://music-api.pinewoodrobotics.org` (a Cloudflare tunnel to the server on `127.0.0.1:8765`).
+- Public: `https://music.pinewoodrobotics.org` (a Cloudflare tunnel to the server on `127.0.0.1:8765`).
 - On the host machine itself: `http://127.0.0.1:8765`.
 
 The examples below use:
 
 ```sh
-API=https://music-api.pinewoodrobotics.org
+API=https://music.pinewoodrobotics.org
 TOKEN=mapi_...   # ask the user for one
 ```
 
@@ -576,14 +576,14 @@ If the playlist doesn't exist yet: `POST /api/playlists {"name": "..."}`, then u
 ### Manage tokens
 
 - See who has access: `GET /api/tokens` (your own token has `current: true`).
-- Give a new device or person access: `POST /api/tokens {"name": "front-desk iPad"}`, then hand over `result.token` (shown only once). For the web remote, the link `https://music-api.pinewoodrobotics.org/?token=<token>` signs the browser in.
+- Give a new device or person access: `POST /api/tokens {"name": "front-desk iPad"}`, then hand over `result.token` (shown only once). For the web remote, the link `https://music.pinewoodrobotics.org/?token=<token>` signs the browser in.
 - Revoke: `DELETE /api/tokens/{id}`. Effective on the next request.
 - Rotate your own token: create a new one, switch to it, then `DELETE` the old one by `id` (deleting the token you're using also works, but then your next request is 401).
 - `409` on delete means it's the last token; create a replacement first.
 
 ### Spotify login missing or expired
 
-If a Web API call fails with 412 and a message pointing at `/auth/login` ("not logged in to the Spotify Web API", "Spotify login expired or was revoked", or "... needs the Spotify Web API"), an agent can't fix it alone. Ask a human to open `https://music-api.pinewoodrobotics.org/auth/login?token=<token>` in a browser and log in with Spotify. If the redirect lands on an `http://127.0.0.1:8765/auth/callback?...` page that doesn't load, they copy that whole URL into the box on the login page (or send it with `POST /auth/paste {"url": "..."}`).
+If a Web API call fails with 412 and a message pointing at `/auth/login` ("not logged in to the Spotify Web API", "Spotify login expired or was revoked", or "... needs the Spotify Web API"), an agent can't fix it alone. Ask a human to open `https://music.pinewoodrobotics.org/auth/login?token=<token>` in a browser and log in with Spotify. If the redirect lands on an `http://127.0.0.1:8765/auth/callback?...` page that doesn't load, they copy that whole URL into the box on the login page (or send it with `POST /auth/paste {"url": "..."}`).
 
 ---
 
@@ -643,9 +643,9 @@ Other Spotify 4xx errors are passed through with their status and a message of t
 
 - Code: a Python 3.9+ stdlib-only server (`server.py`), installed at `~/.local/share/music-api-v2` on a Raspberry Pi 3 B+ (Debian 13, user `ubuntu`). No dependencies.
 - systemd user units: `soloist.service` (Spotify Soloist, audio to the USB speakers via PipeWire), `music-api.service` (`server.py --host 0.0.0.0 --public`, settings from `~/.config/music-api/env`), `soloist-update.timer` (daily build refresh).
-- System service `cloudflared` (config `/etc/cloudflared/config.yml`) maps `music-api.pinewoodrobotics.org` to `http://127.0.0.1:8765`.
+- System service `cloudflared` (config `/etc/cloudflared/config.yml`) maps `music.pinewoodrobotics.org` to `http://127.0.0.1:8765`.
 - Restart: `systemctl --user restart music-api`. Logs: `journalctl --user-unit soloist --user-unit music-api -f`.
 - Data directory `~/.local/share/music-api`: `spotify-tokens.json` (Spotify login), `api-tokens.json` (hashed API tokens), `token` (bootstrap token file).
 - First start with auth required and no tokens yet: if `<data-dir>/token` exists (the v1 token was migrated there) it's imported as a token named "v1 token" and the plaintext file is deleted; otherwise a new token is generated and written to `<data-dir>/token` (mode 600) for the admin to read.
-- Spotify login through the public URL needs `https://music-api.pinewoodrobotics.org/auth/callback` listed as a Redirect URI in the Spotify app and the server started with `--redirect-uri` set to it; otherwise use the paste flow.
+- Spotify login through the public URL needs `https://music.pinewoodrobotics.org/auth/callback` listed as a Redirect URI in the Spotify app and the server started with `--redirect-uri` set to it; otherwise use the paste flow.
 - v1 (Music.app-based, `~/Developer/music-api`) is retired.

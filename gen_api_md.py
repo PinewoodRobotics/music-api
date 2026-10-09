@@ -2,7 +2,7 @@
 import inspect
 import server
 
-BASE = "https://music-api.pinewoodrobotics.org"
+BASE = "https://music.pinewoodrobotics.org"
 SECTIONS = [("Playback", "/api/status /api/now-playing /api/artwork /api/play /api/pause /api/next /api/previous /api/back /api/seek /api/volume /api/shuffle /api/repeat /api/lyrics /api/sleep"),
             ("Queue & devices", "/api/queue /api/devices /api/backend"),
             ("Catalog", "/api/search /api/tracks /api/albums /api/artists /api/episodes /api/shows /api/audiobooks /api/chapters"),

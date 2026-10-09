@@ -269,7 +269,7 @@ class Links(unittest.TestCase):
         final = [p for u, p in bot.sent if u == "http://r/3"][-1]
         flat = json.dumps(final)
         self.assertIn("Imported 87 of 92 songs", flat)
-        self.assertIn("https://music-api.pinewoodrobotics.org/playlist/PL1", flat)
+        self.assertIn("https://music.pinewoodrobotics.org/playlist/PL1", flat)
         self.assertIn("Gone - Z", flat)
         self.assertTrue(final["replace_original"])
         self.assertNotIn("button", json.dumps(final["blocks"]))

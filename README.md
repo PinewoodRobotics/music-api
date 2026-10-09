@@ -10,16 +10,16 @@ python3 server.py --host 0.0.0.0 --token SECRET            # LAN access
 ```
 
 `GET /api` lists every endpoint. See [API.md](API.md) for the full reference (regenerate it with `python3 gen_api_md.py > API.md`).
-Production lives at https://music-api.pinewoodrobotics.org: a Raspberry Pi 3 B+ running Soloist into USB speakers, behind a
+Production lives at https://music.pinewoodrobotics.org: a Raspberry Pi 3 B+ running Soloist into USB speakers, behind a
 Cloudflare tunnel (see [Raspberry Pi setup](#raspberry-pi-setup-soloist)).
 
 ## Docs
 
 All of these are served without a token, so you can point an LLM agent straight at them:
 
-- [`/llms.txt`](https://music-api.pinewoodrobotics.org/llms.txt): short index in the [llms.txt](https://llmstxt.org) format.
-- [`/llms-full.txt`](https://music-api.pinewoodrobotics.org/llms-full.txt) (also `/LLMS.md`): the whole reference in one file, written so an agent can drive the API with no other context. Endpoints, response shapes, curl examples, workflows, limits.
-- [`/API.md`](https://music-api.pinewoodrobotics.org/API.md): one table row per endpoint, generated from the route docstrings.
+- [`/llms.txt`](https://music.pinewoodrobotics.org/llms.txt): short index in the [llms.txt](https://llmstxt.org) format.
+- [`/llms-full.txt`](https://music.pinewoodrobotics.org/llms-full.txt) (also `/LLMS.md`): the whole reference in one file, written so an agent can drive the API with no other context. Endpoints, response shapes, curl examples, workflows, limits.
+- [`/API.md`](https://music.pinewoodrobotics.org/API.md): one table row per endpoint, generated from the route docstrings.
 - `/README.md`: this file.
 
 `llms.txt` and `llms-full.txt` are written by hand. Update them when you add or change a route.
@@ -119,7 +119,7 @@ features:
     always_online: true
   slash_commands:
     - command: /music
-      url: https://music-api.pinewoodrobotics.org/slack/commands
+      url: https://music.pinewoodrobotics.org/slack/commands
       description: Search, queue and control the lab speakers
       usage_hint: "[song, artist, link | now | queue | play | pause | skip | help]"
       should_escape: false
@@ -128,17 +128,17 @@ features:
     - music.apple.com
 oauth_config:
   redirect_urls:
-    - https://music-api.pinewoodrobotics.org/auth/slack/callback
+    - https://music.pinewoodrobotics.org/auth/slack/callback
   scopes:
     user: [openid, profile, email]
     bot: [users:read, chat:write, commands, links:read, links:write]
 settings:
   event_subscriptions:
-    request_url: https://music-api.pinewoodrobotics.org/slack/events
+    request_url: https://music.pinewoodrobotics.org/slack/events
     bot_events: [link_shared]
   interactivity:
     is_enabled: true
-    request_url: https://music-api.pinewoodrobotics.org/slack/interactions
+    request_url: https://music.pinewoodrobotics.org/slack/interactions
   org_deploy_enabled: false
   socket_mode_enabled: false
   token_rotation_enabled: false
@@ -179,20 +179,20 @@ for audio; use a proper 5 V / 2.5 A supply (`vcgencmd get_throttled` should prin
 
 ### Cloudflare tunnel
 
-`music-api.pinewoodrobotics.org` is a named tunnel run by a system `cloudflared` service on the Pi.
+`music.pinewoodrobotics.org` is a named tunnel run by a system `cloudflared` service on the Pi.
 The API service runs with `--public`, because tunnelled requests arrive from `127.0.0.1` and would otherwise skip the token check.
 To set it up again (install `cloudflared` from [pkg.cloudflare.com](https://pkg.cloudflare.com/index.html) first):
 
 ```
 cloudflared tunnel login                                    # pick the pinewoodrobotics.org zone in the browser
 cloudflared tunnel create music-api
-cloudflared tunnel route dns -f music-api music-api.pinewoodrobotics.org
+cloudflared tunnel route dns -f music-api music.pinewoodrobotics.org
 sudo mkdir -p /etc/cloudflared && sudo cp ~/.cloudflared/<tunnel-id>.json /etc/cloudflared/
 sudo tee /etc/cloudflared/config.yml <<EOF
 tunnel: <tunnel-id>
 credentials-file: /etc/cloudflared/<tunnel-id>.json
 ingress:
-  - hostname: music-api.pinewoodrobotics.org
+  - hostname: music.pinewoodrobotics.org
     service: http://127.0.0.1:8765
   - service: http_status:404
 EOF
@@ -241,7 +241,7 @@ This is how it ran in production on the lab Mac before moving to the Pi (the age
   from `~/Developer/music-api-v2`. Output goes to `server.log` in the repo directory (gitignored).
   On a Mac there's no Soloist, so `auto` picks the `connect` backend: play on the Spotify desktop app or any other Connect device.
 - `org.pinewoodrobotics.music-api-tunnel` runs `cloudflared` with `~/.cloudflared/music-api.yml`, which maps
-  `music-api.pinewoodrobotics.org` to `http://127.0.0.1:8765`.
+  `music.pinewoodrobotics.org` to `http://127.0.0.1:8765`.
 
 ```
 launchctl kickstart -k gui/$(id -u)/org.pinewoodrobotics.music-api    # restart after a code change
@@ -249,7 +249,7 @@ tail -f ~/Developer/music-api-v2/server.log
 ```
 
 `--public` makes every request need a token, because tunnelled requests arrive from `127.0.0.1` too.
-For Web API login through the public URL, add `https://music-api.pinewoodrobotics.org/auth/callback` as a Redirect URI
+For Web API login through the public URL, add `https://music.pinewoodrobotics.org/auth/callback` as a Redirect URI
 in the Spotify app and add `--redirect-uri` with that URL to the plist. Otherwise use the paste flow.
 v1 (Music.app) lived in `~/Developer/music-api` and is retired.
 

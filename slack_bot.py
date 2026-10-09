@@ -24,7 +24,7 @@ from spotify import SpotifyError, item, page, to_uri
 API = "https://slack.com/api"
 DEFAULT_TEAM = "T09DBUR4YER"
 DEFAULT_CHANNEL = "C0C80T1DNBF"
-DEFAULT_REMOTE = "https://music-api.pinewoodrobotics.org/"
+DEFAULT_REMOTE = "https://music.pinewoodrobotics.org/"
 LINK_RX = re.compile(r"https?://(?:open\.spotify\.com|music\.apple\.com)/\S+|spotify:(?:track|album|playlist):\w{22}")
 MAX_AGE = 300
 UPDATE_EVERY = 5
