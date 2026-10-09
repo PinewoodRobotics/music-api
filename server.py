@@ -841,6 +841,9 @@ class Handler(BaseHTTPRequestHandler):
             why = self._forbidden(method, path)
             if why:
                 return self._send(403, {"error": why})
+            if method != "GET":
+                sys.stderr.write(f"{method} {path} by {_req.user.get('name')} via "
+                                 f"{'token' if _req.bearer else 'session'} [{self.headers.get('User-Agent', '')[:80]}]\n")
             body = self._body()
         except AccountError as e:
             if path.startswith("/auth/slack/") and method == "GET":
