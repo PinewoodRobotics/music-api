@@ -54,7 +54,8 @@ def _http_json(url, data=None, headers=None):
 class Slack:
     def __init__(self, client_id, client_secret, bot_token, redirect_uri, team_id=None, admins=()):
         self.client_id, self.client_secret, self.bot_token = client_id, client_secret, bot_token
-        self.redirect_uri, self.team_id, self.admins = redirect_uri, team_id, set(admins)
+        self.redirect_uri, self.team_id = redirect_uri, team_id
+        self.admins = {a.strip().lower() for a in admins if a.strip()}  # Slack user IDs or emails
         self.pending = {}  # state -> (next path, created)
         self.lock = threading.Lock()
 
@@ -83,7 +84,7 @@ class Slack:
             self.pending = {s: v for s, v in self.pending.items() if now - v[1] < 600}
             self.pending[state] = (next_path if next_path.startswith("/") and not next_path.startswith("//") else "/", now)
         return f"{SLACK}/openid/connect/authorize?" + urllib.parse.urlencode({
-            "response_type": "code", "scope": "openid profile", "client_id": self.client_id, "state": state,
+            "response_type": "code", "scope": "openid profile email", "client_id": self.client_id, "state": state,
             "team": self.team(), "nonce": secrets.token_urlsafe(16), "redirect_uri": self.redirect_uri})
 
     def finish(self, code, state):
@@ -104,7 +105,9 @@ class Slack:
         profile = self._call("users.info", self.bot_token, user=uid)["user"].get("profile", {})
         name = profile.get("display_name") or profile.get("real_name") or info.get("name") or uid
         avatar = profile.get("image_192") or profile.get("image_72") or info.get("picture")
-        return {"id": uid, "name": name, "avatar": avatar, "admin": uid in self.admins, "kind": "slack"}, pending[0]
+        email = (info.get("email") or "").lower()
+        admin = uid.lower() in self.admins or (email and email in self.admins)
+        return {"id": uid, "name": name, "avatar": avatar, "admin": bool(admin), "kind": "slack"}, pending[0]
 
 
 class Sessions:
