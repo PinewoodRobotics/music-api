@@ -20,6 +20,7 @@ import links
 SLACK = "https://slack.com"
 SESSION_TTL = 30 * 86400
 ADMIN = {"id": "admin", "name": "@admin", "avatar": None, "admin": True, "kind": "token"}
+AUTOPLAY = {"id": None, "name": "Autoplay", "avatar": None}
 
 
 class AccountError(Exception):
@@ -337,6 +338,8 @@ class Credits:
             es = [e for e in self.by_uri.get(uri, []) if now - e[1] <= self.QUEUE_TTL]
             if es:
                 credit = {"by": es.pop(0)[0], "how": "queued"}
+            elif st.get("source") == "autoplay":
+                credit = {"by": AUTOPLAY, "how": "autoplay"}
             s = self.started
             if not credit and s and now - s["time"] <= self.START_TTL \
                     and (uri in s["uris"] or ((st.get("context") or {}).get("uri") or "\0") in s["uris"]):

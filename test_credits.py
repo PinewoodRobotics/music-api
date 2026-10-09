@@ -84,6 +84,32 @@ class CreditsTest(unittest.TestCase):
         self.assertEqual(q["upcoming"][0]["added_by"]["id"], "U1")
 
 
+class AutoplayTest(unittest.TestCase):
+    def test_autoplay_is_credited_as_autoplay_not_the_starter(self):
+        c = Credits()
+        c.start([ALBUM], A)
+        self.assertEqual(c.for_status({**st(T1, ALBUM), "source": "autoplay"})["by"]["name"], "Autoplay")
+        self.assertEqual(c.for_status({**st(T2, ALBUM), "source": "context"})["by"]["name"], "Ada")
+
+    def test_queued_beats_autoplay(self):
+        c = Credits()
+        c.add([T1], B)
+        self.assertEqual(c.for_status({**st(T1), "source": "autoplay"})["by"]["name"], "Bob")
+
+    def test_player_finds_source_in_previous_up_next(self):
+        class Sol:
+            queue = {"upcoming": [{"source": "autoplay", "item": {"uri": T2}}]}
+        p = Player("soloist", None, Sol(), None)
+        track = {"uri": T1}
+        p._status = lambda fresh=False: {"track": track}
+        self.assertIsNone(p.status()["source"])
+        p.status()
+        Sol.queue = {"upcoming": []}
+        track = {"uri": T2}
+        self.assertEqual(p.status()["source"], "autoplay")
+        self.assertEqual(p.status()["source"], "autoplay")
+
+
 class PlayerCredit(unittest.TestCase):
     def test_status_includes_credit(self):
         p = Player("soloist", None, None, None)
