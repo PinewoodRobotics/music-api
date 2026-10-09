@@ -17,10 +17,11 @@ type Props = {
   playlist?: AppPlaylist
   onRemoved?: (uri: string) => void
   align?: 'start' | 'end'
+  initialView?: 'main' | 'playlists'
 }
 
-export function TrackMenu({ track, anchor, onClose, playlist, onRemoved, align }: Props) {
-  const [view, setView] = useState<'main' | 'playlists'>('main')
+export function TrackMenu({ track, anchor, onClose, playlist, onRemoved, align, initialView = 'main' }: Props) {
+  const [view, setView] = useState<'main' | 'playlists'>(initialView)
   const { addToQueue } = usePlayer()
   const { playlists, upsertPlaylist } = useSession()
   const { openDialog } = useUI()
@@ -54,7 +55,7 @@ export function TrackMenu({ track, anchor, onClose, playlist, onRemoved, align }
     navigate(path)
   }
 
-  const artist = track.artists?.[0]
+  const artist = track.artists?.find((a) => a.uri)
 
   return (
     <Popover anchor={anchor} onClose={onClose} align={align} className="w-64">
@@ -74,8 +75,8 @@ export function TrackMenu({ track, anchor, onClose, playlist, onRemoved, align }
               Remove from this playlist
             </MenuItem>
           )}
-          {(track.album || artist) && <MenuDivider />}
-          {track.album && (
+          {(track.album?.uri || artist) && <MenuDivider />}
+          {track.album?.uri && (
             <MenuItem icon={<Disc3 />} onSelect={() => go(`/album/${idFromUri(track.album!.uri)}`)}>
               Go to album
             </MenuItem>

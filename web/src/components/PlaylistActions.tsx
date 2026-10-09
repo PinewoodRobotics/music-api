@@ -6,7 +6,7 @@ export function PlaylistActions({ compact = false }: { compact?: boolean }) {
   const tile = compact ? 'size-10' : 'size-11'
   const items = [
     { label: 'New playlist', icon: Plus, onClick: () => openDialog({ kind: 'new' }) },
-    { label: 'Import from Spotify', icon: Download, onClick: () => openDialog({ kind: 'import' }) },
+    { label: 'Import', icon: Download, onClick: () => openDialog({ kind: 'import' }) },
   ]
   return (
     <div className="space-y-0.5">

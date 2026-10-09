@@ -454,18 +454,16 @@ class SlackBot:
         return item(self.api.get(f"/{path}/{sid}"))
 
     def transport(self, verb, uid):
-        """Do play/pause/skip for a Slack user and leave a note in the channel."""
+        """Do play/pause/skip for a Slack user; skips get a note in the channel."""
         if verb == "skip":
             self.player.next()
-            note, text = f"<@{uid}> skipped", "Skipped."
-        elif verb == "pause":
+            self.say(f"<@{uid}> skipped")
+            return "Skipped."
+        if verb == "pause":
             self.player.pause()
-            note, text = f"<@{uid}> paused", "Paused."
-        else:
-            self.player.play({})
-            note, text = f"<@{uid}> resumed playback", "Playing."
-        self.say(note)
-        return text
+            return "Paused."
+        self.player.play({})
+        return "Playing."
 
     # ---------- interactions ----------
 

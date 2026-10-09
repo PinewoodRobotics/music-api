@@ -5,7 +5,7 @@ import { Artwork } from './Artwork'
 import { Link } from './Link'
 
 export function creatorLine(p: AppPlaylist) {
-  if (!p.created_by) return p.source_url ? 'Imported from Spotify' : 'Playlist'
+  if (!p.created_by) return p.source_url ? 'Imported' : 'Playlist'
   return p.source_url ? `Imported by ${p.created_by.name}` : `By ${p.created_by.name}`
 }
 

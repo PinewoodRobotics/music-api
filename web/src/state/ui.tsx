@@ -4,9 +4,10 @@ import type { AppPlaylist } from '../lib/api'
 export type Panel = 'queue' | 'lyrics'
 export type Dialog =
   | { kind: 'new' }
-  | { kind: 'import' }
+  | { kind: 'import'; url?: string }
   | { kind: 'edit'; playlist: AppPlaylist }
   | { kind: 'delete'; playlist: AppPlaylist }
+  | { kind: 'api' }
 
 type UI = {
   expanded: boolean

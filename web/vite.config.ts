@@ -2,7 +2,7 @@ import tailwindcss from '@tailwindcss/vite'
 import react from '@vitejs/plugin-react'
 import { defineConfig, type ProxyOptions } from 'vite'
 
-const target = 'https://music-api.pinewoodrobotics.org'
+const target = process.env.MUSIC_API_ORIGIN ?? 'https://music.pinewoodrobotics.org'
 
 function proxy(): ProxyOptions {
   return {

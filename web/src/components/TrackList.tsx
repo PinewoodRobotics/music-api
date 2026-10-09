@@ -18,11 +18,12 @@ type Props = {
   showArt?: boolean
   showAlbum?: boolean
   numbered?: boolean
+  header?: boolean
 }
 
 const touch = () => window.matchMedia('(hover: none)').matches
 
-export function TrackList({ tracks, onPlay, context, playlist, onRemoved, showArt = true, showAlbum = true, numbered = true }: Props) {
+export function TrackList({ tracks, onPlay, context, playlist, onRemoved, showArt = true, showAlbum = true, numbered = true, header = true }: Props) {
   const { status, isPlaying, pending } = usePlayer()
   const [selected, setSelected] = useState<number | null>(null)
   const [menu, setMenu] = useState<{ index: number; anchor: AnchorRect; align: 'start' | 'end' } | null>(null)
@@ -47,6 +48,7 @@ export function TrackList({ tracks, onPlay, context, playlist, onRemoved, showAr
 
   return (
     <div role="table" className="select-none" onBlur={(e) => !e.currentTarget.contains(e.relatedTarget) && setSelected(null)}>
+      {header && (
       <div
         role="row"
         className="mb-2 grid items-center gap-4 border-b border-white/[0.07] px-4 pb-2 text-xs text-dim max-md:hidden"
@@ -60,6 +62,7 @@ export function TrackList({ tracks, onPlay, context, playlist, onRemoved, showAr
         </span>
         <span />
       </div>
+      )}
       {tracks.map((track, i) => {
         const current = status?.track?.uri === track.uri
         const starting = pending === `${context}#${i}`

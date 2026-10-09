@@ -4,9 +4,10 @@ import App from './App'
 import './index.css'
 
 async function start() {
-  if (import.meta.env.DEV && new URLSearchParams(location.search).has('mock')) {
+  const params = new URLSearchParams(location.search)
+  if (import.meta.env.DEV && (params.has('mock') || sessionStorage.getItem('mock'))) {
     const { installMock } = await import('./dev/mock')
-    installMock(new URLSearchParams(location.search).get('mock'))
+    installMock(params.get('mock'))
   }
   createRoot(document.getElementById('root')!).render(
     <StrictMode>

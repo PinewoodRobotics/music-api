@@ -16,6 +16,7 @@ import { AlbumPage } from './pages/AlbumPage'
 import { ArtistPage } from './pages/ArtistPage'
 import { HomePage } from './pages/HomePage'
 import { LibraryPage } from './pages/LibraryPage'
+import { OpenLinkPage } from './pages/OpenLinkPage'
 import { Message } from './pages/Message'
 import { PlaylistPage } from './pages/PlaylistPage'
 import { SearchPage } from './pages/SearchPage'
@@ -115,6 +116,8 @@ function Page({ route }: { route: Route }) {
       return <AlbumPage key={route.id} id={route.id} />
     case 'artist':
       return <ArtistPage key={route.id} id={route.id} />
+    case 'open':
+      return <OpenLinkPage key={route.url} url={route.url} />
     case 'notFound':
       return <Message title="Page not found" action={<Button onClick={() => navigate('/')}>Go home</Button>} />
   }
@@ -146,8 +149,8 @@ function TopBar({ scrolled }: { scrolled: boolean }) {
 }
 
 function Shell() {
-  const { path } = useLocation()
-  const route = matchRoute(path)
+  const { path, query } = useLocation()
+  const route = matchRoute(path, query)
   const main = useRef<HTMLElement>(null)
   const [scrolled, setScrolled] = useState(false)
   useShortcuts()

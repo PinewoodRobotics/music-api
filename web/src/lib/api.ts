@@ -118,7 +118,38 @@ export type AppPlaylist = {
   can_edit: boolean
 }
 
-export type ImportResult = { playlist: AppPlaylist; imported: number; total: number | null; truncated: boolean }
+export type ImportResult = {
+  playlist: AppPlaylist
+  imported: number
+  total: number | null
+  truncated: boolean
+  unmatched?: { name: string; artists: string[] }[]
+}
+
+export type PersonalToken = { token: string; created: number; docs: string }
+
+export type ResolvedTrack = {
+  name: string
+  artists: string[]
+  album: string | null
+  duration_ms: number
+  artwork: string | null
+  uri: string | null
+}
+
+export type Resolved = {
+  source: 'spotify' | 'apple'
+  kind: 'track' | 'album' | 'playlist'
+  name: string
+  subtitle: string | null
+  artwork: string | null
+  url: string
+  spotify_uri: string | null
+  tracks: ResolvedTrack[]
+  total: number
+  matched: number
+  truncated: boolean
+}
 
 export class ApiError extends Error {
   status: number
@@ -185,6 +216,8 @@ export function eventsUrl() {
 
 export const api = {
   me: () => get<Me>('/api/app/me'),
+  personalToken: () => get<PersonalToken>('/api/app/token'),
+  regenerateToken: () => post<PersonalToken>('/api/app/token/regenerate'),
   logout: () => post<unknown>('/auth/slack/logout').catch(() => undefined),
 
   status: () => get<Status>('/api/status'),
@@ -201,11 +234,13 @@ export const api = {
   repeat: (mode: RepeatMode) => post<Status>('/api/repeat', { mode }),
   addToQueue: (uris: string[]) => post<{ added: string[] }>('/api/queue', { uris }),
 
+  resolve: (url: string) => post<Resolved>('/api/resolve', { url }),
   search: (q: string) => get<SearchResults>(`/api/search?${qs({ q, type: 'track,album,artist,playlist', limit: 10 })}`),
   album: (id: string) => get<Album>(`/api/albums/${id}`),
   albumTracks: (id: string, offset: number) => get<Page<Track>>(`/api/albums/${id}/tracks?${qs({ limit: 50, offset })}`),
   artist: (id: string) => get<Artist>(`/api/artists/${id}`),
-  artistAlbums: (id: string) => get<Page<Album>>(`/api/artists/${id}/albums?${qs({ include_groups: 'album,single', limit: 50 })}`),
+  artistAlbums: (id: string, offset = 0) =>
+    get<Page<Album>>(`/api/artists/${id}/albums?${qs({ include_groups: 'album,single', limit: 10, offset })}`),
 
   playlists: () => get<AppPlaylist[]>('/api/app/playlists'),
   playlist: (id: string) => get<AppPlaylist>(`/api/app/playlists/${id}`),

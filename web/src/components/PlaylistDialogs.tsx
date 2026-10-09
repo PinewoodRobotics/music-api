@@ -6,9 +6,9 @@ import { navigate } from '../lib/router'
 import { useSession } from '../state/session'
 import { useToast } from '../state/toast'
 import { useUI } from '../state/ui'
+import { ApiTokenDialog } from './ApiTokenDialog'
+import { ImportDialog } from './ImportDialog'
 import { Button, Field, fieldClass, Modal } from './Modal'
-
-const SPOTIFY_PLAYLIST = /^(spotify:playlist:[A-Za-z0-9]{22}|https?:\/\/open\.spotify\.com\/(intl-[a-z-]+\/)?(embed\/)?playlist\/[A-Za-z0-9]{22}\S*)$/
 
 export function Dialogs() {
   const { dialog, closeDialog } = useUI()
@@ -19,7 +19,9 @@ export function Dialogs() {
     case 'edit':
       return <PlaylistForm onClose={closeDialog} playlist={dialog.playlist} />
     case 'import':
-      return <ImportDialog onClose={closeDialog} />
+      return <ImportDialog onClose={closeDialog} initialUrl={dialog.url} />
+    case 'api':
+      return <ApiTokenDialog onClose={closeDialog} />
     case 'delete':
       return <DeleteDialog onClose={closeDialog} playlist={dialog.playlist} />
   }
@@ -75,77 +77,6 @@ function PlaylistForm({ onClose, playlist }: { onClose: () => void; playlist?: A
           <Button type="submit" disabled={busy || !name.trim()}>
             {busy && <Loader2 className="size-4 animate-spin" />}
             {playlist ? 'Save' : 'Create'}
-          </Button>
-        </div>
-      </form>
-    </Modal>
-  )
-}
-
-function ImportDialog({ onClose }: { onClose: () => void }) {
-  const [url, setUrl] = useState('')
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const { upsertPlaylist } = useSession()
-  const toast = useToast()
-  const valid = SPOTIFY_PLAYLIST.test(url.trim())
-
-  const submit = async (e: FormEvent) => {
-    e.preventDefault()
-    if (!valid) return setError('Paste a link to a Spotify playlist, like open.spotify.com/playlist/…')
-    setBusy(true)
-    setError(null)
-    try {
-      const result = await api.importPlaylist(url.trim())
-      upsertPlaylist(result.playlist)
-      onClose()
-      toast.show(
-        result.truncated
-          ? 'Imported the first 100 tracks'
-          : `Imported ${result.imported.toLocaleString()} track${result.imported === 1 ? '' : 's'}`,
-      )
-      navigate(`/playlist/${result.playlist.id}`)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
-      setBusy(false)
-    }
-  }
-
-  return (
-    <Modal title="Import from Spotify" onClose={onClose} dismissable={!busy}>
-      <form onSubmit={submit} className="space-y-4">
-        <p className="text-sm leading-relaxed text-dim">
-          Copies a public Spotify playlist into a new playlist here. Spotify only lets us copy the first 100 tracks.
-        </p>
-        <Field label="Playlist link">
-          <input
-            autoFocus
-            value={url}
-            disabled={busy}
-            onChange={(e) => {
-              setUrl(e.target.value)
-              setError(null)
-            }}
-            placeholder="https://open.spotify.com/playlist/…"
-            className={fieldClass}
-          />
-        </Field>
-        {busy && (
-          <div className="space-y-2" aria-live="polite">
-            <div className="h-1 overflow-hidden rounded-full bg-white/10">
-              <div className="h-full w-1/3 animate-[indeterminate_1.2s_ease-in-out_infinite] rounded-full bg-accent" />
-            </div>
-            <p className="text-xs text-dim">Copying tracks from Spotify. This can take a few seconds.</p>
-          </div>
-        )}
-        {error && <p className="text-sm text-danger">{error}</p>}
-        <div className="flex justify-end gap-2 pt-2">
-          <Button variant="ghost" onClick={onClose} disabled={busy}>
-            Cancel
-          </Button>
-          <Button type="submit" disabled={busy || !url.trim()}>
-            {busy && <Loader2 className="size-4 animate-spin" />}
-            {busy ? 'Importing…' : 'Import'}
           </Button>
         </div>
       </form>

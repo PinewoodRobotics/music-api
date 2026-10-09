@@ -133,10 +133,10 @@ export function NowPlayingView() {
           <div className="mt-2 grid grid-cols-[1fr_auto_1fr] items-center gap-2 max-sm:grid-cols-1">
             <div className="max-sm:hidden" />
             <Transport size="lg" />
-            <div className="flex items-center justify-end gap-1 max-sm:justify-center">
+            <div className="flex items-center justify-end gap-1 max-sm:mt-1">
               <PanelToggle panel="lyrics" current={panel} onToggle={togglePanel} />
               <PanelToggle panel="queue" current={panel} onToggle={togglePanel} />
-              <VolumeControl className="ml-2 w-32 max-md:hidden" />
+              <VolumeControl className="ml-2 w-32 max-sm:ml-4 max-sm:w-auto max-sm:flex-1" />
             </div>
           </div>
         </footer>

@@ -1,11 +1,13 @@
-import { LogOut } from 'lucide-react'
+import { LogOut, SquareTerminal } from 'lucide-react'
 import { useState } from 'react'
 import { useSession } from '../state/session'
+import { useUI } from '../state/ui'
 import { Avatar } from './Avatar'
 import { Popover, type AnchorRect } from './Popover'
 
 export function AccountMenu() {
   const { me, signOut } = useSession()
+  const { openDialog } = useUI()
   const [anchor, setAnchor] = useState<AnchorRect | null>(null)
   if (!me) return null
   return (
@@ -29,6 +31,20 @@ export function AccountMenu() {
             </div>
           </div>
           <div className="p-1">
+            {me.kind !== 'token' && (
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  setAnchor(null)
+                  openDialog({ kind: 'api' })
+                }}
+                className="flex w-full items-center gap-3 rounded-[5px] px-3 py-2 text-left text-sm hover:bg-white/[0.08]"
+              >
+                <SquareTerminal className="size-4 text-dim" />
+                API
+              </button>
+            )}
             <button
               type="button"
               role="menuitem"

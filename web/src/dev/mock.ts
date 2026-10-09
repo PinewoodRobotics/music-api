@@ -107,6 +107,45 @@ function queue(): Queue {
   }
 }
 
+let personal = { token: 'mapu_Xk29fQ7LmPz4Rt8WvB1nC6dY', created: 1760040000, docs: 'https://music.pinewoodrobotics.org/llms.txt' }
+
+const unmatchedSongs = [
+  { name: 'Lofi Lab Session (Live)', artists: ['The 5190s'] },
+  { name: 'Drive Team Anthem', artists: ['Pit Crew'] },
+  { name: 'Untitled Voice Memo', artists: [] },
+]
+
+function resolve(link: string): readonly [number, unknown] {
+  const base = { url: link, truncated: false }
+  const asResolved = (t: Track) => ({
+    name: t.name,
+    artists: t.artists?.map((a) => a.name) ?? [],
+    album: t.album?.name ?? null,
+    duration_ms: t.duration_ms,
+    artwork: t.artwork,
+    uri: t.uri,
+  })
+  if (/open\.spotify\.com\/track|spotify:track/.test(link)) {
+    const t = tracks[2]
+    return ok({ ...base, source: 'spotify', kind: 'track', name: t.name, subtitle: byArtists(t), artwork: t.artwork, spotify_uri: t.uri, tracks: [asResolved(t)], total: 1, matched: 1 })
+  }
+  if (/open\.spotify\.com\/playlist/.test(link))
+    return ok({ ...base, source: 'spotify', kind: 'playlist', name: 'Robot-Themed Songs', subtitle: 'Daniel Costa Ramos', artwork: tracks[5].artwork, spotify_uri: 'spotify:playlist:5SLCReZBKclNPPJ0n1bBkp', tracks: tracks.map(asResolved), total: 12, matched: 12, truncated: false })
+  if (/music\.apple\.com\/.*playlist/.test(link)) {
+    const list = [
+      ...tracks.slice(0, 4).map(asResolved),
+      { ...unmatchedSongs[0], album: null, duration_ms: 241000, artwork: null, uri: null },
+      ...tracks.slice(4, 9).map(asResolved),
+      { ...unmatchedSongs[1], album: 'Pit Stop', duration_ms: 182000, artwork: null, uri: null },
+      { ...unmatchedSongs[2], album: null, duration_ms: 64000, artwork: null, uri: null },
+    ]
+    return ok({ ...base, source: 'apple', kind: 'playlist', name: 'Shop Floor Favorites', subtitle: 'Maya', artwork: tracks[3].artwork, spotify_uri: null, tracks: list, total: list.length, matched: 9 })
+  }
+  return fail(400, "That link isn't a song, album or playlist we can open.")
+}
+
+const byArtists = (t: Track) => t.artists?.map((a) => a.name).join(', ') ?? ''
+
 function mutate(patch: Partial<Status>) {
   setStatus(patch)
   return ok(snapshot())
@@ -120,6 +159,11 @@ function handle(method: string, url: URL, body: Record<string, unknown>): readon
   const route = `${method} ${p}`
   if (route === 'GET /api/app/me') return ok({ ...adam, admin: false, kind: 'slack' })
   if (route === 'POST /auth/slack/logout') return ok(null)
+  if (route === 'GET /api/app/token') return ok(personal)
+  if (route === 'POST /api/app/token/regenerate') {
+    personal = { ...personal, token: `mapu_${Math.random().toString(36).slice(2, 14)}${Math.random().toString(36).slice(2, 14)}`, created: Date.now() / 1000 }
+    return ok(personal)
+  }
   if (route === 'GET /api/status') return ok(snapshot())
   if (route === 'GET /api/queue') return ok(queue())
   if (route === 'GET /api/lyrics') {
@@ -159,6 +203,24 @@ function handle(method: string, url: URL, body: Record<string, unknown>): readon
       playlists: page([]),
     })
   }
+  if (route === 'POST /api/resolve') return resolve(String(body.url))
+  const artistAlbums = p.match(/^\/api\/artists\/([^/]+)\/albums$/)
+  if (method === 'GET' && artistAlbums) {
+    const limit = Number(url.searchParams.get('limit') ?? 20)
+    if (limit > 10) return fail(400, 'Spotify 400: Invalid limit')
+    const offset = Number(url.searchParams.get('offset') ?? 0)
+    const all = tracks.concat(tracks.slice(0, 2)).map((t, i) => ({
+      ...fixtures.album,
+      id: `al${i}`,
+      uri: `spotify:album:al${i}`,
+      name: t.album?.name ?? `Album ${i}`,
+      artwork: t.artwork,
+      album_type: i % 3 === 2 ? 'single' : 'album',
+    }))
+    return ok({ items: all.slice(offset, offset + limit), total: all.length, offset, limit, next: offset + limit < all.length })
+  }
+  const artist = p.match(/^\/api\/artists\/([^/]+)$/)
+  if (method === 'GET' && artist) return ok({ uri: 'spotify:artist:a1', id: 'a1', type: 'artist', name: 'Daft Punk', genres: ['french house'], artwork: tracks[0].artwork })
   if (route === 'GET /api/app/playlists') return ok(playlists)
   if (route === 'POST /api/app/playlists') {
     const created: AppPlaylist = {
@@ -193,7 +255,14 @@ function handle(method: string, url: URL, body: Record<string, unknown>): readon
     }
     playlists.unshift(created)
     items[created.id] = tracks
-    return ok({ playlist: created, imported: 100, total: null, truncated: true })
+    const apple = String(body.url).includes('music.apple.com')
+    return ok({
+      playlist: created,
+      imported: apple ? 9 : 100,
+      total: apple ? 12 : null,
+      truncated: !apple,
+      unmatched: apple ? unmatchedSongs : [],
+    })
   }
   const one = p.match(/^\/api\/app\/playlists\/([^/]+)$/)
   if (one) {
@@ -269,8 +338,9 @@ export function installMock(param: string | null) {
     if (!/^\/(api|auth)(\/|$)/.test(url.pathname)) return realFetch(input, init)
     const body = init?.body ? JSON.parse(String(init.body)) : {}
     if (method !== 'GET') window.__mockCalls.push({ method, path: url.pathname + url.search, body })
-    if (mode === 'writes' && method === 'GET') return realFetch(input, init)
-    await new Promise((r) => setTimeout(r, url.pathname.endsWith('/import') ? 1800 : 120))
+    if (mode === 'writes' && (method === 'GET' || url.pathname === '/api/resolve')) return realFetch(input, init)
+    const slow = url.pathname.endsWith('/import') || url.pathname === '/api/resolve'
+    await new Promise((r) => setTimeout(r, slow ? (String(body.url ?? '').includes('apple') ? 3500 : 1500) : 120))
     const [status, json] =
       mode === 'signedout'
         ? fail(401, 'unauthorized')

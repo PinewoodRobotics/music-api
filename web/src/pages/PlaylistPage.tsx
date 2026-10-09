@@ -2,6 +2,7 @@ import { ListMusic, Pencil, Search, Shuffle, Trash2 } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import { api, ApiError, type AppPlaylist, type Track } from '../lib/api'
 import { formatLength, plural } from '../lib/format'
+import { sourceOfUrl } from '../lib/links'
 import { navigate } from '../lib/router'
 import { useAsync } from '../lib/useAsync'
 import { Avatar } from '../components/Avatar'
@@ -104,7 +105,7 @@ export function PlaylistPage({ id }: { id: string }) {
               <span>
                 from{' '}
                 <a href={playlist.source_url} target="_blank" rel="noreferrer" className="font-semibold hover:underline">
-                  Spotify
+                  {sourceOfUrl(playlist.source_url) ?? 'a link'}
                 </a>
               </span>
             )}
