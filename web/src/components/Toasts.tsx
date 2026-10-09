@@ -11,7 +11,7 @@ export function Toasts() {
           type="button"
           onClick={() => dismiss(t.id)}
           className={`animate-toast pointer-events-auto flex max-w-md items-center gap-2.5 rounded-lg px-4 py-3 text-left text-sm font-medium shadow-2xl shadow-black/50 ${
-            t.tone === 'error' ? 'bg-[#3a1d1f] text-[#ffd9d9]' : 'bg-fg text-base'
+            t.tone === 'error' ? 'bg-[#3a1d1f] text-[#ffd9d9]' : 'bg-fg text-canvas'
           }`}
         >
           {t.tone === 'error' && <CircleAlert className="size-4 shrink-0" />}

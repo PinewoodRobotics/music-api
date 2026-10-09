@@ -25,8 +25,8 @@ function Row({ track, current, playing, addedBy, onMenu }: { track: Track; curre
         <div className="truncate text-[13px] text-white/60">{byline(track)}</div>
         {addedBy && (
           <div className="mt-0.5 flex items-center gap-1.5 text-[11px] text-white/45">
-            <Avatar person={addedBy} className="size-3.5" />
-            <span className="truncate">Added by {addedBy.name}</span>
+            <Avatar person={addedBy} className="size-3.5 text-[8px]" />
+            <span className="truncate">{addedBy.name}</span>
           </div>
         )}
       </div>

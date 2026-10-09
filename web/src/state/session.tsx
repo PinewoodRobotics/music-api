@@ -7,6 +7,8 @@ type Session = {
   state: SessionState
   me: Me | null
   playlists: AppPlaylist[] | null
+  playlistsError: unknown
+  retryPlaylists: () => void
   refreshPlaylists: () => Promise<void>
   upsertPlaylist: (p: AppPlaylist) => void
   dropPlaylist: (id: string) => void
@@ -38,10 +40,16 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     }
   }, [attempt])
 
+  const [playlistsError, setPlaylistsError] = useState<unknown>(null)
   const refreshPlaylists = useCallback(async () => {
     const list = await api.playlists()
     setPlaylists(list)
+    setPlaylistsError(null)
   }, [])
+  const retryPlaylists = useCallback(() => {
+    setPlaylistsError(null)
+    refreshPlaylists().catch(setPlaylistsError)
+  }, [refreshPlaylists])
 
   const upsertPlaylist = useCallback(
     (p: AppPlaylist) =>
@@ -55,7 +63,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const ready = state.status === 'ready'
   useEffect(() => {
     if (!ready) return
-    refreshPlaylists().catch(() => setPlaylists((p) => p ?? []))
+    refreshPlaylists().catch(setPlaylistsError)
     const onFocus = () => void refreshPlaylists().catch(() => {})
     window.addEventListener('focus', onFocus)
     return () => window.removeEventListener('focus', onFocus)
@@ -66,6 +74,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       state,
       me: state.status === 'ready' ? state.me : null,
       playlists,
+      playlistsError,
+      retryPlaylists,
       refreshPlaylists,
       upsertPlaylist,
       dropPlaylist,
@@ -80,7 +90,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         setAttempt((n) => n + 1)
       },
     }),
-    [state, playlists, refreshPlaylists, upsertPlaylist, dropPlaylist],
+    [state, playlists, playlistsError, retryPlaylists, refreshPlaylists, upsertPlaylist, dropPlaylist],
   )
 
   return <SessionContext.Provider value={value}>{children}</SessionContext.Provider>

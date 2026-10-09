@@ -2,11 +2,12 @@ import { Volume2 } from 'lucide-react'
 import type { AppPlaylist } from '../lib/api'
 import { usePlayer } from '../state/player'
 import { Artwork } from './Artwork'
+import { Attribution } from './Attribution'
 import { Link } from './Link'
 
-export function creatorLine(p: AppPlaylist) {
-  if (!p.created_by) return p.source_url ? 'Imported' : 'Playlist'
-  return p.source_url ? `Imported by ${p.created_by.name}` : `By ${p.created_by.name}`
+export function PlaylistByline({ playlist, className = '' }: { playlist: AppPlaylist; className?: string }) {
+  if (!playlist.created_by && !playlist.source_url) return <span className={className}>Playlist</span>
+  return <Attribution person={playlist.created_by} sourceUrl={playlist.source_url} className={className} />
 }
 
 export function PlaylistRow({ playlist, active }: { playlist: AppPlaylist; active: boolean }) {
@@ -20,7 +21,7 @@ export function PlaylistRow({ playlist, active }: { playlist: AppPlaylist; activ
       <Artwork src={playlist.artwork} className="size-11 shrink-0" />
       <div className="min-w-0 flex-1">
         <div className={`truncate text-[15px] ${playing ? 'text-accent' : 'text-fg'}`}>{playlist.name}</div>
-        <div className="truncate text-[13px] text-dim">{creatorLine(playlist)}</div>
+        <PlaylistByline playlist={playlist} className="text-[13px] text-dim" />
       </div>
       {playing && isPlaying && <Volume2 className="mr-1 size-4 shrink-0 text-accent" aria-label="Playing" />}
     </Link>

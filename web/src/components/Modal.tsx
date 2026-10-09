@@ -60,7 +60,7 @@ export function Button({
   ...rest
 }: ButtonHTMLAttributes<HTMLButtonElement> & { variant?: 'primary' | 'ghost' | 'danger' }) {
   const look = {
-    primary: 'bg-fg text-base hover:scale-[1.03]',
+    primary: 'bg-fg text-canvas hover:scale-[1.03]',
     ghost: 'text-fg hover:bg-white/10',
     danger: 'bg-danger text-black hover:scale-[1.03]',
   }[variant]

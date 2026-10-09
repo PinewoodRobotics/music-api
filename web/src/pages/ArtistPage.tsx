@@ -8,7 +8,7 @@ import { CardGrid, MediaCard, Section } from '../components/MediaCard'
 import { Button } from '../components/Modal'
 import { CardsSkeleton, HeaderSkeleton } from '../components/Skeleton'
 import { usePlayer } from '../state/player'
-import { Message } from './Message'
+import { ErrorState, Message } from './Message'
 
 function useDiscography(id: string) {
   const [albums, setAlbums] = useState<Album[]>([])
@@ -49,11 +49,7 @@ export function ArtistPage({ id }: { id: string }) {
   if (artist.loading) return <HeaderSkeleton />
   if (!artist.data)
     return (
-      <Message
-        title="Couldn't load this artist"
-        body={errorMessage(artist.error)}
-        action={<Button onClick={() => setAttempt((n) => n + 1)}>Try again</Button>}
-      />
+      <ErrorState title="Couldn't load this artist" error={artist.error} onRetry={() => setAttempt((n) => n + 1)} />
     )
   const a = artist.data
   const isCurrent = status?.context?.uri === a.uri
@@ -105,11 +101,7 @@ export function ArtistPage({ id }: { id: string }) {
           </div>
         )}
         {discography.error && (
-          <Message
-            title="Couldn't load the discography"
-            body={discography.error}
-            action={<Button onClick={() => void discography.retry()}>Try again</Button>}
-          />
+          <ErrorState title="Couldn't load the discography" error={discography.error} onRetry={() => void discography.retry()} />
         )}
         {!discography.error && !discography.loading && discography.albums.length === 0 && (
           <Message title="No albums yet" body="This artist hasn't released any albums or singles on Spotify." />

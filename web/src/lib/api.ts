@@ -188,10 +188,14 @@ export function onUnauthorized(listener: () => void) {
   return () => void unauthorizedListeners.delete(listener)
 }
 
-async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
+const RETRYABLE = new Set([502, 503, 504])
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+
+async function request<T>(method: string, path: string, body?: unknown, retried = false): Promise<T> {
   const headers: Record<string, string> = {}
   if (body !== undefined) headers['Content-Type'] = 'application/json'
   if (token) headers.Authorization = `Bearer ${token}`
+  const retry = method === 'GET' && !retried
   let res: Response
   try {
     res = await fetch(path, {
@@ -201,12 +205,18 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
       body: body === undefined ? undefined : JSON.stringify(body),
     })
   } catch {
+    if (retry) return sleep(1000).then(() => request<T>(method, path, body, true))
     throw new ApiError(0, "Can't reach the music server. Check your connection.")
   }
+  if (retry && RETRYABLE.has(res.status)) return sleep(1000).then(() => request<T>(method, path, body, true))
   const data = await res.json().catch(() => null)
   if (res.status === 401) unauthorizedListeners.forEach((l) => l())
-  if (!res.ok) throw new ApiError(res.status, data?.error ?? `Request failed (${res.status})`)
+  if (!res.ok) throw new ApiError(res.status, data?.error ?? friendlyStatus(res.status))
   return data?.result as T
+}
+
+function friendlyStatus(status: number) {
+  return RETRYABLE.has(status) ? 'The music server is restarting. Try again in a moment.' : `Request failed (${status})`
 }
 
 const get = <T>(path: string) => request<T>('GET', path)

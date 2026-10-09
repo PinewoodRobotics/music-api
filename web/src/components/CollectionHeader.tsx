@@ -1,6 +1,7 @@
 import { Loader2 } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { usePalette } from '../lib/color'
+import { fitTitle } from '../lib/fitTitle'
 import { decodeEntities } from '../lib/format'
 import { Artwork } from './Artwork'
 
@@ -16,8 +17,6 @@ type Props = {
 
 export function CollectionHeader({ artwork, kind, title, description, meta, round, children }: Props) {
   const palette = usePalette(artwork)
-  const titleSize =
-    title.length > 40 ? 'text-[clamp(1.75rem,3.6vw,3rem)]' : title.length > 18 ? 'text-[clamp(2rem,5vw,4.25rem)]' : 'text-[clamp(2.5rem,7vw,6rem)]'
   return (
     <div className="relative" style={{ ['--page-glow' as string]: palette.glow }}>
       <div className="pointer-events-none absolute inset-x-0 -top-16 h-[calc(100%+22rem)] bg-[linear-gradient(to_bottom,var(--page-glow),transparent)] opacity-90 transition-[background] duration-700" />
@@ -27,9 +26,9 @@ export function CollectionHeader({ artwork, kind, title, description, meta, roun
           round={round}
           className="size-[clamp(160px,20vw,232px)] shrink-0 shadow-[0_16px_48px_rgba(0,0,0,0.55)] max-sm:mx-auto max-sm:size-[min(60vw,240px)]"
         />
-        <div className="min-w-0 flex-1">
+        <div className="@container min-w-0 flex-1 max-sm:w-full">
           <div className="text-sm font-medium text-white/80 max-sm:hidden">{kind}</div>
-          <h1 className={`mt-1 line-clamp-2 break-words pb-[0.08em] font-display font-extrabold leading-[0.98] tracking-[-0.04em] max-sm:text-[1.75rem] ${titleSize}`}>
+          <h1 style={fitTitle(title)} className="mt-1 line-clamp-2 break-words pb-[0.08em] font-display font-extrabold leading-[0.98] tracking-[-0.04em]">
             {title}
           </h1>
           {description && <p className="mt-3 line-clamp-2 max-w-2xl text-sm text-white/70">{decodeEntities(description)}</p>}

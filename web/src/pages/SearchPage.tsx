@@ -1,16 +1,15 @@
-import { Loader2, Search, X } from 'lucide-react'
+import { Link2, Loader2, Search, X } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { api, type SearchResults } from '../lib/api'
 import { byline, year } from '../lib/format'
-import { detectLink } from '../lib/links'
+import { detectLink, looksLikeUrl } from '../lib/links'
 import { navigate, useLocation } from '../lib/router'
 import { MediaCard, Section } from '../components/MediaCard'
 import { CardsSkeleton, RowsSkeleton } from '../components/Skeleton'
 import { SourceIcon } from '../components/SourceIcon'
 import { TrackList } from '../components/TrackList'
 import { usePlayer } from '../state/player'
-import { useToast } from '../state/toast'
-import { Message } from './Message'
+import { ErrorState, Message } from './Message'
 import { CardSection, ShowAll } from './search/CardSection'
 import { LinkResult } from './search/LinkResult'
 import { pickTopResult } from './search/topResult'
@@ -18,8 +17,9 @@ import { TopResultCard } from './search/TopResultCard'
 
 function useSearch(q: string) {
   const [results, setResults] = useState<{ q: string; data: SearchResults } | null>(null)
+  const [failure, setFailure] = useState<{ q: string; error: unknown } | null>(null)
   const [loading, setLoading] = useState(false)
-  const toast = useToast()
+  const [attempt, setAttempt] = useState(0)
   useEffect(() => {
     if (!q) {
       setResults(null)
@@ -28,16 +28,17 @@ function useSearch(q: string) {
     }
     let live = true
     setLoading(true)
+    setFailure(null)
     api
       .search(q)
       .then((data) => live && setResults({ q, data }))
-      .catch((err) => live && toast.error(err))
+      .catch((error) => live && setFailure({ q, error }))
       .finally(() => live && setLoading(false))
     return () => {
       live = false
     }
-  }, [q, toast])
-  return { results, loading }
+  }, [q, attempt])
+  return { results, loading, failure: failure?.q === q ? failure.error : null, retry: () => setAttempt((n) => n + 1) }
 }
 
 function Results({ q, data }: { q: string; data: SearchResults }) {
@@ -117,7 +118,7 @@ function Results({ q, data }: { q: string; data: SearchResults }) {
             <MediaCard
               key={p.id}
               title={p.name}
-              subtitle={`By ${p.owner}`}
+              subtitle={p.owner}
               artwork={p.artwork}
               href={`/open?url=${encodeURIComponent(`https://open.spotify.com/playlist/${p.id}`)}`}
               playing={playing(p.uri)}
@@ -154,8 +155,10 @@ export function SearchPage() {
   const [q, setQ] = useState(initial.trim())
   const input = useRef<HTMLInputElement>(null)
   const link = detectLink(q)
+  const unsupported = !link && looksLikeUrl(q)
   const typedLink = detectLink(text)
-  const { results, loading } = useSearch(link ? '' : q)
+  const { results, loading, failure, retry } = useSearch(link || unsupported ? '' : q)
+  const searching = !!q && !link && !unsupported
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -172,6 +175,8 @@ export function SearchPage() {
         <label className="flex h-12 max-w-xl items-center gap-3 rounded-full bg-raised px-4 ring-white/30 transition focus-within:bg-hover focus-within:ring-2 hover:bg-hover">
           {typedLink ? (
             <SourceIcon source={typedLink.source} className="size-5 shrink-0" />
+          ) : looksLikeUrl(text) ? (
+            <Link2 className="size-5 shrink-0 text-dim" />
           ) : loading ? (
             <Loader2 className="size-5 shrink-0 animate-spin text-dim" />
           ) : (
@@ -214,8 +219,16 @@ export function SearchPage() {
           <LinkResult key={q} url={q} link={link} />
         </div>
       )}
-      {!link && q && !results && loading && <SearchSkeleton />}
-      {!link && results && <Results key={results.q} q={results.q} data={results.data} />}
+      {unsupported && (
+        <Message
+          icon={<Link2 className="size-10" />}
+          title="That link isn't supported"
+          body="Paste a Spotify or Apple Music link to a song, album or playlist."
+        />
+      )}
+      {searching && failure != null && <ErrorState title="Search didn't load" error={failure} onRetry={retry} />}
+      {searching && failure == null && !results && loading && <SearchSkeleton />}
+      {searching && failure == null && results && <Results key={results.q} q={results.q} data={results.data} />}
     </div>
   )
 }

@@ -1,6 +1,6 @@
 import { Download, ListEnd, ListPlus, MoreHorizontal, Play } from 'lucide-react'
 import { useEffect, useState, type MouseEvent } from 'react'
-import { api, type Resolved, type ResolvedTrack, type Track } from '../../lib/api'
+import { api, ApiError, type Resolved, type ResolvedTrack, type Track } from '../../lib/api'
 import { formatTime, idFromUri, plural } from '../../lib/format'
 import type { DetectedLink } from '../../lib/links'
 import { useElapsed } from '../../lib/useElapsed'
@@ -13,7 +13,7 @@ import { SourceIcon } from '../../components/SourceIcon'
 import { TrackMenu } from '../../components/TrackMenu'
 import { usePlayer } from '../../state/player'
 import { useUI } from '../../state/ui'
-import { Message } from '../Message'
+import { ErrorState, Message } from '../Message'
 
 const SOURCE = { spotify: 'Spotify', apple: 'Apple Music' }
 const NOUN = { track: 'song', album: 'album', playlist: 'playlist' }
@@ -33,7 +33,7 @@ function toTrack(t: ResolvedTrack & { uri: string }): Track {
 
 const isMatched = (t: ResolvedTrack): t is ResolvedTrack & { uri: string } => !!t.uri
 
-type ResolveState = { url: string; data: Resolved | null; error: string | null }
+type ResolveState = { url: string; data: Resolved | null; error: unknown }
 
 const resolved = new Map<string, Promise<ResolveState>>()
 
@@ -44,7 +44,7 @@ function resolveOnce(url: string) {
       (data) => ({ url, data, error: null }),
       (err) => {
         resolved.delete(url)
-        return { url, data: null, error: err instanceof Error ? err.message : String(err) }
+        return { url, data: null, error: err }
       },
     )
     resolved.set(url, request)
@@ -54,14 +54,16 @@ function resolveOnce(url: string) {
 
 function useResolve(url: string) {
   const [state, setState] = useState<ResolveState | null>(null)
+  const [attempt, setAttempt] = useState(0)
   useEffect(() => {
     let live = true
+    setState(null)
     resolveOnce(url).then((result) => live && setState(result))
     return () => {
       live = false
     }
-  }, [url])
-  return state?.url === url ? state : null
+  }, [url, attempt])
+  return { state: state?.url === url ? state : null, retry: () => setAttempt((n) => n + 1) }
 }
 
 function Resolving({ link }: { link: DetectedLink }) {
@@ -253,9 +255,13 @@ function Tracks({ data }: { data: Resolved }) {
 }
 
 export function LinkResult({ url, link }: { url: string; link: DetectedLink }) {
-  const state = useResolve(url)
+  const { state, retry } = useResolve(url)
   if (!state) return <Resolving link={link} />
-  if (!state.data) return <Message title="Couldn't open this link" body={state.error ?? undefined} />
+  if (!state.data) {
+    const permanent = state.error instanceof ApiError && state.error.status >= 400 && state.error.status < 500
+    if (permanent) return <Message title="Couldn't open this link" body={state.error instanceof Error ? state.error.message : undefined} />
+    return <ErrorState title="Couldn't open this link" error={state.error} onRetry={retry} />
+  }
   return (
     <div className="px-3 max-sm:px-2">
       <Header data={state.data} />

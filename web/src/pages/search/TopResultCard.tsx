@@ -15,7 +15,7 @@ function details(top: TopResult) {
     case 'album':
       return { sub: byline(top.item), href: `/album/${top.item.id}` }
     case 'playlist':
-      return { sub: `By ${top.item.owner}`, href: null }
+      return { sub: top.item.owner, href: null }
     case 'track':
       return { sub: byline(top.item), href: top.item.album?.uri ? `/album/${idFromUri(top.item.album.uri)}` : null }
   }

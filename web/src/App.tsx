@@ -140,7 +140,7 @@ function TopBar({ scrolled }: { scrolled: boolean }) {
       </div>
       <div className="flex items-center gap-2.5 md:hidden">
         <BrandMark className="size-7" />
-        <span className="font-display text-base font-bold tracking-tight">Robotics Music</span>
+        <span className="font-display text-base font-bold tracking-tight text-fg">Robotics Music</span>
       </div>
       <div className="flex-1" />
       <AccountMenu />

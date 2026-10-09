@@ -36,9 +36,16 @@ export function detectLink(text: string): DetectedLink | null {
   return null
 }
 
-export function sourceOfUrl(url: string | null | undefined): string | null {
+export function sourceOfUrl(url: string | null | undefined): LinkSource | null {
   if (!url) return null
-  if (/music\.apple\.com/i.test(url)) return 'Apple Music'
-  if (/spotify/i.test(url)) return 'Spotify'
+  if (/music\.apple\.com/i.test(url)) return 'apple'
+  if (/spotify/i.test(url)) return 'spotify'
   return null
+}
+
+export const SOURCE_LABELS: Record<LinkSource, string> = SOURCE_NAMES
+
+export function looksLikeUrl(text: string) {
+  const t = text.trim()
+  return /^(https?:\/\/|spotify:)/i.test(t) || /^(www\.)?[a-z0-9-]+(\.[a-z0-9-]+)+\/\S*$/i.test(t)
 }

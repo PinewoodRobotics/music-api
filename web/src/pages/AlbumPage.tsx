@@ -7,10 +7,11 @@ import { Link } from '../components/Link'
 import { TrackList } from '../components/TrackList'
 import { usePlayer } from '../state/player'
 import { HeaderSkeleton, RowsSkeleton } from '../components/Skeleton'
-import { Message } from './Message'
+import { ErrorState } from './Message'
 
 export function AlbumPage({ id }: { id: string }) {
-  const album = useAsync(() => api.album(id), [id])
+  const [attempt, setAttempt] = useState(0)
+  const album = useAsync(() => api.album(id), [id, attempt])
   const [tracks, setTracks] = useState<Track[]>([])
   const { status, isPlaying, togglePlay, start, pending } = usePlayer()
 
@@ -44,7 +45,7 @@ export function AlbumPage({ id }: { id: string }) {
         </div>
       </>
     )
-  if (!album.data) return <Message title="Couldn't load this album" body={(album.error as Error)?.message} />
+  if (!album.data) return <ErrorState title="Couldn't load this album" error={album.error} onRetry={() => setAttempt((n) => n + 1)} />
   const a = album.data
   const isCurrent = status?.context?.uri === a.uri
 

@@ -21,7 +21,7 @@ function NavItem({ href, label, icon: Icon, active }: { href: string; label: str
 
 export function Sidebar() {
   const { path } = useLocation()
-  const { playlists } = useSession()
+  const { playlists, playlistsError, retryPlaylists } = useSession()
   return (
     <aside className="hidden w-[280px] shrink-0 flex-col gap-2 md:flex">
       <div className="rounded-lg bg-panel px-3 pb-3 pt-4">
@@ -37,7 +37,12 @@ export function Sidebar() {
           <PlaylistActions compact />
           {playlists && playlists.length > 0 && <div className="mx-2 my-2 h-px bg-white/[0.06]" />}
           {playlists?.map((p) => <PlaylistRow key={p.id} playlist={p} active={path === `/playlist/${p.id}`} />)}
-          {playlists === null && (
+          {playlists === null && playlistsError != null && (
+            <button type="button" onClick={retryPlaylists} className="w-full px-3 py-3 text-left text-sm text-dim hover:text-fg">
+              Couldn't load playlists. <span className="underline">Try again</span>
+            </button>
+          )}
+          {playlists === null && playlistsError == null && (
             <div className="space-y-2 p-1.5">
               {[0, 1, 2].map((i) => (
                 <div key={i} className="flex items-center gap-3">

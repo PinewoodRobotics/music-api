@@ -1,6 +1,7 @@
 import { ListMusic, Maximize2, MicVocal, Search } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { api } from '../lib/api'
+import { fitTitle } from '../lib/fitTitle'
 import { byline, idFromUri } from '../lib/format'
 import { navigate } from '../lib/router'
 import { Artwork } from '../components/Artwork'
@@ -10,11 +11,12 @@ import { Equalizer } from '../components/Equalizer'
 import { Link } from '../components/Link'
 import { CardGrid, MediaCard, Section } from '../components/MediaCard'
 import { Button } from '../components/Modal'
-import { creatorLine } from '../components/PlaylistRow'
+import { PlaylistByline } from '../components/PlaylistRow'
 import { usePlayer } from '../state/player'
 import { useSession } from '../state/session'
 import { useUI } from '../state/ui'
 import { CardsSkeleton } from '../components/Skeleton'
+import { ErrorState } from './Message'
 
 function Pill({ icon, label, onClick, active }: { icon: ReactNode; label: string; onClick: () => void; active?: boolean }) {
   return (
@@ -51,12 +53,12 @@ function Hero() {
               <Maximize2 className="size-8" />
             </span>
           </button>
-          <div className="min-w-0 flex-1 pb-1">
+          <div className="@container min-w-0 flex-1 pb-1 max-sm:w-full">
             <div className="flex items-center gap-2 text-sm font-medium text-white/80">
               <Equalizer playing={isPlaying} />
               {isPlaying ? `Playing on ${device}` : `Paused on ${device}`}
             </div>
-            <h1 className="mt-2 line-clamp-2 pb-[0.08em] font-display text-[clamp(2rem,5vw,4.5rem)] font-extrabold leading-[0.98] tracking-[-0.04em]">
+            <h1 style={fitTitle(track.name, 11)} className="mt-2 line-clamp-2 break-words pb-[0.08em] font-display font-extrabold leading-[0.98] tracking-[-0.04em]">
               {track.name}
             </h1>
             <p className="mt-2 truncate text-lg text-white/75">
@@ -100,7 +102,7 @@ function Hero() {
 }
 
 export function HomePage() {
-  const { playlists } = useSession()
+  const { playlists, playlistsError, retryPlaylists } = useSession()
   const { status, isPlaying, togglePlay, start, pending } = usePlayer()
   const sorted = [...(playlists ?? [])].sort((a, b) => (b.created ?? '').localeCompare(a.created ?? ''))
   return (
@@ -108,7 +110,9 @@ export function HomePage() {
       <Hero />
       <div className="px-3 max-sm:px-2">
         <Section title="Playlists">
-          {playlists === null ? (
+          {playlists === null && playlistsError != null ? (
+            <ErrorState title="Couldn't load playlists" error={playlistsError} onRetry={retryPlaylists} />
+          ) : playlists === null ? (
             <CardsSkeleton count={4} />
           ) : sorted.length === 0 ? (
             <EmptyPlaylists />
@@ -120,7 +124,7 @@ export function HomePage() {
                   <MediaCard
                     key={p.id}
                     title={p.name}
-                    subtitle={creatorLine(p)}
+                    subtitle={<PlaylistByline playlist={p} />}
                     artwork={p.artwork}
                     href={`/playlist/${p.id}`}
                     playing={current && isPlaying}

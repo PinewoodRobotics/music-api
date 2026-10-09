@@ -1,7 +1,7 @@
 import type { AppPlaylist, Lyrics, Queue, Status, Track } from '../lib/api'
 import fixtures from './fixtures.json'
 
-type Mode = 'full' | 'signedout' | 'writes'
+type Mode = 'full' | 'signedout' | 'writes' | 'down'
 type Call = { method: string; path: string; body: unknown }
 
 declare global {
@@ -48,7 +48,7 @@ const playlists: AppPlaylist[] = [
     artwork: tracks[1].artwork,
     total: 4,
     created_by: adam,
-    source_url: null,
+    source_url: 'https://music.apple.com/us/playlist/quiet-cad-hours/pl.u-abc',
     created: '2026-10-01T19:00:00Z',
     can_edit: true,
   },
@@ -328,7 +328,7 @@ class MockEventSource extends EventTarget {
 
 export function installMock(param: string | null) {
   const stored = sessionStorage.getItem('mock')
-  const mode: Mode = param === 'signedout' || param === 'writes' ? param : param !== null ? 'full' : ((stored as Mode) ?? 'full')
+  const mode: Mode = param === 'signedout' || param === 'writes' || param === 'down' ? param : param !== null ? 'full' : ((stored as Mode) ?? 'full')
   sessionStorage.setItem('mock', mode)
   window.__mockCalls = []
   const realFetch = window.fetch.bind(window)
@@ -342,8 +342,10 @@ export function installMock(param: string | null) {
     if (mode === 'writes' && (method === 'GET' || url.pathname === '/api/resolve')) return realFetch(input, init)
     const slow = url.pathname.endsWith('/import') || url.pathname === '/api/resolve'
     await new Promise((r) => setTimeout(r, slow ? (String(body.url ?? '').includes('apple') ? 3500 : 1500) : 120))
-    const [status, json] =
-      mode === 'signedout'
+    const down = mode === 'down' && method === 'GET' && /^\/api\/(search|app\/playlists|albums|artists|playlists)/.test(url.pathname)
+    const [status, json] = down
+      ? fail(502, 'Bad gateway')
+      : mode === 'signedout'
         ? fail(401, 'unauthorized')
         : mode === 'writes' && !url.pathname.startsWith('/api/app/')
           ? ok({ mocked: true })

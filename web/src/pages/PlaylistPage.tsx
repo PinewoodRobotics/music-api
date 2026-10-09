@@ -2,10 +2,9 @@ import { ListMusic, Pencil, Search, Shuffle, Trash2 } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import { api, ApiError, type AppPlaylist, type Track } from '../lib/api'
 import { formatLength, plural } from '../lib/format'
-import { sourceOfUrl } from '../lib/links'
 import { navigate } from '../lib/router'
 import { useAsync } from '../lib/useAsync'
-import { Avatar } from '../components/Avatar'
+import { Attribution } from '../components/Attribution'
 import { BigPlayButton, CollectionHeader, Dot } from '../components/CollectionHeader'
 import { IconButton } from '../components/IconButton'
 import { Button } from '../components/Modal'
@@ -14,9 +13,9 @@ import { usePlayer } from '../state/player'
 import { useSession } from '../state/session'
 import { useUI } from '../state/ui'
 import { HeaderSkeleton, RowsSkeleton } from '../components/Skeleton'
-import { Message } from './Message'
+import { ErrorState, Message } from './Message'
 
-function useAllItems(id: string) {
+function useAllItems(id: string, attempt: number) {
   const [items, setItems] = useState<Track[] | null>(null)
   const [error, setError] = useState<unknown>(null)
   useEffect(() => {
@@ -37,7 +36,7 @@ function useAllItems(id: string) {
     return () => {
       live = false
     }
-  }, [id])
+  }, [id, attempt])
   return { items, setItems, error }
 }
 
@@ -49,9 +48,11 @@ export function offsetFor(tracks: Track[], index: number): number | string {
 export function PlaylistPage({ id }: { id: string }) {
   const { playlists, upsertPlaylist } = useSession()
   const cached = playlists?.find((p) => p.id === id)
-  const meta = useAsync(() => api.playlist(id), [id])
+  const [attempt, setAttempt] = useState(0)
+  const retry = () => setAttempt((n) => n + 1)
+  const meta = useAsync(() => api.playlist(id), [id, attempt])
   const playlist: AppPlaylist | undefined = cached ?? meta.data
-  const { items, setItems, error } = useAllItems(id)
+  const { items, setItems, error } = useAllItems(id, attempt)
   const { status, isPlaying, togglePlay, start, pending } = usePlayer()
   const { openDialog } = useUI()
 
@@ -73,7 +74,7 @@ export function PlaylistPage({ id }: { id: string }) {
       )
     if (meta.error instanceof ApiError && meta.error.status === 404)
       return <Message title="Playlist not found" body="It may have been deleted." action={<Button onClick={() => navigate('/')}>Go home</Button>} />
-    return <Message title="Couldn't load this playlist" body={String((meta.error as Error)?.message ?? '')} />
+    return <ErrorState title="Couldn't load this playlist" error={meta.error} onRetry={retry} />
   }
 
   const isCurrent = status?.context?.uri === playlist.uri
@@ -94,21 +95,13 @@ export function PlaylistPage({ id }: { id: string }) {
         description={playlist.description}
         meta={
           <>
-            {creator && <Avatar person={creator} className="size-6 text-[11px]" />}
-            {creator && (
-              <span className="font-semibold">
-                {playlist.source_url ? 'Imported by ' : 'Created by '}
-                {creator.name}
-              </span>
-            )}
-            {playlist.source_url && (
-              <span>
-                from{' '}
-                <a href={playlist.source_url} target="_blank" rel="noreferrer" className="font-semibold hover:underline">
-                  {sourceOfUrl(playlist.source_url) ?? 'a link'}
-                </a>
-              </span>
-            )}
+            <Attribution
+              person={creator}
+              sourceUrl={playlist.source_url}
+              linkSource
+              className="font-semibold"
+              avatarClass="size-6 text-[11px]"
+            />
             {(creator || playlist.source_url) && <Dot />}
             <span>
               {plural(count, 'song')}
@@ -141,7 +134,7 @@ export function PlaylistPage({ id }: { id: string }) {
 
       <div className="relative px-4 pb-10 max-sm:px-2">
         {error ? (
-          <Message title="Couldn't load the songs" body={String((error as Error).message)} />
+          <ErrorState title="Couldn't load the songs" error={error} onRetry={retry} />
         ) : items === null ? (
           <RowsSkeleton numbered />
         ) : items.length === 0 ? (

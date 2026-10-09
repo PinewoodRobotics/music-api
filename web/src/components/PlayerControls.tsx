@@ -17,7 +17,7 @@ export function PlayButton({ size = 'md', className = '' }: { size?: 'sm' | 'md'
       disabled={!status}
       aria-label={isPlaying ? 'Pause' : 'Play'}
       title={isPlaying ? 'Pause (Space)' : 'Play (Space)'}
-      className={`grid ${dims} shrink-0 place-items-center rounded-full bg-fg text-base transition-transform hover:scale-105 active:scale-95 disabled:opacity-40 ${className}`}
+      className={`grid ${dims} shrink-0 place-items-center rounded-full bg-fg text-canvas transition-transform hover:scale-105 active:scale-95 disabled:opacity-40 ${className}`}
     >
       <Icon className={`${icon} fill-current ${isPlaying ? '' : 'translate-x-[1px]'}`} strokeWidth={0} />
     </button>

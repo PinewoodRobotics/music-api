@@ -123,7 +123,7 @@ export function TrackList({ tracks, onPlay, context, playlist, onRemoved, showAr
                 <div className={`truncate text-[15px] leading-tight ${current ? 'text-accent' : 'text-fg'}`}>{track.name}</div>
                 <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[13px] text-dim">
                   {track.explicit && (
-                    <span className="grid h-4 shrink-0 place-items-center rounded-[3px] bg-white/25 px-1 text-[9px] font-semibold text-base">
+                    <span className="grid h-4 shrink-0 place-items-center rounded-[3px] bg-white/25 px-1 text-[9px] font-semibold text-canvas">
                       E
                     </span>
                   )}

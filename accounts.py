@@ -263,10 +263,7 @@ class Playlists:
         uris = [t["uri"] for t in src["tracks"] if t["uri"]]
         if not uris:
             raise AccountError("none of those songs are on Spotify", 422)
-        where = "Apple Music" if src["source"] == "apple" else "Spotify"
-        pl = api.req("POST", "/me/playlists", body={
-            "name": (src["name"] or "Imported playlist")[:100], "public": False,
-            "description": f"Imported by {user.get('name')} from {where}: {src['url']}"[:300]})
+        pl = api.req("POST", "/me/playlists", body={"name": (src["name"] or "Imported playlist")[:100], "public": False})
         for i in range(0, len(uris), 100):
             api.req("POST", f"/playlists/{pl['id']}/items", body={"uris": uris[i:i + 100]})
         self._record(pl["id"], user, src["url"])

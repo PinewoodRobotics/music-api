@@ -20,7 +20,7 @@
   --font-sans: 'SF Pro Text', -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
   --font-display: 'SF Pro Display', -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', Roboto, sans-serif;
 
-  --color-base: #101013;
+  --color-canvas: #101013;
   --color-panel: #17171b;
   --color-raised: #212126;
   --color-hover: #2a2a30;
@@ -50,7 +50,7 @@
 @layer base {
   html,
   body {
-    background: var(--color-base);
+    background: var(--color-canvas);
     color: var(--color-fg);
     font-family: var(--font-sans);
     -webkit-font-smoothing: antialiased;
