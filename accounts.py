@@ -8,7 +8,6 @@ import hashlib
 import html
 import json
 import os
-import re
 import secrets
 import threading
 import time
@@ -16,9 +15,10 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+import links
+
 SLACK = "https://slack.com"
 SESSION_TTL = 30 * 86400
-IMPORT_LIMIT = 100
 ADMIN = {"id": "admin", "name": "@admin", "avatar": None, "admin": True, "kind": "token"}
 
 
@@ -149,27 +149,6 @@ class Sessions:
                 _write_json(self.path, self.sessions)
 
 
-def public_playlist_tracks(playlist_id):
-    """Name and track URIs of a public playlist, read from Spotify's embed page. The Web API refuses items of
-    playlists the logged-in account doesn't own, and the embed page only lists the first 100."""
-    req = urllib.request.Request(f"https://open.spotify.com/embed/playlist/{playlist_id}",
-                                 headers={"User-Agent": "Mozilla/5.0 (music-api)"})
-    try:
-        with urllib.request.urlopen(req, timeout=15) as r:
-            html = r.read().decode()
-    except urllib.error.HTTPError as e:
-        raise AccountError("Spotify doesn't have a public playlist at that link" if e.code == 404
-                           else f"Spotify embed: HTTP {e.code}", 404 if e.code == 404 else 502)
-    m = re.search(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', html, re.S)
-    try:
-        entity = json.loads(m.group(1))["props"]["pageProps"]["state"]["data"]["entity"]
-    except (AttributeError, KeyError, TypeError, ValueError):
-        raise AccountError("Couldn't read that playlist (is it public?)", 422)
-    uris = [t["uri"] for t in entity.get("trackList", [])
-            if t.get("uri", "").startswith(("spotify:track:", "spotify:episode:"))]
-    return entity.get("name") or "Imported playlist", uris
-
-
 class Playlists:
     """The playlists the web app shows: every playlist in the Spotify account except the hidden ones,
     tagged with who created or imported them here."""
@@ -238,22 +217,24 @@ class Playlists:
         self._record(pl["id"], user)
         return self._out(pl, user)
 
-    def import_public(self, api, user, url, to_uri):
-        uri = to_uri(url or "")
-        if not uri or not uri.startswith("spotify:playlist:"):
-            raise AccountError("paste a link to a Spotify playlist")
-        source_id = uri.rsplit(":", 1)[-1]
-        name, uris = public_playlist_tracks(source_id)
+    def import_link(self, api, user, url):
+        """Copy the songs behind a Spotify or Apple Music playlist/album link into a new playlist credited to `user`."""
+        src = links.resolve(api, url)
+        if src["kind"] == "track":
+            raise AccountError("that's a single song; paste a playlist or album link to import")
+        uris = [t["uri"] for t in src["tracks"] if t["uri"]]
         if not uris:
-            raise AccountError("that playlist has no tracks Spotify will share publicly", 422)
+            raise AccountError("none of those songs are on Spotify", 422)
+        where = "Apple Music" if src["source"] == "apple" else "Spotify"
         pl = api.req("POST", "/me/playlists", body={
-            "name": name[:100], "public": False,
-            "description": f"Imported by {user.get('name')} from open.spotify.com/playlist/{source_id}"[:300]})
+            "name": (src["name"] or "Imported playlist")[:100], "public": False,
+            "description": f"Imported by {user.get('name')} from {where}: {src['url']}"[:300]})
         for i in range(0, len(uris), 100):
             api.req("POST", f"/playlists/{pl['id']}/items", body={"uris": uris[i:i + 100]})
-        self._record(pl["id"], user, f"https://open.spotify.com/playlist/{source_id}")
-        return {"playlist": {**self._out(pl, user), "total": len(uris)}, "imported": len(uris), "total": None,
-                "truncated": len(uris) >= IMPORT_LIMIT}
+        self._record(pl["id"], user, src["url"])
+        return {"playlist": {**self._out(pl, user), "total": len(uris)}, "imported": len(uris), "total": src["total"],
+                "truncated": src["truncated"], "source": src["source"],
+                "unmatched": [{"name": t["name"], "artists": t["artists"]} for t in src["tracks"] if not t["uri"]]}
 
     def edit(self, api, user, playlist_id, b):
         self.check_edit(playlist_id, user)

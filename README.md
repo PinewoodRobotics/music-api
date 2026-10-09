@@ -106,7 +106,7 @@ The bot token is used for `users.info` (display names), `auth.test` (the workspa
 - `/music <query>` searches (Add to queue / Play buttons), `/music now`, `/music queue`, `/music play|pause|skip`, `/music help`.
   Pasting a Spotify link after `/music` works too. Skips, pauses and plays are announced in the channel with who did them.
 - Tracks queued from Slack are credited to that person, so the web app's Up Next shows "Added by".
-- Spotify track, album and playlist links shared in Slack unfurl with Add to queue / Play buttons.
+- Spotify and Apple Music song, album and playlist links shared in Slack (or after `/music`) unfurl with Add to queue / Play / Import as playlist buttons.
 - `/slack/*` requests are verified with the signing secret (v0 HMAC, 5 minute window) and only accepted from the workspace.
 
 ```yaml
@@ -125,6 +125,7 @@ features:
       should_escape: false
   unfurl_domains:
     - open.spotify.com
+    - music.apple.com
 oauth_config:
   redirect_urls:
     - https://music-api.pinewoodrobotics.org/auth/slack/callback

@@ -193,6 +193,99 @@ class Interactions(unittest.TestCase):
         self.assertEqual(bot.player.calls, [])
 
 
+APPLE_TRACK = {"source": "apple", "kind": "track", "name": "Song", "subtitle": "Artist", "artwork": "http://x/a.jpg",
+               "url": "https://music.apple.com/us/album/x/1?i=2", "spotify_uri": TRACK["uri"], "tracks": [],
+               "total": 1, "matched": 1, "truncated": False}
+APPLE_PL = {"source": "apple", "kind": "playlist", "name": "Mix", "subtitle": "by Ada", "artwork": None,
+            "url": "https://music.apple.com/us/playlist/mix/pl.1", "spotify_uri": None, "tracks": [],
+            "total": 92, "matched": 87, "truncated": False}
+
+
+def buttons(blocks):
+    return [(e["action_id"], e.get("value")) for b in blocks if b["type"] == "actions" for e in b["elements"]]
+
+
+class Links(unittest.TestCase):
+    def test_cards(self):
+        b = sb.link_blocks(APPLE_TRACK)
+        self.assertIn("Matched from Apple Music", json.dumps(b))
+        self.assertEqual(buttons(b), [("queue_add", TRACK["uri"]), ("play_uri", TRACK["uri"])])
+        b = sb.link_blocks(APPLE_PL)
+        self.assertEqual(b[1]["elements"][0]["text"], "92 songs · 87 on Spotify")
+        self.assertEqual(buttons(b), [("import_playlist", APPLE_PL["url"])])
+        album = dict(APPLE_PL, kind="album", spotify_uri="spotify:album:2noRn2Aes5aoNVsU6iWThc")
+        self.assertEqual([a for a, _ in buttons(sb.link_blocks(album))], ["play_uri", "import_playlist"])
+        sp = dict(APPLE_PL, source="spotify", spotify_uri="spotify:playlist:2noRn2Aes5aoNVsU6iWThc")
+        self.assertEqual([a for a, _ in buttons(sb.link_blocks(sp))], ["import_playlist", "play_uri"])
+        self.assertEqual(buttons(sb.link_blocks(dict(APPLE_TRACK, spotify_uri=None))), [])
+
+    def test_command_link_uses_resolver(self):
+        bot = make()
+        seen = []
+        bot.resolve = lambda u: seen.append(u) or APPLE_TRACK
+        bot.run_command("search", "https://music.apple.com/us/album/x/1?i=2", "U1", "ada", "http://r/1")
+        self.assertEqual(seen, ["https://music.apple.com/us/album/x/1?i=2"])
+        last = bot.sent[-1][1]
+        self.assertTrue(last["replace_original"])
+        self.assertEqual(buttons(last["blocks"])[0][0], "queue_add")
+
+    def test_command_link_error(self):
+        bot = make()
+
+        def boom(u):
+            raise ValueError("unsupported link")
+        bot.resolve = boom
+        bot.run_command("search", "https://music.apple.com/us/artist/x/1", "U1", "ada", "http://r/1")
+        self.assertIn("unsupported link", bot.sent[-1][1]["text"])
+
+    def test_unfurl_apple(self):
+        bot = make()
+        bot.resolve = lambda u: APPLE_PL
+        bot.on_event({"team_id": bot.team, "event_id": "E9", "event": {
+            "type": "link_shared", "unfurl_id": "U.1", "source": "composer",
+            "links": [{"url": APPLE_PL["url"]}]}}, {})
+        call = bot.sent[-1]
+        self.assertTrue(call[0].endswith("chat.unfurl"))
+        self.assertEqual((call[1]["unfurl_id"], call[1]["source"]), ("U.1", "composer"))
+        self.assertIn(APPLE_PL["url"], call[1]["unfurls"])
+
+    def interaction(self, **kw):
+        return {"type": "block_actions", "team": {"id": sb.DEFAULT_TEAM}, "user": {"id": "U1", "name": "ada"},
+                "response_url": "http://r/3", "container": {"is_ephemeral": True},
+                "message": {"blocks": sb.link_blocks(APPLE_PL)},
+                "actions": [{"action_id": "import_playlist", "value": APPLE_PL["url"], "block_id": "link"}], **kw}
+
+    def test_import(self):
+        bot = make()
+        calls = []
+
+        def importer(url, user):
+            calls.append((url, user))
+            return {"playlist": {"id": "PL1", "name": "Mix"}, "imported": 87, "total": 92,
+                    "unmatched": [{"name": "Gone", "artists": ["Z"]}]}
+        bot.importer = importer
+        bot.on_interaction(self.interaction())
+        self.assertEqual(calls, [(APPLE_PL["url"], {"id": "U1", "name": "Ada", "avatar": "http://a/av.png", "admin": False})])
+        final = [p for u, p in bot.sent if u == "http://r/3"][-1]
+        flat = json.dumps(final)
+        self.assertIn("Imported 87 of 92 songs", flat)
+        self.assertIn("https://music-api.pinewoodrobotics.org/playlist/PL1", flat)
+        self.assertIn("Gone - Z", flat)
+        self.assertTrue(final["replace_original"])
+        self.assertNotIn("button", json.dumps(final["blocks"]))
+
+    def test_import_failure_and_missing(self):
+        bot = make()
+        bot.on_interaction(self.interaction())
+        self.assertIn("isn't available", bot.sent[-1][1]["text"])
+
+        def fail(url, user):
+            raise RuntimeError("Apple said no")
+        bot.importer = fail
+        bot.on_interaction(self.interaction())
+        self.assertIn("Apple said no", bot.sent[-1][1]["text"])
+
+
 class Events(unittest.TestCase):
     def test_challenge(self):
         self.assertEqual(make().on_event({"type": "url_verification", "challenge": "abc"}, {}), (200, {"challenge": "abc"}))

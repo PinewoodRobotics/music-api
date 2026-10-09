@@ -113,7 +113,8 @@ Tokens have no scopes: any token can do everything, including creating and revok
 | `GET` | `/api/app/me` | Who's signed in: {id, name, avatar, admin, kind: slack\|token}. API tokens show as @admin |
 | `GET` | `/api/app/playlists` | Playlists shown in the web app (the account's own are hidden), newest first, with created_by, source_url, can_edit |
 | `POST` | `/api/app/playlists` | Body {name, description?}: create a playlist credited to you |
-| `POST` | `/api/app/playlists/import` | Body {url}: copy a public Spotify playlist (first 100 tracks) → {playlist, imported, total, truncated} |
+| `POST` | `/api/app/playlists/import` | Body {url}: copy a Spotify or Apple Music playlist/album into a new playlist → {playlist, imported, total, truncated, source, unmatched: [{name, artists}]} |
+| `POST` | `/api/resolve` | Body {url}: a Spotify or Apple Music song/album/playlist link → {source, kind, name, subtitle, artwork, url, spotify_uri, tracks: [{name, artists, album, duration_ms, artwork, uri}], total, matched, truncated} |
 | `GET` | `/api/app/playlists/{id}` | One app playlist |
 | `PATCH` | `/api/app/playlists/{id}` | Body {name?, description?} (creator or admin) |
 | `DELETE` | `/api/app/playlists/{id}` | Delete (creator or admin) |

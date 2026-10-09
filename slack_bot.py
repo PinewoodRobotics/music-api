@@ -9,6 +9,7 @@ import hmac
 import json
 import os
 import queue as queuelib
+import re
 import sys
 import threading
 import time
@@ -24,6 +25,7 @@ API = "https://slack.com/api"
 DEFAULT_TEAM = "T09DBUR4YER"
 DEFAULT_CHANNEL = "C0C80T1DNBF"
 DEFAULT_REMOTE = "https://music-api.pinewoodrobotics.org/"
+LINK_RX = re.compile(r"https?://(?:open\.spotify\.com|music\.apple\.com)/\S+|spotify:(?:track|album|playlist):\w{22}")
 MAX_AGE = 300
 UPDATE_EVERY = 5
 SETTLE = 3
@@ -35,7 +37,7 @@ HELP = ("*Robotics Music* (`/music`) controls the lab speakers\n"
         "`/music <song, artist or album>` search and add to the queue\n"
         "`/music now`  what's playing   `/music queue`  what's next\n"
         "`/music play`  `/music pause`  `/music skip`\n"
-        "Paste an open.spotify.com link after `/music` to queue or play it.")
+        "Paste a Spotify or Apple Music song, album or playlist link after `/music` to queue, play or import it.")
 
 
 def log(msg):
@@ -204,21 +206,44 @@ def queue_blocks(upcoming):
     return [{"type": "section", "text": {"type": "mrkdwn", "text": "*Up next*\n" + "\n".join(lines)}}]
 
 
-def unfurl_blocks(it):
-    kind = it.get("type")
-    if kind == "track":
-        return track_row(it, "q:" + it["uri"])
-    return collection_row(it)
+def link_blocks(r):
+    kind, apple = r.get("kind"), r.get("source") == "apple"
+    name = esc(r.get("name") or "Untitled")
+    head = f"*<{r['url']}|{name}>*" if r.get("url") else f"*{name}*"
+    sec = {"type": "section", "text": {"type": "mrkdwn", "text": head + (f"\n{esc(r['subtitle'])}" if r.get("subtitle") else "")}}
+    if r.get("artwork"):
+        sec["accessory"] = {"type": "image", "image_url": r["artwork"], "alt_text": r.get("name") or "cover"}
+    notes = []
+    if kind == "track" and apple:
+        notes.append("Matched from Apple Music" if r.get("spotify_uri") else "Not found on Spotify")
+    elif kind != "track" and r.get("total"):
+        n = f"{r['total']} songs"
+        if r.get("matched") is not None:
+            n += f" · {r['matched']} on Spotify"
+        notes.append(n + (" (first batch only)" if r.get("truncated") else ""))
+    uri = r.get("spotify_uri")
+    btns = []
+    if kind == "track" and uri:
+        btns = [button("Add to queue", "queue_add", uri, "primary"), button("Play", "play_uri", uri)]
+    elif kind == "album":
+        btns = ([button("Play", "play_uri", uri, "primary")] if uri else []) + [button("Import as playlist", "import_playlist", r["url"])]
+    elif kind == "playlist":
+        btns = [button("Import as playlist", "import_playlist", r["url"], "primary")] + \
+               ([button("Play", "play_uri", uri)] if uri and not apple else [])
+    blocks = [sec] + ([context(*notes)] if notes else [])
+    return blocks + ([{"type": "actions", "block_id": "link", "elements": btns}] if btns else [])
 
 
 # ---------- the bot ----------
 
 class SlackBot:
     def __init__(self, slack, player, api, credits, signing_secret, channel=DEFAULT_CHANNEL, team=DEFAULT_TEAM,
-                 remote=DEFAULT_REMOTE):
+                 remote=DEFAULT_REMOTE, resolve=None, importer=None):
         self.slack, self.player, self.api, self.credits = slack, player, api, credits
         self.token = slack.bot_token
         self.secret, self.channel, self.team, self.remote = signing_secret, channel, team, remote
+        self.resolve = resolve or self.spotify_resolve
+        self.importer = importer
         self.users, self.users_lock = {}, threading.Lock()
         self.warned = set()
         self.pause_until = 0
@@ -358,12 +383,28 @@ class SlackBot:
                 return self.ephemeral(url, queue_blocks(up), "Up next")
             if verb == "play":
                 arg = arg.strip()
-            if spotify_url(arg and _try_uri(arg)):
-                it = self.lookup(_try_uri(arg))
-                return self.ephemeral(url, unfurl_blocks(it), it.get("name") or "Spotify")
+            link = LINK_RX.search(arg)
+            if link:
+                return self.link_card(link.group(0), url)
             self.ephemeral(url, *self.search(arg))
         except (PlayerError, SpotifyError) as e:
             self.respond(url, {"response_type": "ephemeral", "text": f"Couldn't do that: {e}"})
+
+    def link_card(self, link, url):
+        self.respond(url, {"response_type": "ephemeral", "text": "Looking that up..."})
+        try:
+            r = self.resolve(link)
+        except Exception as e:  # noqa: BLE001 - LinkError, Spotify and network errors all end up as a message
+            return self.respond(url, {"response_type": "ephemeral", "replace_original": True, "text": f"Couldn't use that link: {e}"})
+        self.ephemeral(url, link_blocks(r), r.get("name") or "Link", replace=True)
+
+    def spotify_resolve(self, link):
+        uri = to_uri(link)
+        it = self.lookup(uri)
+        return {"source": "spotify", "kind": it["type"], "name": it["name"], "url": spotify_url(uri),
+                "subtitle": " · ".join(x for x in (artists_of(it) or it.get("owner"), (it.get("album") or {}).get("name")) if x),
+                "artwork": it.get("artwork"), "spotify_uri": uri, "tracks": [], "total": None, "matched": None,
+                "truncated": False}
 
     def now_card(self):
         st = self.player.status(fresh=True)
@@ -436,13 +477,35 @@ class SlackBot:
                 self.player.play({"uri": uri})
                 self.say(f"<@{uid}> started {spotify_url(uri) or uri}")
                 self.done(p, a, ephemeral, "Playing", "Playing now")
+            elif act == "import_playlist":
+                self.import_playlist(p, a, ephemeral, a.get("value"))
         except (PlayerError, SpotifyError, ValueError) as e:
             self.respond(url, {"response_type": "ephemeral", "replace_original": False, "text": f"Couldn't do that: {e}"})
+
+    def import_playlist(self, p, a, ephemeral, link):
+        url, uid = p.get("response_url"), p["user"]["id"]
+        if not self.importer:
+            return self.respond(url, {"response_type": "ephemeral", "replace_original": False, "text": "Importing isn't available."})
+        self.respond(url, {"response_type": "ephemeral", "replace_original": False, "text": "Importing... this can take a minute."})
+        u = self.user(uid, p["user"].get("name"))
+        try:
+            res = self.importer(link, {"id": uid, "name": u["name"], "avatar": u["avatar"], "admin": False})
+        except Exception as e:  # noqa: BLE001 - LinkError, AccountError, Spotify and network errors become a message
+            return self.respond(url, {"response_type": "ephemeral", "replace_original": False, "text": f"Couldn't import that: {e}"})
+        pl = res["playlist"]
+        total = res.get("total") or res.get("imported")
+        text = (f"Imported {res.get('imported')} of {total} songs as "
+                f"<{self.remote.rstrip('/')}/playlist/{pl['id']}|{esc(pl.get('name'))}>")
+        miss = [f"{esc(m.get('name'))} - {esc(', '.join(m.get('artists') or []))}" for m in res.get("unmatched") or []][:5]
+        if miss:
+            text += "\nNot on Spotify: " + "; ".join(miss)
+        self.done(p, a, ephemeral, "Imported", text)
+        self.say(f"<@{uid}> imported a playlist: <{self.remote.rstrip('/')}/playlist/{pl['id']}|{esc(pl.get('name'))}>")
 
     def done(self, p, a, ephemeral, label, text):
         url = p.get("response_url")
         if not ephemeral:
-            return self.respond(url, {"response_type": "ephemeral", "replace_original": False, "text": f"{label}."})
+            return self.respond(url, {"response_type": "ephemeral", "replace_original": False, "text": text})
         blocks = (p.get("message") or {}).get("blocks")
         if not blocks:
             return self.respond(url, {"response_type": "ephemeral", "replace_original": True, "text": f"{label}."})
@@ -471,11 +534,9 @@ class SlackBot:
         unfurls = {}
         for link in e.get("links", [])[:5]:
             try:
-                uri = to_uri(link.get("url"))
-                if uri.split(":")[1] in ("track", "album", "playlist"):
-                    unfurls[link["url"]] = {"blocks": unfurl_blocks(self.lookup(uri))}
-            except (ValueError, SpotifyError, PlayerError):
-                continue
+                unfurls[link["url"]] = {"blocks": link_blocks(self.resolve(link["url"]))}
+            except Exception as err:  # noqa: BLE001 - unsupported links (LinkError) and lookup failures just don't unfurl
+                self._warn(("unfurl", str(err)[:60]), f"unfurl {link.get('url')}: {err}")
         if unfurls:
             args = {"unfurl_id": e["unfurl_id"], "source": e.get("source")} if e.get("unfurl_id") else \
                 {"channel": e.get("channel"), "ts": e.get("message_ts")}
@@ -567,14 +628,8 @@ class SlackBot:
             cur["sig"] = self.sig(cur)
 
 
-def _try_uri(s):
-    try:
-        return to_uri(s)
-    except ValueError:
-        return None
-
-
-def from_env(slack, player, api, credits):
+def from_env(slack, player, api, credits, resolve=None, importer=None):
     return SlackBot(slack, player, api, credits, os.environ.get("SLACK_SIGNING_SECRET"),
                     os.environ.get("SLACK_MUSIC_CHANNEL") or DEFAULT_CHANNEL,
-                    slack.team_id or DEFAULT_TEAM, os.environ.get("SLACK_REMOTE_URL") or DEFAULT_REMOTE)
+                    slack.team_id or DEFAULT_TEAM, os.environ.get("SLACK_REMOTE_URL") or DEFAULT_REMOTE,
+                    resolve, importer)

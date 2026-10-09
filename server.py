@@ -23,6 +23,7 @@ import mimetypes
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import extras
+import links
 import slack_bot
 from accounts import ADMIN, AccountError, Playlists, QueueCredits, Sessions, Slack
 from extras import ExtrasError
@@ -39,7 +40,7 @@ credits = QueueCredits()
 _req = threading.local()  # per-request context: the token entry and the user that authenticated it
 WEB_DIST = os.path.join(HERE, "web", "dist")
 SESSION_COOKIE = "mapi_session"
-APP_ERRORS = (SpotifyError, PlayerError, ExtrasError, TokenError, AccountError)
+APP_ERRORS = (SpotifyError, PlayerError, ExtrasError, TokenError, AccountError, links.LinkError)
 # Slack users (non-admins) get playback, search and the app's playlists, not the account's private data or admin routes
 ADMIN_ONLY = re.compile(r"^/(api$|api/(tokens|spotify|backend/soloist|library|recent|top|me$|devices/transfer)"
                         r"|auth(/login|/paste|/logout|$))")
@@ -508,8 +509,16 @@ def _app_create(q, b):
 
 @route("POST", "/api/app/playlists/import")
 def _app_import(q, b):
-    """Body {url}: copy a public Spotify playlist (first 100 tracks) → {playlist, imported, total, truncated}"""
-    return app_playlists.import_public(api, _req.user, b.get("url"), to_uri)
+    """Body {url}: copy a Spotify or Apple Music playlist/album into a new playlist
+    → {playlist, imported, total, truncated, source, unmatched: [{name, artists}]}"""
+    return app_playlists.import_link(api, _req.user, b.get("url"))
+
+
+@route("POST", "/api/resolve")
+def _resolve(q, b):
+    """Body {url}: a Spotify or Apple Music song/album/playlist link → {source, kind, name, subtitle, artwork, url,
+    spotify_uri, tracks: [{name, artists, album, duration_ms, artwork, uri}], total, matched, truncated}"""
+    return links.resolve(api, b.get("url"))
 
 
 @route("GET", "/api/app/playlists/{id}")
@@ -974,7 +983,8 @@ def main():
         soloist.on_event = player.on_soloist_event
         threading.Thread(target=soloist.loop, daemon=True).start()
     threading.Thread(target=player.loop, daemon=True).start()
-    bot = slack_bot.from_env(slack, player, api, credits)
+    bot = slack_bot.from_env(slack, player, api, credits, resolve=lambda url: links.resolve(api, url),
+                             importer=lambda url, user: app_playlists.import_link(api, user, url))
     bot.start()
 
     Handler.require_token = require
