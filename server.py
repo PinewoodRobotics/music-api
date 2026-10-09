@@ -25,7 +25,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import extras
 import links
 import slack_bot
-from accounts import ADMIN, AccountError, Playlists, QueueCredits, Sessions, Slack
+from accounts import ADMIN, AccountError, PersonalTokens, Playlists, QueueCredits, Sessions, Slack
 from extras import ExtrasError
 from player import Player, PlayerError
 from soloist import Soloist, SoloistError, default_data_dir as soloist_data_dir
@@ -35,7 +35,7 @@ from tokens import TokenError, Tokens
 HERE = os.path.dirname(os.path.abspath(__file__))
 SEARCH_TYPES = "track,album,artist,playlist,show,episode,audiobook"
 
-auth = api = player = soloist = tokens = slack = sessions = app_playlists = bot = None
+auth = api = player = soloist = tokens = slack = sessions = app_playlists = bot = personal = None
 credits = QueueCredits()
 _req = threading.local()  # per-request context: the token entry and the user that authenticated it
 WEB_DIST = os.path.join(HERE, "web", "dist")
@@ -495,6 +495,22 @@ def _app_me(q, b):
     return _req.user
 
 
+@route("GET", "/api/app/token")
+def _app_token(q, b):
+    """Your personal API token {token, created, docs}: same permissions as you; created on first request"""
+    if _req.user.get("kind") != "slack":
+        raise AccountError("you're already using an API token", 400)
+    return {**personal.get(_req.user), "docs": (Handler.canonical_url or "").rstrip("/") + "/llms.txt"}
+
+
+@route("POST", "/api/app/token/regenerate")
+def _app_token_regenerate(q, b):
+    """Replace your personal API token; the old one stops working immediately"""
+    if _req.user.get("kind") != "slack":
+        raise AccountError("you're already using an API token", 400)
+    return {**personal.get(_req.user, regenerate=True), "docs": (Handler.canonical_url or "").rstrip("/") + "/llms.txt"}
+
+
 @route("GET", "/api/app/playlists")
 def _app_playlists(q, b):
     """Playlists shown in the web app (the account's own are hidden), newest first, with created_by, source_url, can_edit"""
@@ -703,7 +719,8 @@ class Handler(BaseHTTPRequestHandler):
     def _authorized(self, query):
         given = self.headers.get("Authorization", "").removeprefix("Bearer ").strip() or query.get("token", "")
         _req.token = tokens.check(given)
-        _req.user = ADMIN if _req.token is not None else sessions.get(self._session_id())
+        _req.bearer = bool(given)
+        _req.user = ADMIN if _req.token is not None else personal.check(given) or sessions.get(self._session_id())
         if _req.user:
             return True
         if not (tokens.enabled or self.require_token):
@@ -714,7 +731,7 @@ class Handler(BaseHTTPRequestHandler):
     def _forbidden(self, method, path):
         if _req.user.get("admin"):
             return None
-        if _req.token is None and method not in ("GET", "HEAD"):
+        if not _req.bearer and method not in ("GET", "HEAD"):
             origin = self.headers.get("Origin")
             if origin and urllib.parse.urlparse(origin).netloc != self.headers.get("Host"):
                 return "cross-site request refused"
@@ -795,6 +812,7 @@ class Handler(BaseHTTPRequestHandler):
                 if query.get("error"):
                     return self._result(("redirect", "/"))
                 user, next_path = slack.finish(query.get("code"), query.get("state"))
+                personal.refresh(user)
                 return self._send(302, b"", "text/plain", [("Location", next_path),
                                                            self._set_cookie(sessions.create(user), 30 * 86400)])
             if path == "/auth/slack/logout" and method == "POST":
@@ -953,7 +971,7 @@ def main():
                     help="connect backend: Connect device name or id to control (default: whichever is active)")
     a = ap.parse_args()
 
-    global auth, api, player, soloist, tokens, slack, sessions, app_playlists, bot
+    global auth, api, player, soloist, tokens, slack, sessions, app_playlists, bot, personal
     os.makedirs(a.data_dir, mode=0o700, exist_ok=True)
     auth = Auth(a.data_dir, a.client_id, a.redirect_uri or f"http://127.0.0.1:{a.port}/auth/callback")
     api = WebAPI(auth)
@@ -967,6 +985,7 @@ def main():
 
     tokens = Tokens(a.data_dir, a.token)
     sessions = Sessions(a.data_dir)
+    personal = PersonalTokens(a.data_dir)
     app_playlists = Playlists(a.data_dir, a.hidden_playlists)
     slack = Slack(os.environ.get("SLACK_CLIENT_ID"), os.environ.get("SLACK_CLIENT_SECRET"), os.environ.get("SLACK_BOT_TOKEN"),
                   a.slack_redirect_uri or f"http://127.0.0.1:{a.port}/auth/slack/callback",

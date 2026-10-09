@@ -417,6 +417,9 @@ These power the web app. With an API token you act as `@admin`.
 #### GET /api/app/me
 `{"id": "U0123" | "admin", "name": "Adam", "avatar": url | null, "admin": bool, "kind": "slack" | "token"}`. `name` is the Slack display name.
 
+#### GET /api/app/token, POST /api/app/token/regenerate
+Your personal API token: `{"token": "mapu_...", "created", "docs": "https://music.pinewoodrobotics.org/llms.txt"}`. One per Slack user, created on first request, and it acts as you (same permissions; queued songs and playlists are credited to you). `regenerate` replaces it and the old one stops working immediately. Only for Slack sign-ins (400 when you're using an admin API token).
+
 #### GET /api/app/playlists
 The playlists the web app shows: every playlist in the account except the hidden ones (configured on the server), playlists created in the app first (newest first).
 ```json

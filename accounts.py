@@ -111,6 +111,44 @@ class Slack:
         return {"id": uid, "name": name, "avatar": avatar, "admin": bool(admin), "kind": "slack"}, pending[0]
 
 
+class PersonalTokens:
+    """One API token per Slack user, acting with that user's permissions. Stored in plaintext (mode 600) so the
+    web app can show it again; regenerating replaces it."""
+
+    def __init__(self, data_dir):
+        self.path = os.path.join(data_dir, "personal-tokens.json")
+        self.lock = threading.Lock()
+        self.by_user = _read_json(self.path, {})
+        self.by_hash = {Sessions._key(e["token"]): uid for uid, e in self.by_user.items()}
+
+    def get(self, user, regenerate=False):
+        uid = user["id"]
+        with self.lock:
+            e = self.by_user.get(uid)
+            if not e or regenerate:
+                if e:
+                    self.by_hash.pop(Sessions._key(e["token"]), None)
+                e = {"token": "mapu_" + secrets.token_urlsafe(32), "created": int(time.time())}
+                self.by_hash[Sessions._key(e["token"])] = uid
+            e["user"] = user
+            self.by_user[uid] = e
+            _write_json(self.path, self.by_user)
+            return {"token": e["token"], "created": e["created"]}
+
+    def refresh(self, user):
+        with self.lock:
+            if user["id"] in self.by_user:
+                self.by_user[user["id"]]["user"] = user
+                _write_json(self.path, self.by_user)
+
+    def check(self, given):
+        if not given:
+            return None
+        with self.lock:
+            uid = self.by_hash.get(Sessions._key(given))
+            return self.by_user[uid]["user"] if uid else None
+
+
 class Sessions:
     def __init__(self, data_dir):
         self.path = os.path.join(data_dir, "sessions.json")

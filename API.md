@@ -111,6 +111,8 @@ Tokens have no scopes: any token can do everything, including creating and revok
 |---|---|---|
 | `POST` | `/api/playpause` | Toggle play/pause |
 | `GET` | `/api/app/me` | Who's signed in: {id, name, avatar, admin, kind: slack\|token}. API tokens show as @admin |
+| `GET` | `/api/app/token` | Your personal API token {token, created, docs}: same permissions as you; created on first request |
+| `POST` | `/api/app/token/regenerate` | Replace your personal API token; the old one stops working immediately |
 | `GET` | `/api/app/playlists` | Playlists shown in the web app (the account's own are hidden), newest first, with created_by, source_url, can_edit |
 | `POST` | `/api/app/playlists` | Body {name, description?}: create a playlist credited to you |
 | `POST` | `/api/app/playlists/import` | Body {url}: copy a Spotify or Apple Music playlist/album into a new playlist → {playlist, imported, total, truncated, source, unmatched: [{name, artists}]} |
