@@ -6,12 +6,14 @@ import unittest
 import urllib.parse
 
 import slack_bot as sb
-from accounts import QueueCredits
+from accounts import Credits
 
 SECRET = "shh"
 TRACK = {"uri": "spotify:track:5W3cjX2J3tjhG8zb6u0qHn", "type": "track", "name": "One <More> Time",
          "artists": [{"name": "Daft Punk"}], "album": {"name": "Discovery"}, "duration_ms": 320357,
          "artwork": "https://i.scdn.co/x"}
+ADA = {"id": "U1", "name": "Ada", "avatar": "http://a/av.png"}
+ADA_Q = {"by": ADA, "how": "queued"}
 TRACK2 = dict(TRACK, uri="spotify:track:0DiWol3AO6WpXZgp0goxAV", name="Other")
 
 
@@ -56,7 +58,7 @@ class FakeApi:
 
 
 def make():
-    bot = sb.SlackBot(FakeSlack(), FakePlayer(), FakeApi(), QueueCredits(), SECRET)
+    bot = sb.SlackBot(FakeSlack(), FakePlayer(), FakeApi(), Credits(), SECRET)
     bot.sent = []
     bot.http = lambda url, payload, token=None: (bot.sent.append((url, payload)) or (200, {"ok": True, "ts": "1.1"}, {}))
     bot.fetch_user = lambda uid: {"display_name": "Ada", "image_72": "http://a/av.png"}
@@ -89,7 +91,7 @@ class Signature(unittest.TestCase):
         self.assertIn("Robotics Music", res["text"])
 
     def test_disabled_without_secret(self):
-        bot = sb.SlackBot(FakeSlack(), FakePlayer(), FakeApi(), QueueCredits(), None)
+        bot = sb.SlackBot(FakeSlack(), FakePlayer(), FakeApi(), Credits(), None)
         self.assertEqual(bot.handle("/slack/events", {}, b"")[0], 503)
 
 
@@ -136,7 +138,7 @@ class Commands(unittest.TestCase):
 
 class Blocks(unittest.TestCase):
     def test_now_playing(self):
-        blocks = sb.now_playing_blocks(TRACK, True, {"name": "Ada", "avatar": "http://a"}, [{"item": TRACK2}], "https://r/")
+        blocks = sb.now_playing_blocks(TRACK, True, ADA_Q, [{"item": TRACK2}], "https://r/")
         self.assertEqual(blocks[0]["accessory"]["image_url"], TRACK["artwork"])
         self.assertIn("<https://open.spotify.com/track/5W3cjX2J3tjhG8zb6u0qHn|One &lt;More&gt; Time>", blocks[0]["text"]["text"])
         self.assertIn("Daft Punk · Discovery", blocks[0]["text"]["text"])
@@ -149,8 +151,17 @@ class Blocks(unittest.TestCase):
         self.assertEqual(acts[3]["url"], "https://r/")
         self.assertEqual(sb.now_playing_blocks(TRACK, False)[-1]["elements"][0]["text"]["text"], "Play")
 
+    def test_credit_wording_and_mentions(self):
+        started = {"by": ADA, "how": "started"}
+        self.assertIn("Started by Ada", json.dumps(sb.now_playing_blocks(TRACK, True, started)))
+        self.assertIn("Started by <@U1>", json.dumps(sb.now_playing_blocks(TRACK, True, started, mention=True)))
+        self.assertIn("started by Ada", json.dumps(sb.played_blocks(TRACK, started)))
+        self.assertIn("queued up by <@U1>", json.dumps(sb.played_blocks(TRACK, ADA_Q, mention=True)))
+        admin = {"by": {"id": "admin", "name": "@admin"}, "how": "queued"}
+        self.assertIn("Queued up by @admin", json.dumps(sb.now_playing_blocks(TRACK, True, admin, mention=True)))
+
     def test_played_has_no_buttons(self):
-        self.assertNotIn("button", json.dumps(sb.played_blocks(TRACK, {"name": "Ada"})))
+        self.assertNotIn("button", json.dumps(sb.played_blocks(TRACK, ADA_Q)))
 
     def test_duration(self):
         self.assertEqual(sb.duration(320357), "5:20")
@@ -167,11 +178,23 @@ class Interactions(unittest.TestCase):
         bot = make()
         bot.on_interaction(self.payload({"action_id": "queue_add", "value": TRACK["uri"]}))
         self.assertEqual(bot.player.calls, [("enqueue", {"uri": TRACK["uri"]})])
-        self.assertEqual(bot.credits.lookup(TRACK["uri"]), {"name": "Ada", "avatar": "http://a/av.png"})
+        self.assertEqual(bot.credits.by_uri[TRACK["uri"]][0][0], ADA)
         sent = bot.sent[-1][1]
         self.assertTrue(sent["replace_original"])
         self.assertIn("Queued by Ada", json.dumps(sent["blocks"]))
         self.assertNotIn("button", json.dumps(sent["blocks"][1]))
+
+    def test_play_uri_credits_start_and_mentions_in_note(self):
+        bot = make()
+        bot.on_interaction(self.payload({"action_id": "play_uri", "value": "spotify:album:2noRn2Aes5aoNVsU6iWThc"}))
+        self.assertEqual(bot.credits.started["uris"], ["spotify:album:2noRn2Aes5aoNVsU6iWThc"])
+        self.assertEqual(bot.credits.started["user"], ADA)
+        posts = [p for u, p in bot.sent if u.endswith("chat.postMessage")]
+        upd = [p for u, p in bot.sent if u.endswith("chat.update")]
+        self.assertNotIn("<@", json.dumps(posts))
+        self.assertIn("*Ada* started", posts[0]["text"])
+        self.assertIn("<@U1> started", upd[0]["text"])
+        self.assertEqual(upd[0]["ts"], "1.1")
 
     def test_non_ephemeral_never_replaces(self):
         bot = make()
@@ -312,7 +335,7 @@ class Feed(unittest.TestCase):
     def run_feed(self, bot, steps):
         t = getattr(bot, "clock", 1000.0)
         for state, track, dt in steps:
-            bot.st = {"state": state, "track": track}
+            bot.st = {"state": state, "track": track, "credit": getattr(bot, "credit", None)}
             t += dt
             bot.tick(t)
         bot.clock = t
@@ -323,16 +346,51 @@ class Feed(unittest.TestCase):
 
     def test_posts_once_then_rotates_with_played(self):
         bot = make()
-        bot.credits.add([TRACK["uri"]], {"name": "Ada", "avatar": None})
+        bot.credit = ADA_Q
         self.run_feed(bot, [("playing", TRACK, 0), ("playing", TRACK, 4), ("playing", TRACK, 1)])
         self.assertEqual(len(self.calls(bot, "chat.postMessage")), 1)
         self.assertIn("Queued up by Ada", json.dumps(self.calls(bot, "chat.postMessage")[0]["blocks"]))
+        bot.credit = None
         self.run_feed(bot, [("playing", TRACK2, 0), ("playing", TRACK2, 4)])
         upd, posts = self.calls(bot, "chat.update"), self.calls(bot, "chat.postMessage")
         self.assertEqual(len(posts), 2)
-        self.assertEqual(len(upd), 1)
-        self.assertNotIn("button", json.dumps(upd[0]["blocks"]))
+        self.assertEqual(len(upd), 2)
+        self.assertIn("Queued up by <@U1>", json.dumps(upd[0]["blocks"]))
+        self.assertIn("queued up by <@U1>", json.dumps(upd[1]["blocks"]))
+        self.assertNotIn("button", json.dumps(upd[1]["blocks"]))
+        self.assertNotIn("<@", json.dumps(posts))
         self.assertEqual([u.rsplit("/", 1)[1] for u, _ in bot.sent][-2:], ["chat.update", "chat.postMessage"])
+
+    def test_mention_edit_follows_post_and_refresh_keeps_it(self):
+        bot = make()
+        bot.credit = {"by": ADA, "how": "started"}
+        self.run_feed(bot, [("playing", TRACK, 0), ("playing", TRACK, 4)])
+        self.assertEqual([u.rsplit("/", 1)[1] for u, _ in bot.sent], ["chat.postMessage", "chat.update"])
+        self.assertIn("Started by <@U1>", json.dumps(self.calls(bot, "chat.update")[0]["blocks"]))
+        self.run_feed(bot, [("paused", TRACK, 6)])
+        self.assertIn("Started by <@U1>", json.dumps(self.calls(bot, "chat.update")[-1]["blocks"]))
+
+    def test_admin_credit_stays_plain(self):
+        bot = make()
+        bot.credit = {"by": {"id": "admin", "name": "@admin", "avatar": None}, "how": "queued"}
+        self.run_feed(bot, [("playing", TRACK, 0), ("playing", TRACK, 4), ("paused", TRACK, 6)])
+        self.assertEqual(len(self.calls(bot, "chat.postMessage")), 1)
+        self.assertNotIn("<@", json.dumps(bot.sent))
+        self.assertIn("@admin", json.dumps(self.calls(bot, "chat.update")[-1]["blocks"]))
+
+    def test_old_state_file_without_credit_loads(self):
+        import os, tempfile
+        path = os.path.join(tempfile.mkdtemp(), "feed.json")
+        old = {"uri": TRACK["uri"], "track": TRACK, "playing": True, "upcoming": [], "by": {"name": "Ada", "avatar": None}, "ts": "1.1"}
+        def load():
+            with open(path, "w") as f:
+                json.dump(old, f)
+            return sb.SlackBot(FakeSlack(), FakePlayer(), FakeApi(), Credits(), SECRET, state_path=path)
+        self.assertEqual(load().cur["credit"]["how"], "queued")
+        del old["by"]
+        bot = load()
+        self.assertIsNone(bot.cur.get("credit"))
+        self.assertTrue(bot.rendered(bot.cur))
 
     def test_restart_adopts_or_collapses_previous_message(self):
         import os, tempfile
@@ -342,14 +400,14 @@ class Feed(unittest.TestCase):
         self.run_feed(bot, [("playing", TRACK, 0), ("playing", TRACK, 4)])
         self.assertEqual(len(self.calls(bot, "chat.postMessage")), 1)
 
-        again = sb.SlackBot(FakeSlack(), FakePlayer(), FakeApi(), QueueCredits(), SECRET, state_path=path)
+        again = sb.SlackBot(FakeSlack(), FakePlayer(), FakeApi(), Credits(), SECRET, state_path=path)
         again.sent = []
         again.http = bot.http = lambda url, payload, token=None: (again.sent.append((url, payload)) or (200, {"ok": True, "ts": "2.2"}, {}))
         self.run_feed(again, [("playing", TRACK, 0), ("playing", TRACK, 4), ("paused", TRACK, 6)])
         self.assertEqual(self.calls(again, "chat.postMessage"), [])
         self.assertTrue(all(p["ts"] == "1.1" for p in self.calls(again, "chat.update")))
 
-        third = sb.SlackBot(FakeSlack(), FakePlayer(), FakeApi(), QueueCredits(), SECRET, state_path=path)
+        third = sb.SlackBot(FakeSlack(), FakePlayer(), FakeApi(), Credits(), SECRET, state_path=path)
         third.sent = []
         third.http = lambda url, payload, token=None: (third.sent.append((url, payload)) or (200, {"ok": True, "ts": "3.3"}, {}))
         self.run_feed(third, [("playing", TRACK2, 0), ("playing", TRACK2, 4)])
@@ -406,17 +464,6 @@ class Feed(unittest.TestCase):
         finally:
             sb.time.sleep = orig
         self.assertEqual(bot.sleeps, [2.0])
-
-
-class Credits(unittest.TestCase):
-    def test_lookup_consume(self):
-        c = QueueCredits()
-        c.add(["u"], {"name": "A", "avatar": None})
-        c.add(["u"], {"name": "B", "avatar": None})
-        self.assertEqual(c.lookup("u")["name"], "A")
-        self.assertEqual(c.lookup("u", consume=True)["name"], "A")
-        self.assertEqual(c.lookup("u", consume=True)["name"], "B")
-        self.assertIsNone(c.lookup("u"))
 
 
 if __name__ == "__main__":

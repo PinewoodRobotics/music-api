@@ -55,7 +55,8 @@ def entity(e):
 
 
 class Player:
-    def __init__(self, backend, api, soloist=None, device=None):
+    def __init__(self, backend, api, soloist=None, device=None, credit_fn=None):
+        self.credit_fn = credit_fn
         self.backend = backend          # "soloist" | "connect"
         self.api = api
         self.soloist = soloist
@@ -145,6 +146,10 @@ class Player:
     # ---------- status ----------
 
     def status(self, fresh=False):
+        st = self._status(fresh)
+        return {**st, "credit": self.credit_fn(st) if self.credit_fn else None}
+
+    def _status(self, fresh=False):
         if self.backend == "soloist":
             return self._soloist_status()
         now = time.time()

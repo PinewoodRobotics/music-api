@@ -25,7 +25,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import extras
 import links
 import slack_bot
-from accounts import ADMIN, AccountError, PersonalTokens, Playlists, QueueCredits, Sessions, Slack
+from accounts import ADMIN, AccountError, Credits, PersonalTokens, Playlists, Sessions, Slack
 from extras import ExtrasError
 from player import Player, PlayerError
 from soloist import Soloist, SoloistError, default_data_dir as soloist_data_dir
@@ -36,7 +36,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 SEARCH_TYPES = "track,album,artist,playlist,show,episode,audiobook"
 
 auth = api = player = soloist = tokens = slack = sessions = app_playlists = bot = personal = None
-credits = QueueCredits()
+credits = None
 _req = threading.local()  # per-request context: the token entry and the user that authenticated it
 WEB_DIST = os.path.join(HERE, "web", "dist")
 SESSION_COOKIE = "mapi_session"
@@ -171,13 +171,19 @@ def _set_sys_output(q, b):
 def _play(q, b):
     """Play/resume. Body optional: {uri} (track, album, playlist, artist, episode, show; URI or open.spotify.com link),
     {uris: [...]}, {context, offset: index|uri}, {position: seconds | position_ms}"""
-    return player.play(b)
+    res = player.play(b)
+    named = [to_uri(b[k]) for k in ("uri", "context") if b.get(k)] + [to_uri(u, "track") for u in b.get("uris", [])]
+    if named:
+        credits.start(named, _req.user)
+    return res
 
 
 @route("POST", "/api/play-url")
 def _play_url(q, b):
     """Body {url}: play any open.spotify.com / spotify: link"""
-    return player.play({"uri": b["url"]})
+    res = player.play({"uri": b["url"]})
+    credits.start([to_uri(b["url"])], _req.user)
+    return res
 
 
 @route("POST", "/api/pause")
@@ -236,7 +242,7 @@ def _repeat(q, b):
 
 @route("GET", "/api/queue")
 def _queue(q, b):
-    """Upcoming (and, with Soloist, previous) queue entries, each with added_by {name, avatar} when someone
+    """Upcoming (and, with Soloist, previous) queue entries, each with added_by {id, name, avatar} when someone
     queued it through this API. ?limit=n (Soloist: up to 80)"""
     return credits.annotate(player.queue(int(q["limit"]) if q.get("limit") else None))
 
@@ -484,7 +490,9 @@ def _playlist_play(q, b, id):
     """Body {offset?: index|uri, shuffle?: bool}"""
     if b.get("shuffle") is not None:
         player.shuffle({"enabled": b["shuffle"]})
-    return player.play({"context": f"spotify:playlist:{id}", "offset": b.get("offset")})
+    res = player.play({"context": f"spotify:playlist:{id}", "offset": b.get("offset")})
+    credits.start([f"spotify:playlist:{id}"], _req.user)
+    return res
 
 
 # ---------- web app: accounts and shared playlists ----------
@@ -971,7 +979,7 @@ def main():
                     help="connect backend: Connect device name or id to control (default: whichever is active)")
     a = ap.parse_args()
 
-    global auth, api, player, soloist, tokens, slack, sessions, app_playlists, bot, personal
+    global auth, api, player, soloist, tokens, slack, sessions, app_playlists, bot, personal, credits
     os.makedirs(a.data_dir, mode=0o700, exist_ok=True)
     auth = Auth(a.data_dir, a.client_id, a.redirect_uri or f"http://127.0.0.1:{a.port}/auth/callback")
     api = WebAPI(auth)
@@ -1005,7 +1013,8 @@ def main():
             soloist, backend = None, "connect"
         else:
             backend = "soloist"
-    player = Player(backend, api, soloist, a.device)
+    credits = Credits(os.path.join(a.data_dir, "credits.json"))
+    player = Player(backend, api, soloist, a.device, credits.for_status)
     if soloist:
         soloist.on_event = player.on_soloist_event
         threading.Thread(target=soloist.loop, daemon=True).start()

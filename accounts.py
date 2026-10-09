@@ -290,34 +290,67 @@ class Playlists:
         return {"removed": f"spotify:playlist:{playlist_id}"}
 
 
-class QueueCredits:
-    """Remembers who queued which track through the API, so Up Next can say so."""
+class Credits:
+    """Remembers who queued or started what through the API, so the status, Up Next and the Slack feed can say so.
+    Persisted to `path` (None = in memory)."""
 
-    def __init__(self):
+    QUEUE_TTL = 6 * 3600
+    START_TTL = 12 * 3600
+
+    def __init__(self, path=None):
+        self.path = path
         self.lock = threading.Lock()
-        self.by_uri = {}  # uri -> [(user, time)] oldest first
+        d = _read_json(path, {}) if path else {}
+        self.by_uri = {u: [tuple(e) for e in es] for u, es in (d.get("queued") or {}).items()}  # uri -> [(user, time)] oldest first
+        self.started = d.get("started")
+        self.current = d.get("current")  # {uri, credit}
+
+    @staticmethod
+    def _user(user):
+        return {k: user.get(k) for k in ("id", "name", "avatar")}
+
+    def _save(self):
+        if self.path:
+            _write_json(self.path, {"queued": self.by_uri, "started": self.started, "current": self.current})
 
     def add(self, uris, user):
         now = time.time()
         with self.lock:
             for u in uris:
-                self.by_uri.setdefault(u, []).append(({k: user.get(k) for k in ("name", "avatar")}, now))
-            cutoff = now - 6 * 3600
+                self.by_uri.setdefault(u, []).append((self._user(user), now))
+            cutoff = now - self.QUEUE_TTL
             self.by_uri = {u: [e for e in es if e[1] > cutoff] for u, es in self.by_uri.items()}
             self.by_uri = {u: es for u, es in self.by_uri.items() if es}
+            self._save()
 
-    def lookup(self, uri, consume=False):
-        """Who queued `uri` (oldest pending credit), as {name, avatar}, or None."""
+    def start(self, uris, user):
         with self.lock:
-            es = self.by_uri.get(uri)
-            if not es or time.time() - es[0][1] > 6 * 3600:
-                return None
-            user = es[0][0]
-            if consume:
-                es.pop(0)
-                if not es:
-                    del self.by_uri[uri]
-            return user
+            self.started = {"uris": [u for u in uris if u], "user": self._user(user), "time": time.time()}
+            self._save()
+
+    def for_status(self, st):
+        uri = ((st or {}).get("track") or {}).get("uri")
+        if not uri:
+            return None
+        with self.lock:
+            if self.current and self.current["uri"] == uri:
+                return self.current["credit"]
+            now = time.time()
+            credit = None
+            es = [e for e in self.by_uri.get(uri, []) if now - e[1] <= self.QUEUE_TTL]
+            if es:
+                credit = {"by": es.pop(0)[0], "how": "queued"}
+            s = self.started
+            if not credit and s and now - s["time"] <= self.START_TTL \
+                    and (uri in s["uris"] or ((st.get("context") or {}).get("uri") or "\0") in s["uris"]):
+                credit = {"by": s["user"], "how": "started"}
+            if es:
+                self.by_uri[uri] = es
+            else:
+                self.by_uri.pop(uri, None)
+            self.current = {"uri": uri, "credit": credit}
+            self._save()
+            return credit
 
     def annotate(self, queue):
         with self.lock:
