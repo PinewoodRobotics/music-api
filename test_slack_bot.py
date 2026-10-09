@@ -140,7 +140,7 @@ class Blocks(unittest.TestCase):
         self.assertIn("<https://open.spotify.com/track/5W3cjX2J3tjhG8zb6u0qHn|One &lt;More&gt; Time>", blocks[0]["text"]["text"])
         self.assertIn("Daft Punk · Discovery", blocks[0]["text"]["text"])
         flat = json.dumps(blocks)
-        self.assertIn("Queued by Ada", flat)
+        self.assertIn("Queued up by Ada", flat)
         self.assertIn("Up next: Other", flat)
         acts = blocks[-1]["elements"]
         self.assertEqual([a["action_id"] for a in acts], ["playpause", "skip", "listen_along", "open_remote"])
@@ -325,7 +325,7 @@ class Feed(unittest.TestCase):
         bot.credits.add([TRACK["uri"]], {"name": "Ada", "avatar": None})
         self.run_feed(bot, [("playing", TRACK, 0), ("playing", TRACK, 4), ("playing", TRACK, 1)])
         self.assertEqual(len(self.calls(bot, "chat.postMessage")), 1)
-        self.assertIn("Queued by Ada", json.dumps(self.calls(bot, "chat.postMessage")[0]["blocks"]))
+        self.assertIn("Queued up by Ada", json.dumps(self.calls(bot, "chat.postMessage")[0]["blocks"]))
         self.run_feed(bot, [("playing", TRACK2, 0), ("playing", TRACK2, 4)])
         upd, posts = self.calls(bot, "chat.update"), self.calls(bot, "chat.postMessage")
         self.assertEqual(len(posts), 2)

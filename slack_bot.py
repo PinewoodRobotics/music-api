@@ -140,7 +140,7 @@ def upcoming_line(upcoming, n=3):
 def now_playing_blocks(t, playing, queued_by=None, upcoming=None, remote=DEFAULT_REMOTE, block_id="feed"):
     blocks = [card(t)]
     if queued_by and queued_by.get("name"):
-        blocks.append(avatar_context(queued_by, f"Queued by {esc(queued_by['name'])}"))
+        blocks.append(avatar_context(queued_by, f"Queued up by {esc(queued_by['name'])}"))
     line = upcoming_line(upcoming)
     if line:
         blocks.append(context(line))
@@ -381,6 +381,10 @@ class SlackBot:
             self.users[uid] = (u, now)
         return u
 
+    def name_of(self, uid):
+        """Display name as plain text: channel notes credit people without pinging them."""
+        return f"*{esc(self.user(uid)['name'])}*"
+
     # ---------- commands ----------
 
     def on_command(self, form):
@@ -457,7 +461,7 @@ class SlackBot:
         """Do play/pause/skip for a Slack user; skips get a note in the channel."""
         if verb == "skip":
             self.player.next()
-            self.say(f"<@{uid}> skipped")
+            self.say(f"{self.name_of(uid)} skipped")
             return "Skipped."
         if verb == "pause":
             self.player.pause()
@@ -497,7 +501,7 @@ class SlackBot:
             elif act == "play_uri":
                 uri = to_uri(a.get("value"))
                 self.player.play({"uri": uri})
-                self.say(f"<@{uid}> started {spotify_url(uri) or uri}")
+                self.say(f"{self.name_of(uid)} started {spotify_url(uri) or uri}")
                 self.done(p, a, ephemeral, "Playing", "Playing now")
             elif act == "import_playlist":
                 self.import_playlist(p, a, ephemeral, a.get("value"))
@@ -522,7 +526,7 @@ class SlackBot:
         if miss:
             text += "\nNot on Spotify: " + "; ".join(miss)
         self.done(p, a, ephemeral, "Imported", text)
-        self.say(f"<@{uid}> imported a playlist: <{self.remote.rstrip('/')}/playlist/{pl['id']}|{esc(pl.get('name'))}>")
+        self.say(f"{self.name_of(uid)} imported a playlist: <{self.remote.rstrip('/')}/playlist/{pl['id']}|{esc(pl.get('name'))}>")
 
     def done(self, p, a, ephemeral, label, text):
         url = p.get("response_url")
