@@ -116,7 +116,8 @@ class Commands(unittest.TestCase):
         self.assertEqual(bot.player.calls, ["next"])
         post = [p for u, p in bot.sent if u.endswith("chat.postMessage")][0]
         self.assertEqual(post["channel"], sb.DEFAULT_CHANNEL)
-        self.assertIn("<@U1> skipped", post["text"])
+        self.assertIn("*Ada* skipped", post["text"])
+        self.assertNotIn("<@", post["text"])
         self.assertTrue(any(u == "http://r/1" for u, _ in bot.sent))
 
     def test_search_blocks(self):
