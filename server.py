@@ -26,11 +26,16 @@ from extras import ExtrasError
 from player import Player, PlayerError
 from soloist import Soloist, SoloistError, default_data_dir as soloist_data_dir
 from spotify import Auth, SpotifyError, WebAPI, item, page, to_uri
+from tokens import TokenError, Tokens
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SEARCH_TYPES = "track,album,artist,playlist,show,episode,audiobook"
 
-auth = api = player = soloist = None
+auth = api = player = soloist = tokens = None
+_req = threading.local()  # per-request context (the token entry that authenticated it)
+DOC_FILES = {"/llms.txt": ("llms.txt", "text/plain"), "/llms-full.txt": ("llms-full.txt", "text/plain"),
+             "/LLMS.md": ("llms-full.txt", "text/markdown"), "/API.md": ("API.md", "text/markdown"),
+             "/README.md": ("README.md", "text/markdown")}
 
 
 # ---------- HTTP routing ----------
@@ -538,6 +543,26 @@ def _me(q, b):
             "artwork": (me.get("images") or [{}])[0].get("url")}
 
 
+# ---------- API tokens ----------
+
+@route("GET", "/api/tokens")
+def _tokens(q, b):
+    """All API tokens (no secrets): id, name, prefix, created, last_used, current"""
+    return tokens.list(getattr(_req, "token", None))
+
+
+@route("POST", "/api/tokens")
+def _create_token(q, b):
+    """Body {name?}: create a token. The response is the only time the token itself is shown"""
+    return tokens.create(b.get("name"))
+
+
+@route("DELETE", "/api/tokens/{id}")
+def _revoke_token(q, b, id):
+    """Revoke a token immediately (any token may revoke any other, or itself; never the last one)"""
+    return tokens.revoke(id)
+
+
 # ---------- Web API login (OAuth Authorization Code + PKCE) ----------
 
 LOGIN_PAGE = """<!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">
@@ -572,7 +597,7 @@ def _done_page(st):
 
 class Handler(BaseHTTPRequestHandler):
     server_version = "MusicAPI/2.0"
-    token = None
+    require_token = False  # --public or listening beyond localhost
 
     def log_message(self, fmt, *args):
         if not self.path.startswith("/api/events"):
@@ -592,10 +617,11 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _authorized(self, query):
-        if not self.token:
+        given = self.headers.get("Authorization", "").removeprefix("Bearer ").strip() or query.get("token", "")
+        _req.token = tokens.check(given)
+        if _req.token is not None:
             return True
-        given = self.headers.get("Authorization", "").removeprefix("Bearer ") or query.get("token", "")
-        return hmac.compare_digest(given.encode(), self.token.encode())
+        return not (tokens.enabled or self.require_token)
 
     def do_OPTIONS(self):
         self.send_response(204)
@@ -621,6 +647,13 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/" and method == "GET":
             with open(os.path.join(HERE, "index.html"), "rb") as f:
                 return self._send(200, f.read(), "text/html; charset=utf-8")
+        if path in DOC_FILES and method == "GET":
+            name, ctype = DOC_FILES[path]
+            try:
+                with open(os.path.join(HERE, name), "rb") as f:
+                    return self._send(200, f.read(), ctype + "; charset=utf-8")
+            except FileNotFoundError:
+                return self._send(404, {"error": "not found"})
         try:
             if path == "/auth/callback" and method == "GET":  # protected by the PKCE state instead of the token
                 return self._result(_done_page(auth.finish(query.get("code"), query.get("state"),
@@ -663,7 +696,7 @@ class Handler(BaseHTTPRequestHandler):
                 q = {k: v for k, v in query.items() if k != "token"}
                 return self._send(200, {"result": api.req(method, "/" + path[len("/api/spotify/"):], q,
                                                           body if self.headers.get("Content-Length") else None)})
-        except (SpotifyError, PlayerError, ExtrasError) as e:
+        except (SpotifyError, PlayerError, ExtrasError, TokenError) as e:
             return self._send(e.status, {"error": str(e)})
         except (KeyError, ValueError, TypeError) as e:
             return self._send(400, {"error": f"bad request: {e}"})
@@ -679,7 +712,7 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 params = {k: urllib.parse.unquote(v) for k, v in mt.groupdict().items()}
                 return self._result(fn(query, body, **params))
-            except (SpotifyError, PlayerError, ExtrasError) as e:
+            except (SpotifyError, PlayerError, ExtrasError, TokenError) as e:
                 return self._send(e.status, {"error": str(e)})
             except (KeyError, ValueError, TypeError) as e:
                 return self._send(400, {"error": f"bad request: {e}"})
@@ -735,7 +768,8 @@ def main():
     ap.add_argument("--port", type=int, default=8765)
     ap.add_argument("--token", default=os.environ.get("MUSIC_API_TOKEN"), help="require Bearer token / ?token=")
     ap.add_argument("--public", action="store_true",
-                    help="require a token even on localhost (for tunnels); stored in <data-dir>/token, created if missing")
+                    help="require a token even on localhost (for tunnels). Tokens live in <data-dir>/api-tokens.json; "
+                         "if there are none, <data-dir>/token is imported, or a new token is written there")
     ap.add_argument("--data-dir", default=os.environ.get("MUSIC_API_DATA_DIR") or default_data_dir())
     ap.add_argument("--client-id", default=os.environ.get("SPOTIFY_CLIENT_ID"),
                     help="Spotify app Client ID (developer.spotify.com/dashboard); remembered after first login")
@@ -749,7 +783,7 @@ def main():
                     help="connect backend: Connect device name or id to control (default: whichever is active)")
     a = ap.parse_args()
 
-    global auth, api, player, soloist
+    global auth, api, player, soloist, tokens
     os.makedirs(a.data_dir, mode=0o700, exist_ok=True)
     auth = Auth(a.data_dir, a.client_id, a.redirect_uri or f"http://127.0.0.1:{a.port}/auth/callback")
     api = WebAPI(auth)
@@ -761,15 +795,13 @@ def main():
         print("Logged in. Scopes:", st["scope"])
         return
 
-    if a.public and not a.token:
-        token_file = os.path.join(a.data_dir, "token")
-        if not os.path.exists(token_file):
-            with open(os.open(token_file, os.O_WRONLY | os.O_CREAT, 0o600), "w") as f:
-                f.write(secrets.token_urlsafe(32))
-        with open(token_file) as f:
-            a.token = f.read().strip()
-    if a.host not in ("127.0.0.1", "localhost", "::1") and not a.token:
-        ap.error("--token is required when listening beyond localhost")
+    tokens = Tokens(a.data_dir, a.token)
+    require = a.public or a.host not in ("127.0.0.1", "localhost", "::1")
+    boot = tokens.bootstrap(require)
+    if boot == "imported":
+        print(f"Imported {tokens.legacy_path} as an API token", flush=True)
+    elif boot == "generated":
+        print(f"Generated an API token in {tokens.legacy_path}", flush=True)
 
     backend = a.backend
     if backend != "connect":
@@ -785,7 +817,7 @@ def main():
         threading.Thread(target=soloist.loop, daemon=True).start()
     threading.Thread(target=player.loop, daemon=True).start()
 
-    Handler.token = a.token
+    Handler.require_token = require
     srv = ThreadingHTTPServer((a.host, a.port), Handler)
     srv.daemon_threads = True
     print(f"Music API v2 on http://{a.host}:{a.port}/  backend={backend}  web-api={'logged in' if auth.logged_in else 'not logged in (open /auth/login)'}",
