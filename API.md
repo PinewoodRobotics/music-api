@@ -32,7 +32,7 @@ Path `{id}`s are bare 22-character Spotify IDs. `uri`/`uris`/`context` fields ta
 
 | Method | Path | Notes |
 |---|---|---|
-| `GET` | `/api/queue` | Upcoming (and, with Soloist, previous) queue entries. ?limit=n (Soloist: up to 80) |
+| `GET` | `/api/queue` | Upcoming (and, with Soloist, previous) queue entries, each with added_by {name, avatar} when someone queued it through this API. ?limit=n (Soloist: up to 80) |
 | `POST` | `/api/queue` | Body {uri} \| {uris: [...]}: add to the end of the queue |
 | `GET` | `/api/devices` | Spotify Connect devices on the account (plus the local Soloist device) |
 | `POST` | `/api/devices/transfer` | Body {device: name\|id\|"soloist", play?: bool}: move playback to a device |
@@ -110,6 +110,13 @@ Tokens have no scopes: any token can do everything, including creating and revok
 | Method | Path | Notes |
 |---|---|---|
 | `POST` | `/api/playpause` | Toggle play/pause |
+| `GET` | `/api/app/me` | Who's signed in: {id, name, avatar, admin, kind: slack\|token}. API tokens show as @admin |
+| `GET` | `/api/app/playlists` | Playlists shown in the web app (the account's own are hidden), newest first, with created_by, source_url, can_edit |
+| `POST` | `/api/app/playlists` | Body {name, description?}: create a playlist credited to you |
+| `POST` | `/api/app/playlists/import` | Body {url}: copy a public Spotify playlist (first 100 tracks) → {playlist, imported, total, truncated} |
+| `GET` | `/api/app/playlists/{id}` | One app playlist |
+| `PATCH` | `/api/app/playlists/{id}` | Body {name?, description?} (creator or admin) |
+| `DELETE` | `/api/app/playlists/{id}` | Delete (creator or admin) |
 | `GET` | `/api` | This list as JSON: a bare array of `{method, path, doc}` (no `result` envelope) |
 | `GET` | `/api/events` | Server-sent events: `status` (every 1 s with Soloist, 2 s with connect, while anyone listens), `track`, `queue` (Soloist only), `sleep`, `error`. Use `?token=` with `EventSource` |
 | `ANY` | `/api/spotify/{path}` | Raw Spotify Web API passthrough with your login, e.g. `GET /api/spotify/me/player/devices` |

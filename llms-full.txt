@@ -34,7 +34,8 @@ or, where headers can't be set (browser `EventSource`, `<img src>`, links), as a
 
 A token is required for everything except:
 
-- `GET /` (web remote page)
+- `GET /` and any other non-`/api` page (the web app; it shows a Slack sign-in screen when needed)
+- `GET /auth/slack/login`, `GET /auth/slack/callback`, `POST /auth/slack/logout` (Sign in with Slack)
 - `GET /llms.txt`, `GET /llms-full.txt`, `GET /LLMS.md`, `GET /API.md`, `GET /README.md`
 - `GET /auth/callback` (protected by the OAuth PKCE state instead)
 - `OPTIONS` (CORS preflight)
@@ -42,6 +43,8 @@ A token is required for everything except:
 The public server runs with `--public`, so a token is required even for requests from localhost. Missing or wrong token: `401 {"error": "unauthorized"}`.
 
 There are no scopes: every token can do everything, including creating and revoking other tokens. See "Tokens" in section 3.
+
+The web app instead uses a session cookie from Sign in with Slack (pinewoodrobotics workspace only). Sessions belong to a person: non-admin sessions get `403 {"error": "admins only"}` on tokens, the Spotify login, `/api/spotify/*`, `/api/library/*`, `/api/recent`, `/api/top`, `/api/me`, `/api/devices/transfer`, the raw `GET/POST /api/playlists` list, and hidden playlists. API tokens act as the user **@admin** and can do everything. `GET /api/app/me` says who you are.
 
 Do not confuse the API token with the Spotify Web API login. They are separate. The server holds one Spotify login (the account whose music this is); you never send Spotify credentials. If the Spotify login is missing or expired, Web API endpoints fail with 412 and an error text that mentions `/auth/login` (see section 7). A 401 always means a missing or wrong API token.
 
@@ -264,6 +267,7 @@ Cancel the timer (restores volume if a fade had started). Returns the sleep stat
 
 - connect backend: `{"current": <item>, "upcoming": [{"uid": null, "source": null, "item": <item>}], "previous": []}`.
 - Soloist backend: `{"upcoming": [...], "previous": [...]}`, each `{"uid", "source", "item"}` where `source` is `context`, `queue` or `autoplay`; up to 80 upcoming.
+- Upcoming entries also carry `added_by`: `{"name", "avatar"}` of whoever queued that track through this API in the last 6 hours, else null.
 
 #### POST /api/queue
 Body `{uri}` or `{uris: [...]}`: add tracks or episodes to the end of the user queue (bare IDs are treated as tracks). Albums and playlists can't be queued; play them, or queue their tracks one by one. Returns `{"added": [uris]}`.
@@ -404,6 +408,31 @@ Recently played tracks. `?limit=` (max 50) `&before=` or `&after=` (unix millise
 
 #### GET /api/me
 The logged-in Spotify user: `{"id", "name", "uri", "artwork"}`.
+
+### Web app (accounts and shared playlists)
+
+These power the web app. With an API token you act as `@admin`.
+
+#### GET /api/app/me
+`{"id": "U0123" | "admin", "name": "Adam", "avatar": url | null, "admin": bool, "kind": "slack" | "token"}`. `name` is the Slack display name.
+
+#### GET /api/app/playlists
+The playlists the web app shows: every playlist in the account except the hidden ones (configured on the server), playlists created in the app first (newest first).
+```json
+[{"id": "...", "uri": "spotify:playlist:...", "name": "Lab bangers", "description": "", "artwork": "https://...", "total": 42,
+  "created_by": {"id": "U0123", "name": "Adam", "avatar": "https://..."}, "source_url": "https://open.spotify.com/playlist/..." ,
+  "created": "2026-10-09T20:41:00Z", "can_edit": true}]
+```
+`created_by`, `source_url` and `created` are null for playlists not made through the app. `source_url` is set for imports.
+
+#### POST /api/app/playlists
+Body `{name, description?}`. Creates a private playlist on the account, credited to you. Returns the playlist object.
+
+#### POST /api/app/playlists/import
+Body `{url}`: an open.spotify.com playlist link or `spotify:playlist:` URI of a **public** playlist. Copies its tracks into a new playlist credited to you. Returns `{"playlist": {...}, "imported": 100, "total": null, "truncated": true}`. Only the first 100 tracks can be read (Spotify exposes no more for playlists the account doesn't own), and the source's real length is unknown, so `truncated` just means the cap was hit. 404 if Spotify has no public playlist there.
+
+#### GET /api/app/playlists/{id}, PATCH /api/app/playlists/{id}, DELETE /api/app/playlists/{id}
+One playlist; `PATCH` body `{name?, description?}`; `DELETE` removes it. Changing or deleting needs `can_edit` (whoever created it, or an admin), else 403. Use `/api/playlists/{id}/items` to list, add and remove tracks, and `/api/playlists/{id}/play` to play.
 
 ### Tokens
 

@@ -9,8 +9,8 @@ through the Web API against any Spotify Connect device. Search, library and play
 Visit http://127.0.0.1:8765/ for the web remote, or GET /api for the endpoint list.
 """
 import argparse
-import hmac
 import html
+import http.cookies
 import json
 import os
 import queue as queuelib
@@ -19,9 +19,11 @@ import secrets
 import sys
 import threading
 import urllib.parse
+import mimetypes
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import extras
+from accounts import ADMIN, AccountError, Playlists, QueueCredits, Sessions, Slack
 from extras import ExtrasError
 from player import Player, PlayerError
 from soloist import Soloist, SoloistError, default_data_dir as soloist_data_dir
@@ -31,8 +33,16 @@ from tokens import TokenError, Tokens
 HERE = os.path.dirname(os.path.abspath(__file__))
 SEARCH_TYPES = "track,album,artist,playlist,show,episode,audiobook"
 
-auth = api = player = soloist = tokens = None
-_req = threading.local()  # per-request context (the token entry that authenticated it)
+auth = api = player = soloist = tokens = slack = sessions = app_playlists = None
+credits = QueueCredits()
+_req = threading.local()  # per-request context: the token entry and the user that authenticated it
+WEB_DIST = os.path.join(HERE, "web", "dist")
+SESSION_COOKIE = "mapi_session"
+APP_ERRORS = (SpotifyError, PlayerError, ExtrasError, TokenError, AccountError)
+# Slack users (non-admins) get playback, search and the app's playlists, not the account's private data or admin routes
+ADMIN_ONLY = re.compile(r"^/(api$|api/(tokens|spotify|backend/soloist|library|recent|top|me$|devices/transfer)"
+                        r"|auth(/login|/paste|/logout|$))")
+ADMIN_ONLY_METHODS = {("GET", "/api/playlists"), ("POST", "/api/playlists"), ("POST", "/api/system/outputs")}
 DOC_FILES = {"/llms.txt": ("llms.txt", "text/plain"), "/llms-full.txt": ("llms-full.txt", "text/plain"),
              "/LLMS.md": ("llms-full.txt", "text/markdown"), "/API.md": ("API.md", "text/markdown"),
              "/README.md": ("README.md", "text/markdown")}
@@ -224,14 +234,17 @@ def _repeat(q, b):
 
 @route("GET", "/api/queue")
 def _queue(q, b):
-    """Upcoming (and, with Soloist, previous) queue entries. ?limit=n (Soloist: up to 80)"""
-    return player.queue(int(q["limit"]) if q.get("limit") else None)
+    """Upcoming (and, with Soloist, previous) queue entries, each with added_by {name, avatar} when someone
+    queued it through this API. ?limit=n (Soloist: up to 80)"""
+    return credits.annotate(player.queue(int(q["limit"]) if q.get("limit") else None))
 
 
 @route("POST", "/api/queue")
 def _enqueue(q, b):
     """Body {uri} | {uris: [...]}: add to the end of the queue"""
-    return player.enqueue(b)
+    res = player.enqueue(b)
+    credits.add(res["added"], _req.user)
+    return res
 
 
 @route("GET", "/api/devices")
@@ -472,6 +485,50 @@ def _playlist_play(q, b, id):
     return player.play({"context": f"spotify:playlist:{id}", "offset": b.get("offset")})
 
 
+# ---------- web app: accounts and shared playlists ----------
+
+@route("GET", "/api/app/me")
+def _app_me(q, b):
+    """Who's signed in: {id, name, avatar, admin, kind: slack|token}. API tokens show as @admin"""
+    return _req.user
+
+
+@route("GET", "/api/app/playlists")
+def _app_playlists(q, b):
+    """Playlists shown in the web app (the account's own are hidden), newest first, with created_by, source_url, can_edit"""
+    return app_playlists.list(api, _req.user)
+
+
+@route("POST", "/api/app/playlists")
+def _app_create(q, b):
+    """Body {name, description?}: create a playlist credited to you"""
+    return app_playlists.create(api, _req.user, b.get("name"), b.get("description") or "")
+
+
+@route("POST", "/api/app/playlists/import")
+def _app_import(q, b):
+    """Body {url}: copy a public Spotify playlist (first 100 tracks) → {playlist, imported, total, truncated}"""
+    return app_playlists.import_public(api, _req.user, b.get("url"), to_uri)
+
+
+@route("GET", "/api/app/playlists/{id}")
+def _app_playlist(q, b, id):
+    """One app playlist"""
+    return app_playlists.get(api, id, _req.user)
+
+
+@route("PATCH", "/api/app/playlists/{id}")
+def _app_edit(q, b, id):
+    """Body {name?, description?} (creator or admin)"""
+    return app_playlists.edit(api, _req.user, id, b)
+
+
+@route("DELETE", "/api/app/playlists/{id}")
+def _app_delete(q, b, id):
+    """Delete (creator or admin)"""
+    return app_playlists.delete(api, _req.user, id)
+
+
 # ---------- library & listening history ----------
 
 LIBRARY = {"tracks": ("/me/tracks", "track"), "albums": ("/me/albums", "album"),
@@ -587,6 +644,12 @@ def _login_page(q):
     return ("html", LOGIN_PAGE.format(url=html.escape(url), redirect=html.escape(auth.redirect_uri), tq=html.escape(tq)))
 
 
+def _error_page(msg):
+    return ("<!doctype html><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'>"
+            "<title>Sign-in failed</title><body style='font:16px system-ui;margin:2rem;background:#121212;color:#eee'>"
+            f"<h1>Couldn't sign you in</h1><p>{html.escape(msg)}</p><p><a style='color:#1db954' href='/'>Back</a></p>")
+
+
 def _done_page(st):
     return ("html", "<!doctype html><meta charset=utf-8><title>Spotify login</title>"
                     "<body style='font:16px system-ui;margin:2rem'><h1>Logged in ✓</h1><p>"
@@ -618,12 +681,58 @@ class Handler(BaseHTTPRequestHandler):
         if self.command != "HEAD":
             self.wfile.write(body)
 
+    def _session_id(self):
+        jar = http.cookies.SimpleCookie()
+        try:
+            jar.load(self.headers.get("Cookie", ""))
+        except http.cookies.CookieError:
+            return None
+        return jar[SESSION_COOKIE].value if SESSION_COOKIE in jar else None
+
     def _authorized(self, query):
         given = self.headers.get("Authorization", "").removeprefix("Bearer ").strip() or query.get("token", "")
         _req.token = tokens.check(given)
-        if _req.token is not None:
+        _req.user = ADMIN if _req.token is not None else sessions.get(self._session_id())
+        if _req.user:
             return True
-        return not (tokens.enabled or self.require_token)
+        if not (tokens.enabled or self.require_token):
+            _req.user = ADMIN
+            return True
+        return False
+
+    def _forbidden(self, method, path):
+        if _req.user.get("admin"):
+            return None
+        if _req.token is None and method not in ("GET", "HEAD"):
+            origin = self.headers.get("Origin")
+            if origin and urllib.parse.urlparse(origin).netloc != self.headers.get("Host"):
+                return "cross-site request refused"
+        if ADMIN_ONLY.match(path) or (method, path) in ADMIN_ONLY_METHODS:
+            return "admins only"
+        m = re.match(r"^/api/playlists/([^/]+)(/.*)?$", path)
+        if m and (app_playlists.is_hidden(m.group(1)) or (m.group(2) is None and method != "GET")
+                  or m.group(2) == "/image" and method != "GET"):
+            return "admins only"
+        return None
+
+    def _set_cookie(self, sid, max_age):
+        secure = "; Secure" if self.headers.get("X-Forwarded-Proto", "") == "https" or self.headers.get("Cf-Visitor") else ""
+        return ("Set-Cookie", f"{SESSION_COOKIE}={sid}; Path=/; Max-Age={max_age}; HttpOnly; SameSite=Lax{secure}")
+
+    def _static(self, path):
+        """The web app: built assets from web/dist, index.html for every other page (client-side routing)."""
+        if path.startswith("/assets/"):
+            full = os.path.realpath(os.path.join(WEB_DIST, path.lstrip("/")))
+            if not full.startswith(os.path.join(WEB_DIST, "assets") + os.sep) or not os.path.isfile(full):
+                return self._send(404, {"error": "not found"})
+            with open(full, "rb") as f:
+                return self._send(200, f.read(), mimetypes.guess_type(full)[0] or "application/octet-stream",
+                                  [("Cache-Control", "public, max-age=31536000, immutable")])
+        index = os.path.join(WEB_DIST, "index.html")
+        if path == "/legacy" or not os.path.exists(index):
+            index = os.path.join(HERE, "index.html")
+        with open(index, "rb") as f:
+            return self._send(200, f.read(), "text/html; charset=utf-8", [("Cache-Control", "no-cache")])
 
     def do_OPTIONS(self):
         self.send_response(204)
@@ -646,9 +755,8 @@ class Handler(BaseHTTPRequestHandler):
         query = dict(urllib.parse.parse_qsl(url.query))
         path = url.path.rstrip("/") or "/"
 
-        if path == "/" and method == "GET":
-            with open(os.path.join(HERE, "index.html"), "rb") as f:
-                return self._send(200, f.read(), "text/html; charset=utf-8")
+        if method == "GET" and not path.startswith(("/api", "/auth")) and path not in DOC_FILES:
+            return self._static(path)
         if path in DOC_FILES and method == "GET":
             name, ctype = DOC_FILES[path]
             try:
@@ -660,9 +768,27 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/auth/callback" and method == "GET":  # protected by the PKCE state instead of the token
                 return self._result(_done_page(auth.finish(query.get("code"), query.get("state"),
                                                            url=None if query.get("code") else self.path)))
+            if path == "/auth/slack/login" and method == "GET":
+                return self._result(("redirect", slack.login_url(query.get("next") or "/")))
+            if path == "/auth/slack/callback" and method == "GET":
+                if query.get("error"):
+                    return self._result(("redirect", "/"))
+                user, next_path = slack.finish(query.get("code"), query.get("state"))
+                return self._send(302, b"", "text/plain", [("Location", next_path),
+                                                           self._set_cookie(sessions.create(user), 30 * 86400)])
+            if path == "/auth/slack/logout" and method == "POST":
+                sessions.delete(self._session_id())
+                return self._send(200, {"result": {"signed_out": True}}, headers=[self._set_cookie("", 0)])
             if not self._authorized(query):
                 return self._send(401, {"error": "unauthorized"})
+            why = self._forbidden(method, path)
+            if why:
+                return self._send(403, {"error": why})
             body = self._body()
+        except AccountError as e:
+            if path.startswith("/auth/slack/") and method == "GET":
+                return self._result(("html", _error_page(str(e))))
+            return self._send(e.status, {"error": str(e)})
         except SpotifyError as e:
             return self._send(e.status, {"error": str(e)})
         except json.JSONDecodeError:
@@ -676,6 +802,8 @@ class Handler(BaseHTTPRequestHandler):
                 {"method": "GET", "path": "/auth", "doc": "Web API login status"},
                 {"method": "POST", "path": "/auth/paste", "doc": "Body {url}: finish login with the redirected URL"},
                 {"method": "POST", "path": "/auth/logout", "doc": "Forget the Web API tokens"},
+                {"method": "GET", "path": "/auth/slack/login", "doc": "Sign in with Slack (?next=/path); sets a session cookie"},
+                {"method": "POST", "path": "/auth/slack/logout", "doc": "End the Slack session"},
             ])
         if path == "/api/events" and method == "GET":
             return self._sse()
@@ -698,7 +826,7 @@ class Handler(BaseHTTPRequestHandler):
                 q = {k: v for k, v in query.items() if k != "token"}
                 return self._send(200, {"result": api.req(method, "/" + path[len("/api/spotify/"):], q,
                                                           body if self.headers.get("Content-Length") else None)})
-        except (SpotifyError, PlayerError, ExtrasError, TokenError) as e:
+        except APP_ERRORS as e:
             return self._send(e.status, {"error": str(e)})
         except (KeyError, ValueError, TypeError) as e:
             return self._send(400, {"error": f"bad request: {e}"})
@@ -714,7 +842,7 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 params = {k: urllib.parse.unquote(v) for k, v in mt.groupdict().items()}
                 return self._result(fn(query, body, **params))
-            except (SpotifyError, PlayerError, ExtrasError, TokenError) as e:
+            except APP_ERRORS as e:
                 return self._send(e.status, {"error": str(e)})
             except (KeyError, ValueError, TypeError) as e:
                 return self._send(400, {"error": f"bad request: {e}"})
@@ -755,7 +883,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_HEAD(self):
         """For link checkers and agents probing the docs; API routes don't support HEAD."""
-        if urllib.parse.urlparse(self.path).path in ("/", *DOC_FILES):
+        path = urllib.parse.urlparse(self.path).path
+        if path in DOC_FILES or not path.startswith(("/api", "/auth")):
             return self._dispatch("GET")
         self._send(405, {"error": "method not allowed"})
     def do_POST(self): self._dispatch("POST")
@@ -787,11 +916,16 @@ def main():
                     help="auto = soloist when its WebSocket is found, else connect")
     ap.add_argument("--soloist-ws", default=os.environ.get("SOLOIST_WS"), help="ADDR:PORT (default: discover from data dir)")
     ap.add_argument("--soloist-data-dir", default=os.environ.get("SOLOIST_DATA_DIR") or soloist_data_dir())
+    ap.add_argument("--slack-redirect-uri", default=os.environ.get("SLACK_REDIRECT_URI"),
+                    help="Sign in with Slack callback; default http://127.0.0.1:<port>/auth/slack/callback")
+    ap.add_argument("--hidden-playlists", default=os.environ.get("MUSIC_API_HIDDEN_PLAYLISTS")
+                    or os.path.expanduser("~/.config/music-api/hidden-playlists.json"),
+                    help='JSON {"playlists": [id or {id, name}, ...]}: account playlists the web app never shows')
     ap.add_argument("--device", default=os.environ.get("MUSIC_API_DEVICE"),
                     help="connect backend: Connect device name or id to control (default: whichever is active)")
     a = ap.parse_args()
 
-    global auth, api, player, soloist, tokens
+    global auth, api, player, soloist, tokens, slack, sessions, app_playlists
     os.makedirs(a.data_dir, mode=0o700, exist_ok=True)
     auth = Auth(a.data_dir, a.client_id, a.redirect_uri or f"http://127.0.0.1:{a.port}/auth/callback")
     api = WebAPI(auth)
@@ -804,6 +938,11 @@ def main():
         return
 
     tokens = Tokens(a.data_dir, a.token)
+    sessions = Sessions(a.data_dir)
+    app_playlists = Playlists(a.data_dir, a.hidden_playlists)
+    slack = Slack(os.environ.get("SLACK_CLIENT_ID"), os.environ.get("SLACK_CLIENT_SECRET"), os.environ.get("SLACK_BOT_TOKEN"),
+                  a.slack_redirect_uri or f"http://127.0.0.1:{a.port}/auth/slack/callback",
+                  os.environ.get("SLACK_TEAM_ID"), filter(None, os.environ.get("SLACK_ADMINS", "").split(",")))
     require = a.public or a.host not in ("127.0.0.1", "localhost", "::1")
     boot = tokens.bootstrap(require)
     if boot == "imported":

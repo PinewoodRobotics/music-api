@@ -45,7 +45,7 @@ There are two playback backends, chosen with `--backend auto|soloist|connect`:
 Anything the Soloist socket can't do falls back to the Web API, targeted at the Soloist device.
 That covers starting a playlist at a given track, playing an artist, playing a list of URIs, and listing other devices.
 
-## Authentication: four separate layers
+## Authentication: five separate layers
 
 1. **Soloist API key.** Generate it at developer.spotify.com/dashboard → *Spotify Soloist API Key*.
    The generating account must have Premium. It's passed on every start (`--api-key`), so the
@@ -65,6 +65,7 @@ That covers starting a playlist at a given track, playing an artist, playing a l
 4. **This server's own API tokens.** Send `Authorization: Bearer <token>` (or `?token=` for `EventSource`, `<img>` and links).
    Required off-localhost, with `--public` (even from localhost), and as soon as any token exists. See [API tokens](#api-tokens).
    Soloist's WebSocket has *no* auth at all, so it stays bound to `127.0.0.1`, and this server is the only door in.
+5. **Sign in with Slack** for the web app. See [Web app accounts](#web-app-accounts-sign-in-with-slack).
 
 ### API tokens
 
@@ -79,6 +80,38 @@ On the first start that requires auth, `<data-dir>/token` is imported as "v1 tok
 then deleted, so only its hash remains. If there's no such file either, a token is generated and written to `<data-dir>/token` (mode 600) for you to read.
 `--token` / `$MUSIC_API_TOKEN` still works as an extra static token. It isn't listed and can't be revoked through the API.
 To hand someone the web remote, create a token and send them `https://…/?token=<token>`; the page remembers it.
+
+### Web app accounts (Sign in with Slack)
+
+People sign in to the web app with their Slack account in the pinewoodrobotics workspace and appear under their Slack
+display name. The session is an HttpOnly cookie (30 days, stored hashed in `<data-dir>/sessions.json`).
+API tokens keep working and act as **@admin**. Slack users are admins only if their user ID is in `SLACK_ADMINS`.
+Non-admins can control playback, search, queue, lyrics and the app's playlists, but get 403 on tokens, the Spotify login,
+the raw passthrough, the account's library/history and hidden playlists. Cookie-authenticated writes from another origin are refused.
+
+The app shows every playlist in the Spotify account *except* those listed in `~/.config/music-api/hidden-playlists.json`
+(`{"playlists": ["<id>" or {"id", "name"}, ...]}`, kept only on the Pi). Playlists created or imported in the app are
+credited to whoever made them (`<data-dir>/app-playlists.json`); only they or an admin can rename or delete them, and
+anyone can add or remove tracks. Importing copies a *public* playlist into a new private playlist on the account. Spotify
+only exposes the first 100 tracks of playlists the account doesn't own (through the public embed page), so that's the cap.
+
+Setup: create a Slack app from this manifest at api.slack.com/apps, install it to the workspace, and put
+`SLACK_CLIENT_ID`, `SLACK_CLIENT_SECRET`, `SLACK_BOT_TOKEN` (`xoxb-…`) and `SLACK_REDIRECT_URI` in `~/.config/music-api/env`.
+The bot token is only used for `users.info` (display names) and `auth.test` (the workspace ID sign-ins must match).
+
+```yaml
+display_information:
+  name: Music API
+oauth_config:
+  redirect_urls:
+    - https://music-api.pinewoodrobotics.org/auth/slack/callback
+  scopes:
+    user: [openid, profile, email]
+    bot: [users:read]
+features:
+  bot_user:
+    display_name: Music API
+```
 
 ### Web API limits (development-mode apps, 2026 rules)
 
