@@ -28,7 +28,8 @@ DEFAULT_REMOTE = "https://music.pinewoodrobotics.org/"
 LINK_RX = re.compile(r"https?://(?:open\.spotify\.com|music\.apple\.com)/\S+|spotify:(?:track|album|playlist):\w{22}")
 MAX_AGE = 300
 UPDATE_EVERY = 5
-SETTLE = 3
+SETTLE = 3  # seconds of silence before the card collapses to "Played"
+REUSE = 10  # a track skipped within this many seconds has its card turned into the next one
 USER_TTL = 3600
 FATAL = {"missing_scope", "not_authed", "invalid_auth", "token_revoked", "account_inactive", "not_in_channel",
          "channel_not_found", "is_archived"}
@@ -335,11 +336,6 @@ class SlackBot:
         if status != 200:
             self._warn(("response_url", status), f"response_url failed: HTTP {status} {res.get('error', '')}")
 
-    def say(self, text, user=None):
-        """Channel note; "{who}" becomes `user`'s bold display name (no mention, so nobody gets pinged)."""
-        plain = text.replace("{who}", f"*{who(user)}*") if user else text
-        self.call("chat.postMessage", channel=self.channel, text=plain, blocks=[context(plain)], unfurl_links=False)
-
     # ---------- requests ----------
 
     def handle(self, path, headers, body):
@@ -464,10 +460,9 @@ class SlackBot:
         return item(self.api.get(f"/{path}/{sid}"))
 
     def transport(self, verb, uid):
-        """Do play/pause/skip for a Slack user; skips get a note in the channel."""
+        """Do play/pause/skip for a Slack user (the feed card itself is the channel's feedback)."""
         if verb == "skip":
             self.player.next()
-            self.say("{who} skipped", self.user(uid))
             return "Skipped."
         if verb == "pause":
             self.player.pause()
@@ -509,7 +504,6 @@ class SlackBot:
                 uri = to_uri(a.get("value"))
                 self.player.play({"uri": uri})
                 self.credits.start([uri], u)
-                self.say(f"{{who}} started {spotify_url(uri) or uri}", u)
                 self.done(p, a, ephemeral, "Playing", "Playing now")
             elif act == "import_playlist":
                 self.import_playlist(p, a, ephemeral, a.get("value"))
@@ -534,7 +528,6 @@ class SlackBot:
         if miss:
             text += "\nNot on Spotify: " + "; ".join(miss)
         self.done(p, a, ephemeral, "Imported", text)
-        self.say(f"{{who}} imported a playlist: <{self.remote.rstrip('/')}/playlist/{pl['id']}|{esc(pl.get('name'))}>", u)
 
     def done(self, p, a, ephemeral, label, text):
         url = p.get("response_url")
@@ -589,7 +582,7 @@ class SlackBot:
         q = self.player.subscribe()
         while True:
             try:
-                ev, data = q.get(timeout=1)
+                ev, data = q.get(timeout=0.5)
                 if ev == "status":
                     self.st = data
                 elif ev == "queue":
@@ -618,12 +611,11 @@ class SlackBot:
         playing = self.st.get("state") in PLAYING
         if uri != self.cand[0]:
             self.cand = (uri, now)
-        settled = now - self.cand[1] >= SETTLE
         cur = self.cur
-        if cur and not t and settled:
+        if cur and not t and now - self.cand[1] >= SETTLE:
             self.finish(cur)
             self.cur = None
-        elif t and playing and settled and (not cur or cur["uri"] != uri):
+        elif t and playing and (not cur or cur["uri"] != uri):
             self.rotate(t, now)
         elif cur and cur["uri"] == uri:
             self.refresh(cur, playing, now)
@@ -633,15 +625,23 @@ class SlackBot:
                   blocks=played_blocks(cur["track"], cur.get("credit")))
 
     def rotate(self, t, now):
-        if self.cur:
-            self.finish(self.cur)
-            self.cur = None
         try:
             up = self.credits.annotate(self.player.queue(4)).get("upcoming", [])
         except (PlayerError, SpotifyError):
             up = self.upcoming
         cur = {"uri": t["uri"], "track": t, "playing": True, "upcoming": up[:3],
-               "credit": self.st.get("credit"), "ts": None, "sig": None, "sent": now}
+               "credit": self.st.get("credit"), "ts": None, "sig": None, "sent": now, "posted": now}
+        old = self.cur
+        if old and old.get("ts") and now - old.get("posted", 0) < REUSE:
+            cur.update(ts=old["ts"], posted=old.get("posted", now))
+            if self.call("chat.update", channel=self.channel, ts=cur["ts"], text=now_playing_text(t),
+                         blocks=self.rendered(cur)):
+                cur["sig"] = self.sig(cur)
+            self.cur = cur
+            return
+        if old:
+            self.finish(old)
+            self.cur = None
         res = self.call("chat.postMessage", channel=self.channel, text=now_playing_text(t),
                         blocks=self.rendered(cur), unfurl_links=False, unfurl_media=False)
         if res:

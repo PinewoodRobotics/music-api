@@ -112,14 +112,11 @@ class Commands(unittest.TestCase):
         bot = make()
         self.assertEqual(bot.on_command({"team_id": "T0", "text": "skip"})[0], 403)
 
-    def test_skip_notes_channel_and_responds(self):
+    def test_skip_responds_without_channel_note(self):
         bot = make()
         bot.on_command({"team_id": bot.team, "text": "skip", "user_id": "U1", "response_url": "http://r/1"})
         self.assertEqual(bot.player.calls, ["next"])
-        post = [p for u, p in bot.sent if u.endswith("chat.postMessage")][0]
-        self.assertEqual(post["channel"], sb.DEFAULT_CHANNEL)
-        self.assertIn("*Ada* skipped", post["text"])
-        self.assertNotIn("<@", post["text"])
+        self.assertFalse([u for u, _ in bot.sent if u.endswith("chat.postMessage")])
         self.assertTrue(any(u == "http://r/1" for u, _ in bot.sent))
 
     def test_search_blocks(self):
@@ -185,15 +182,14 @@ class Interactions(unittest.TestCase):
         self.assertIn("Queued by Ada", json.dumps(sent["blocks"]))
         self.assertNotIn("button", json.dumps(sent["blocks"][1]))
 
-    def test_play_uri_credits_start_and_names_in_note(self):
+    def test_play_uri_credits_start_without_channel_note(self):
         bot = make()
         bot.on_interaction(self.payload({"action_id": "play_uri", "value": "spotify:album:2noRn2Aes5aoNVsU6iWThc"}))
         self.assertEqual(bot.credits.started["uris"], ["spotify:album:2noRn2Aes5aoNVsU6iWThc"])
         self.assertEqual(bot.credits.started["user"], ADA)
-        posts = [p for u, p in bot.sent if u.endswith("chat.postMessage")]
         self.assertNotIn("<@", json.dumps(bot.sent))
-        self.assertIn("*Ada* started", posts[0]["text"])
-        self.assertFalse([u for u, _ in bot.sent if u.endswith("chat.update")])
+        self.assertFalse([u for u, _ in bot.sent if u.endswith(("chat.postMessage", "chat.update"))])
+        self.assertTrue(any(u == "http://r/2" for u, _ in bot.sent))
 
     def test_non_ephemeral_never_replaces(self):
         bot = make()
@@ -291,6 +287,7 @@ class Links(unittest.TestCase):
         self.assertEqual(calls, [(APPLE_PL["url"], {"id": "U1", "name": "Ada", "avatar": "http://a/av.png", "admin": False})])
         final = [p for u, p in bot.sent if u == "http://r/3"][-1]
         flat = json.dumps(final)
+        self.assertFalse([u for u, _ in bot.sent if u.endswith("chat.postMessage")])
         self.assertIn("Imported 87 of 92 songs", flat)
         self.assertIn("https://music.pinewoodrobotics.org/playlist/PL1", flat)
         self.assertIn("Gone - Z", flat)
@@ -350,7 +347,7 @@ class Feed(unittest.TestCase):
         self.assertEqual(len(self.calls(bot, "chat.postMessage")), 1)
         self.assertIn('"text": "Ada"', json.dumps(self.calls(bot, "chat.postMessage")[0]["blocks"]))
         bot.credit = None
-        self.run_feed(bot, [("playing", TRACK2, 0), ("playing", TRACK2, 4)])
+        self.run_feed(bot, [("playing", TRACK2, sb.REUSE + 1), ("playing", TRACK2, 4)])
         upd, posts = self.calls(bot, "chat.update"), self.calls(bot, "chat.postMessage")
         self.assertEqual(len(posts), 2)
         self.assertEqual(len(upd), 1)
@@ -403,6 +400,11 @@ class Feed(unittest.TestCase):
         self.assertEqual(self.calls(again, "chat.postMessage"), [])
         self.assertTrue(all(p["ts"] == "1.1" for p in self.calls(again, "chat.update")))
 
+        with open(path) as f:
+            saved = json.load(f)
+        saved.pop("posted")
+        with open(path, "w") as f:
+            json.dump(saved, f)
         third = sb.SlackBot(FakeSlack(), FakePlayer(), FakeApi(), Credits(), SECRET, state_path=path)
         third.sent = []
         third.http = lambda url, payload, token=None: (third.sent.append((url, payload)) or (200, {"ok": True, "ts": "3.3"}, {}))
@@ -421,13 +423,44 @@ class Feed(unittest.TestCase):
 
     def test_debounced_pause_update(self):
         bot = make()
-        self.run_feed(bot, [("playing", TRACK, 0), ("playing", TRACK, 4)])
+        self.run_feed(bot, [("playing", TRACK, 0), ("playing", TRACK, 1)])
         self.run_feed(bot, [("paused", TRACK, 1), ("paused", TRACK, 1)])
         self.assertEqual(len(self.calls(bot, "chat.update")), 0)
-        self.run_feed(bot, [("paused", TRACK, 4)])
+        self.run_feed(bot, [("paused", TRACK, 2)])
         self.assertEqual(len(self.calls(bot, "chat.update")), 1)
         self.run_feed(bot, [("paused", TRACK, 60), ("paused", TRACK, 60)])
         self.assertEqual(len(self.calls(bot, "chat.update")), 1)
+
+    def test_card_posted_immediately(self):
+        bot = make()
+        self.run_feed(bot, [("playing", TRACK, 0)])
+        self.assertEqual(len(self.calls(bot, "chat.postMessage")), 1)
+
+    def test_quick_skip_edits_card_in_place(self):
+        bot = make()
+        self.run_feed(bot, [("playing", TRACK, 0), ("playing", TRACK2, sb.REUSE - 1)])
+        self.assertEqual(len(self.calls(bot, "chat.postMessage")), 1)
+        upd = self.calls(bot, "chat.update")
+        self.assertEqual([u["ts"] for u in upd], ["1.1"])
+        self.assertIn("Other", json.dumps(upd[0]["blocks"]))
+        self.assertIn("button", json.dumps(upd[0]["blocks"]))
+        self.assertNotIn("Played", upd[0]["text"])
+
+    def test_skip_after_reuse_collapses_and_posts(self):
+        bot = make()
+        self.run_feed(bot, [("playing", TRACK, 0), ("playing", TRACK2, sb.REUSE)])
+        self.assertEqual(len(self.calls(bot, "chat.postMessage")), 2)
+        upd = self.calls(bot, "chat.update")
+        self.assertEqual(len(upd), 1)
+        self.assertIn("Played", upd[0]["text"])
+        self.assertNotIn("button", json.dumps(upd[0]["blocks"]))
+
+    def test_idle_collapses_to_played_after_settle(self):
+        bot = make()
+        self.run_feed(bot, [("playing", TRACK, 0), ("idle", None, 1), ("idle", None, sb.SETTLE - 1)])
+        self.assertEqual(self.calls(bot, "chat.update"), [])
+        self.run_feed(bot, [("idle", None, 1)])
+        self.assertIn("Played", self.calls(bot, "chat.update")[0]["text"])
 
     def test_quick_skip_not_posted(self):
         bot = make()
