@@ -114,7 +114,7 @@ function row(it, actions) {
   li.innerHTML = `<img alt=""><div class="t"><div></div><div class="muted"></div></div>`;
   if (it.artwork) li.querySelector("img").src = it.artwork;
   li.querySelector(".t div").textContent = it.name || it.uri;
-  li.querySelector(".t .muted").textContent = [it.type, who(it) || it.owner].filter(Boolean).join(" · ");
+  li.querySelector(".t .muted").textContent = [it.type, who(it) || it.owner, it.duration_ms && fmt(it.duration_ms)].filter(Boolean).join(" · ");
   for (const [label, fn] of actions) {
     const b = document.createElement("button"); b.textContent = label; b.onclick = fn; li.appendChild(b);
   }
