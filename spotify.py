@@ -250,6 +250,8 @@ def page(p, key=None):
         return None
     rows = []
     for row in p.get("items", []):
+        if row is None:  # Spotify sends null for items unavailable to this account
+            continue
         obj = row
         if key and isinstance(row, dict):
             obj = row.get(key) or row.get("track")

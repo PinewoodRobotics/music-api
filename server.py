@@ -385,7 +385,12 @@ def _playlists(q, b):
 def _create_playlist(q, b):
     """Body {name, description?, public?, collaborative?}"""
     body = {k: b[k] for k in ("name", "description", "public", "collaborative") if k in b}
-    return item(api.req("POST", "/me/playlists", body=body))
+    pl = api.req("POST", "/me/playlists", body=body)
+    if "public" in b and pl.get("public") != b["public"]:
+        # Spotify ignores `public` on create; try again with an edit and report what it actually stored
+        api.req("PUT", f"/playlists/{pl['id']}", body={"public": b["public"]})
+        return _playlist(q, {}, pl["id"])
+    return item(pl)
 
 
 @route("GET", "/api/playlists/{id}")
