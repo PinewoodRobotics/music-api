@@ -10,7 +10,7 @@ const MAX_SECONDS = 20 * 60
 const DRIFT_S = 1.5
 const END_SLACK_S = 0.3
 
-export const mediaSessionSupported = typeof navigator !== 'undefined' && 'mediaSession' in navigator
+export const mediaSessionSupported = false && typeof navigator !== 'undefined' && 'mediaSession' in navigator
 
 let state: SyncState = mediaSessionSupported && storage.get(STORAGE_KEY) === '1' ? 'starting' : 'off'
 let error: string | null = null
