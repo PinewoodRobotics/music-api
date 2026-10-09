@@ -1,0 +1,15 @@
+[Unit]
+Description=Spotify Soloist (headless Spotify Connect)
+After=pipewire.service pipewire-pulse.service network-online.target
+Wants=pipewire.service
+
+[Service]
+EnvironmentFile=%h/.config/music-api/env
+ExecStart=%h/.local/share/music-api-v2/deploy/run-soloist.sh
+Restart=always
+RestartSec=5
+# Exit 10 = build expired; the update timer installs a new one and restarts us.
+RestartPreventExitStatus=10
+
+[Install]
+WantedBy=default.target

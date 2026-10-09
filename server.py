@@ -1,0 +1,792 @@
+#!/usr/bin/env python3
+"""Music API v2: HTTP API and web remote for Spotify. Stdlib only; runs on Linux (incl. headless Pi) and macOS.
+
+    python3 server.py [--host 127.0.0.1] [--port 8765] [--token SECRET] [--client-id ID]
+    python3 server.py auth          # log in to the Spotify Web API from a terminal (SSH-friendly)
+
+Playback goes through a local Spotify Soloist daemon when one is running with --ws (Linux), otherwise
+through the Web API against any Spotify Connect device. Search, library and playlists use the Web API.
+Visit http://127.0.0.1:8765/ for the web remote, or GET /api for the endpoint list.
+"""
+import argparse
+import hmac
+import html
+import json
+import os
+import queue as queuelib
+import re
+import secrets
+import sys
+import threading
+import urllib.parse
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+import extras
+from extras import ExtrasError
+from player import Player, PlayerError
+from soloist import Soloist, SoloistError, default_data_dir as soloist_data_dir
+from spotify import Auth, SpotifyError, WebAPI, item, page, to_uri
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+SEARCH_TYPES = "track,album,artist,playlist,show,episode,audiobook"
+
+auth = api = player = soloist = None
+
+
+# ---------- HTTP routing ----------
+
+ROUTES = []
+
+
+def route(method, pattern):
+    rx = re.compile("^" + re.sub(r"{(\w+)}", r"(?P<\1>[^/]+)", pattern) + "$")
+
+    def deco(fn):
+        ROUTES.append((method, rx, pattern, fn.__doc__ or "", fn))
+        return fn
+    return deco
+
+
+def _uris(q, b):
+    raw = b.get("uris") or (b.get("uri") and [b["uri"]]) or (q.get("uris") or "").split(",")
+    uris = [to_uri(u.strip()) for u in raw if u and u.strip()]
+    if not uris:
+        raise ValueError("give uris")
+    return uris
+
+
+def _limit(q, default=20, cap=50):
+    return min(int(q.get("limit", default)), cap)
+
+
+# ---------- playback ----------
+
+@route("GET", "/api/status")
+def _status(q, b):
+    """Playback state, position, volume, shuffle/repeat, current track/episode, context, device, backend"""
+    return player.status(fresh=True)
+
+
+@route("GET", "/api/now-playing")
+def _now_playing(q, b):
+    """Just the current track/episode (or null)"""
+    return player.status()["track"]
+
+
+@route("GET", "/api/artwork")
+def _artwork(q, b):
+    """Current cover image: 302 to Spotify's CDN, or ?proxy=1 to get the bytes (for devices without HTTPS)"""
+    art = (player.status().get("track") or {}).get("artwork")
+    if not art:
+        raise PlayerError("nothing playing / no artwork", 404)
+    return extras.fetch_image(art) if q.get("proxy") else ("redirect", art)
+
+
+def _current_track():
+    t = player.status(fresh=True).get("track")
+    if not t:
+        raise PlayerError("nothing playing", 404)
+    return t
+
+
+@route("GET", "/api/lyrics")
+def _lyrics(q, b):
+    """Lyrics for the current song (or ?track=id), synced line-by-line when available (lrclib.net).
+    Includes position_ms and the index of the current line"""
+    if q.get("track"):
+        t = item(api.get(f"/tracks/{to_uri(q['track'], 'track').split(':')[2]}"))
+        pos = None
+    else:
+        st = player.status(fresh=True)
+        t, pos = st.get("track"), st.get("position_ms")
+        if not t:
+            raise PlayerError("nothing playing", 404)
+    out = dict(extras.lyrics(t), track={"uri": t["uri"], "name": t["name"]})
+    if pos is not None:
+        out["position_ms"] = pos
+        out["line"] = extras.current_line(out, pos)
+    return out
+
+
+@route("GET", "/api/sleep")
+def _sleep(q, b):
+    """Sleep timer state"""
+    return player.sleep_status()
+
+
+@route("POST", "/api/sleep")
+def _set_sleep(q, b):
+    """Body {minutes, fade?: seconds}: pause after N minutes, fading out over the last `fade` seconds (default 30)"""
+    return player.set_sleep(b)
+
+
+@route("DELETE", "/api/sleep")
+def _cancel_sleep(q, b):
+    """Cancel the sleep timer"""
+    return player.cancel_sleep()
+
+
+@route("GET", "/api/system/volume")
+def _sys_volume(q, b):
+    """Machine's output volume (PipeWire / PulseAudio / macOS), separate from Spotify's own volume"""
+    return extras.system_volume()
+
+
+@route("POST", "/api/system/volume")
+def _set_sys_volume(q, b):
+    """Body {volume?: 0-100, delta?: ±n, muted?: bool}"""
+    return extras.set_system_volume(b)
+
+
+@route("GET", "/api/system/outputs")
+def _sys_outputs(q, b):
+    """Audio outputs (sinks) on this machine, e.g. the USB speakers (Linux)"""
+    return extras.system_outputs()
+
+
+@route("POST", "/api/system/outputs")
+def _set_sys_output(q, b):
+    """Body {id}: make that output the default (Linux)"""
+    return extras.set_system_output(b)
+
+
+@route("POST", "/api/play")
+def _play(q, b):
+    """Play/resume. Body optional: {uri} (track, album, playlist, artist, episode, show; URI or open.spotify.com link),
+    {uris: [...]}, {context, offset: index|uri}, {position: seconds | position_ms}"""
+    return player.play(b)
+
+
+@route("POST", "/api/play-url")
+def _play_url(q, b):
+    """Body {url}: play any open.spotify.com / spotify: link"""
+    return player.play({"uri": b["url"]})
+
+
+@route("POST", "/api/pause")
+def _pause(q, b):
+    """Pause"""
+    return player.pause()
+
+
+@route("POST", "/api/playpause")
+def _playpause(q, b):
+    """Toggle play/pause"""
+    return player.playpause()
+
+
+@route("POST", "/api/next")
+def _next(q, b):
+    """Skip to next"""
+    return player.next()
+
+
+@route("POST", "/api/previous")
+def _previous(q, b):
+    """Previous track (restarts the current one if it's past the first few seconds)"""
+    return player.previous()
+
+
+@route("POST", "/api/back")
+def _back(q, b):
+    """Alias of /api/previous (v1 compatibility)"""
+    return player.previous()
+
+
+@route("POST", "/api/seek")
+def _seek(q, b):
+    """Body {position: seconds} | {position_ms} | {delta: ±seconds}"""
+    return player.seek(b)
+
+
+@route("POST", "/api/volume")
+def _volume(q, b):
+    """Body {volume: 0-100} | {delta: ±n}"""
+    return player.volume(b)
+
+
+@route("POST", "/api/shuffle")
+def _shuffle(q, b):
+    """Body {enabled?: bool}; omit to toggle"""
+    return player.shuffle(b)
+
+
+@route("POST", "/api/repeat")
+def _repeat(q, b):
+    """Body {mode?: off|context|track} (one/all accepted); omit to cycle"""
+    return player.repeat(b)
+
+
+@route("GET", "/api/queue")
+def _queue(q, b):
+    """Upcoming (and, with Soloist, previous) queue entries. ?limit=n (Soloist: up to 80)"""
+    return player.queue(int(q["limit"]) if q.get("limit") else None)
+
+
+@route("POST", "/api/queue")
+def _enqueue(q, b):
+    """Body {uri} | {uris: [...]}: add to the end of the queue"""
+    return player.enqueue(b)
+
+
+@route("GET", "/api/devices")
+def _devices(q, b):
+    """Spotify Connect devices on the account (plus the local Soloist device)"""
+    return player.devices()
+
+
+@route("POST", "/api/devices/transfer")
+def _transfer(q, b):
+    """Body {device: name|id|"soloist", play?: bool}: move playback to a device"""
+    return player.transfer(b)
+
+
+@route("GET", "/api/backend")
+def _backend(q, b):
+    """Which playback backend is in use and how it's doing"""
+    out = {"backend": player.backend, "web_api": auth.status()}
+    if soloist:
+        out["soloist"] = {"connected": soloist.connected, "endpoint": soloist.endpoint(),
+                          "data_dir": soloist.data_dir, "error": soloist.last_error, **soloist.auth}
+    return out
+
+
+@route("POST", "/api/backend/soloist/{verb}")
+def _soloist_verb(q, b, verb):
+    """activate | deactivate: claim or release active-device status for Soloist"""
+    if not soloist or verb not in ("activate", "deactivate"):
+        raise PlayerError("unknown verb or no Soloist backend", 404)
+    try:
+        soloist.command(verb)
+    except SoloistError as e:
+        raise PlayerError(str(e), e.status)
+    return player.status()
+
+
+# ---------- catalog ----------
+
+@route("GET", "/api/search")
+def _search(q, b):
+    """?q=&type=track,album,artist,playlist,...&limit=(max 10)&offset=. Returns {type: page}"""
+    res = api.get("/search", q=q["q"], type=q.get("type", "track,album,artist,playlist"),
+                  limit=_limit(q, 10, 10), offset=q.get("offset"))
+    return {k: page(v) for k, v in res.items()}
+
+
+@route("GET", "/api/tracks/{id}")
+def _track(q, b, id):
+    """One track; id may be 'current'. Adds saved: bool"""
+    if id == "current":
+        t = player.status()["track"]
+        if not t:
+            raise PlayerError("nothing playing", 404)
+        id = t["id"]
+    t = item(api.get(f"/tracks/{id}"))
+    t["saved"] = api.get("/me/library/contains", uris=t["uri"])[0]
+    return t
+
+
+@route("PATCH", "/api/tracks/{id}")
+def _patch_track(q, b, id):
+    """Body {saved: bool}: like/unlike (save to / remove from Liked Songs); id may be 'current'"""
+    if id == "current":
+        id = (player.status()["track"] or {}).get("id") or ""
+    uri = to_uri(id, "track")
+    api.req("PUT" if b["saved"] else "DELETE", "/me/library", {"uris": uri})
+    return {"uri": uri, "saved": bool(b["saved"])}
+
+
+@route("GET", "/api/albums/{id}")
+def _album(q, b, id):
+    """Album with its first page of tracks"""
+    a = api.get(f"/albums/{id}")
+    out = item(a)
+    out["label"] = a.get("label")
+    out["tracks"] = page(a.get("tracks"))
+    for t in out["tracks"]["items"]:
+        t.update(album={"uri": out["uri"], "name": out["name"]}, artwork=out["artwork"])
+    return out
+
+
+@route("GET", "/api/albums/{id}/tracks")
+def _album_tracks(q, b, id):
+    """?limit=&offset="""
+    return page(api.get(f"/albums/{id}/tracks", limit=_limit(q), offset=q.get("offset")))
+
+
+@route("GET", "/api/artists/{id}")
+def _artist(q, b, id):
+    """One artist"""
+    return item(api.get(f"/artists/{id}"))
+
+
+@route("GET", "/api/artists/{id}/albums")
+def _artist_albums(q, b, id):
+    """?include_groups=album,single,appears_on,compilation&limit=&offset="""
+    return page(api.get(f"/artists/{id}/albums", include_groups=q.get("include_groups"),
+                        limit=_limit(q), offset=q.get("offset")))
+
+
+@route("GET", "/api/episodes/{id}")
+def _episode(q, b, id):
+    """One podcast episode"""
+    e = api.get(f"/episodes/{id}")
+    out = item(e)
+    out.update(description=e.get("description"), resume_point=e.get("resume_point"))
+    return out
+
+
+@route("GET", "/api/shows/{id}")
+def _show(q, b, id):
+    """Podcast with its first page of episodes"""
+    sh = api.get(f"/shows/{id}")
+    out = item(sh)
+    out["episodes"] = page(sh.get("episodes"))
+    return out
+
+
+@route("GET", "/api/audiobooks/{id}")
+def _audiobook(q, b, id):
+    """Audiobook with authors, narrators and its first page of chapters"""
+    ab = api.get(f"/audiobooks/{id}")
+    out = item(ab)
+    out.update(authors=[a.get("name") for a in ab.get("authors", [])],
+               narrators=[n.get("name") for n in ab.get("narrators", [])], chapters=page(ab.get("chapters")))
+    return out
+
+
+@route("GET", "/api/audiobooks/{id}/chapters")
+def _audiobook_chapters(q, b, id):
+    """?limit=&offset="""
+    return page(api.get(f"/audiobooks/{id}/chapters", limit=_limit(q), offset=q.get("offset")))
+
+
+@route("GET", "/api/chapters/{id}")
+def _chapter(q, b, id):
+    """One audiobook chapter"""
+    return item(api.get(f"/chapters/{id}"))
+
+
+@route("GET", "/api/shows/{id}/episodes")
+def _show_episodes(q, b, id):
+    """?limit=&offset="""
+    return page(api.get(f"/shows/{id}/episodes", limit=_limit(q), offset=q.get("offset")))
+
+
+# ---------- playlists ----------
+
+@route("GET", "/api/playlists")
+def _playlists(q, b):
+    """Your playlists. ?limit=&offset="""
+    return page(api.get("/me/playlists", limit=_limit(q), offset=q.get("offset")))
+
+
+@route("POST", "/api/playlists")
+def _create_playlist(q, b):
+    """Body {name, description?, public?, collaborative?}"""
+    body = {k: b[k] for k in ("name", "description", "public", "collaborative") if k in b}
+    return item(api.req("POST", "/me/playlists", body=body))
+
+
+@route("GET", "/api/playlists/{id}")
+def _playlist(q, b, id):
+    """Playlist details (no items; see /items)"""
+    return item(api.get(f"/playlists/{id}", fields="uri,id,type,name,description,public,collaborative,owner,images,items(total)"))
+
+
+@route("PATCH", "/api/playlists/{id}")
+def _edit_playlist(q, b, id):
+    """Body {name?, description?, public?, collaborative?}"""
+    api.req("PUT", f"/playlists/{id}", body={k: b[k] for k in ("name", "description", "public", "collaborative") if k in b})
+    return _playlist(q, {}, id)
+
+
+@route("DELETE", "/api/playlists/{id}")
+def _delete_playlist(q, b, id):
+    """Remove from your library (Spotify has no hard delete; for your own playlists this is the same thing)"""
+    api.req("DELETE", "/me/library", {"uris": f"spotify:playlist:{id}"})
+    return {"removed": f"spotify:playlist:{id}"}
+
+
+@route("GET", "/api/playlists/{id}/items")
+def _playlist_items(q, b, id):
+    """?limit=&offset=. Spotify only returns items for playlists you own or collaborate on"""
+    return page(api.get(f"/playlists/{id}/items", limit=_limit(q, 50, 50), offset=q.get("offset"),
+                        additional_types="track,episode"), key="item")
+
+
+@route("POST", "/api/playlists/{id}/items")
+def _playlist_add(q, b, id):
+    """Body {uris: [...], position?: n}"""
+    body = {"uris": _uris(q, b)}
+    if b.get("position") is not None:
+        body["position"] = int(b["position"])
+    return api.req("POST", f"/playlists/{id}/items", body=body)
+
+
+@route("DELETE", "/api/playlists/{id}/items")
+def _playlist_remove(q, b, id):
+    """Body {uris: [...]} (removes every occurrence)"""
+    return api.req("DELETE", f"/playlists/{id}/items", body={"items": [{"uri": u} for u in _uris(q, b)]})
+
+
+@route("PUT", "/api/playlists/{id}/items")
+def _playlist_reorder(q, b, id):
+    """Body {range_start, insert_before, range_length?} to move items, or {uris: [...]} to replace all"""
+    if "uris" in b:
+        body = {"uris": _uris(q, b)}
+    else:
+        body = {k: int(b[k]) for k in ("range_start", "insert_before", "range_length") if k in b}
+    return api.req("PUT", f"/playlists/{id}/items", body=body)
+
+
+@route("GET", "/api/playlists/{id}/image")
+def _playlist_image(q, b, id):
+    """Cover image URLs"""
+    return api.get(f"/playlists/{id}/images")
+
+
+@route("PUT", "/api/playlists/{id}/image")
+def _playlist_set_image(q, b, id):
+    """Body {jpeg_base64}: upload a custom cover (JPEG, max 256 KB)"""
+    data = b["jpeg_base64"].split(",", 1)[-1].strip().encode()  # accepts a data: URL too
+    api.req("PUT", f"/playlists/{id}/images", body=data)
+    return {"uploaded": True}
+
+
+@route("POST", "/api/playlists/{id}/play")
+def _playlist_play(q, b, id):
+    """Body {offset?: index|uri, shuffle?: bool}"""
+    if b.get("shuffle") is not None:
+        player.shuffle({"enabled": b["shuffle"]})
+    return player.play({"context": f"spotify:playlist:{id}", "offset": b.get("offset")})
+
+
+# ---------- library & listening history ----------
+
+LIBRARY = {"tracks": ("/me/tracks", "track"), "albums": ("/me/albums", "album"),
+           "episodes": ("/me/episodes", "episode"), "shows": ("/me/shows", "show"),
+           "audiobooks": ("/me/audiobooks", None), "playlists": ("/me/playlists", None)}
+
+
+@route("GET", "/api/library/{kind}")
+def _library(q, b, kind):
+    """kind = tracks | albums | episodes | shows | audiobooks | playlists | artists (followed). ?limit=&offset= (artists: ?after=)"""
+    if kind == "artists":
+        res = api.get("/me/following", type="artist", limit=_limit(q), after=q.get("after"))["artists"]
+        out = page(res)
+        out["after"] = (res.get("cursors") or {}).get("after")
+        return out
+    if kind == "contains":
+        return _library_contains(q, b)
+    if kind not in LIBRARY:
+        raise PlayerError(f"unknown library kind {kind!r}", 404)
+    path, key = LIBRARY[kind]
+    return page(api.get(path, limit=_limit(q), offset=q.get("offset")), key=key)
+
+
+@route("PUT", "/api/library")
+def _library_save(q, b):
+    """Body {uris: [...]}: save tracks/albums/episodes/shows/playlists, follow artists/users (max 40)"""
+    uris = _uris(q, b)
+    api.req("PUT", "/me/library", {"uris": ",".join(uris)})
+    return {"saved": uris}
+
+
+@route("DELETE", "/api/library")
+def _library_remove(q, b):
+    """Body {uris: [...]}: remove / unfollow (max 40)"""
+    uris = _uris(q, b)
+    api.req("DELETE", "/me/library", {"uris": ",".join(uris)})
+    return {"removed": uris}
+
+
+@route("GET", "/api/library/contains")
+def _library_contains(q, b):
+    """?uris=a,b,c → {uri: bool}"""
+    uris = _uris(q, b)
+    return dict(zip(uris, api.get("/me/library/contains", uris=",".join(uris))))
+
+
+@route("GET", "/api/recent")
+def _recent(q, b):
+    """Recently played tracks. ?limit=(max 50)&before=&after= (unix ms)"""
+    res = api.get("/me/player/recently-played", limit=_limit(q), before=q.get("before"), after=q.get("after"))
+    out = page(res, key="track")
+    out["context"] = [r.get("context") for r in res.get("items", [])]
+    return out
+
+
+@route("GET", "/api/top/{kind}")
+def _top(q, b, kind):
+    """kind = tracks | artists. ?time_range=short_term|medium_term|long_term&limit=&offset="""
+    if kind not in ("tracks", "artists"):
+        raise PlayerError("kind must be tracks or artists", 404)
+    return page(api.get(f"/me/top/{kind}", time_range=q.get("time_range"), limit=_limit(q), offset=q.get("offset")))
+
+
+@route("GET", "/api/me")
+def _me(q, b):
+    """Spotify profile of the logged-in Web API user"""
+    me = api.get("/me")
+    return {"id": me.get("id"), "name": me.get("display_name"), "uri": me.get("uri"),
+            "artwork": (me.get("images") or [{}])[0].get("url")}
+
+
+# ---------- Web API login (OAuth Authorization Code + PKCE) ----------
+
+LOGIN_PAGE = """<!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">
+<title>Spotify login</title>
+<style>body{{font:16px system-ui;max-width:34rem;margin:2rem auto;padding:0 1rem;background:#fff;color:#111}}
+@media(prefers-color-scheme:dark){{body{{background:#121212;color:#eee}}}}
+a.btn,button{{display:inline-block;background:#1db954;color:#000;border:0;border-radius:2rem;padding:.7rem 1.4rem;
+font:inherit;font-weight:600;text-decoration:none;cursor:pointer}}input{{width:100%;padding:.6rem;font:inherit;box-sizing:border-box}}
+code{{word-break:break-all}}</style>
+<h1>Connect Spotify</h1>
+<p><a class=btn href="{url}">Log in with Spotify</a></p>
+<p>Spotify will send you back to <code>{redirect}</code>.
+If that address belongs to another machine (e.g. this server is a headless Pi), the page won't load.
+That's expected: copy the whole URL from the address bar and paste it here.</p>
+<form method=post action="/auth/paste{tq}"><input name=url placeholder="http://127.0.0.1:8765/auth/callback?code=..." required>
+<p><button>Finish login</button></p></form>"""
+
+
+def _login_page(q):
+    url = auth.login_url()
+    tq = "?token=" + urllib.parse.quote(q["token"]) if q.get("token") else ""
+    return ("html", LOGIN_PAGE.format(url=html.escape(url), redirect=html.escape(auth.redirect_uri), tq=html.escape(tq)))
+
+
+def _done_page(st):
+    return ("html", "<!doctype html><meta charset=utf-8><title>Spotify login</title>"
+                    "<body style='font:16px system-ui;margin:2rem'><h1>Logged in ✓</h1><p>"
+                    + html.escape(st.get("scope") or "") + "</p><p><a href='/'>Open the remote</a></p>")
+
+
+# ---------- server ----------
+
+class Handler(BaseHTTPRequestHandler):
+    server_version = "MusicAPI/2.0"
+    token = None
+
+    def log_message(self, fmt, *args):
+        if not self.path.startswith("/api/events"):
+            msg = fmt % args
+            sys.stderr.write("%s - %s\n" % (self.address_string(), re.sub(r"(token|code)=[^&\s]+", r"\1=…", msg)))
+
+    def _send(self, code, body, ctype="application/json", headers=()):
+        if not isinstance(body, bytes):
+            body = (body if isinstance(body, str) else json.dumps(body)).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Access-Control-Allow-Origin", "*")
+        for k, v in headers:
+            self.send_header(k, v)
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _authorized(self, query):
+        if not self.token:
+            return True
+        given = self.headers.get("Authorization", "").removeprefix("Bearer ") or query.get("token", "")
+        return hmac.compare_digest(given.encode(), self.token.encode())
+
+    def do_OPTIONS(self):
+        self.send_response(204)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
+        self.end_headers()
+
+    def _body(self):
+        length = int(self.headers.get("Content-Length") or 0)
+        if not length:
+            return {}
+        raw = self.rfile.read(length)
+        if self.headers.get("Content-Type", "").startswith("application/x-www-form-urlencoded"):
+            return dict(urllib.parse.parse_qsl(raw.decode()))
+        return json.loads(raw or b"{}")
+
+    def _dispatch(self, method):
+        url = urllib.parse.urlparse(self.path)
+        query = dict(urllib.parse.parse_qsl(url.query))
+        path = url.path.rstrip("/") or "/"
+
+        if path == "/" and method == "GET":
+            with open(os.path.join(HERE, "index.html"), "rb") as f:
+                return self._send(200, f.read(), "text/html; charset=utf-8")
+        try:
+            if path == "/auth/callback" and method == "GET":  # protected by the PKCE state instead of the token
+                return self._result(_done_page(auth.finish(query.get("code"), query.get("state"),
+                                                           url=None if query.get("code") else self.path)))
+            if not self._authorized(query):
+                return self._send(401, {"error": "unauthorized"})
+            body = self._body()
+        except SpotifyError as e:
+            return self._send(e.status, {"error": str(e)})
+        except json.JSONDecodeError:
+            return self._send(400, {"error": "invalid JSON body"})
+
+        if path == "/api" and method == "GET":
+            return self._send(200, [{"method": m, "path": p, "doc": d} for m, _, p, d, _ in ROUTES] + [
+                {"method": "GET", "path": "/api/events", "doc": "Server-sent events: status (1/s), track, queue, sleep, error"},
+                {"method": "ANY", "path": "/api/spotify/{path}", "doc": "Raw Spotify Web API passthrough, e.g. GET /api/spotify/me/player"},
+                {"method": "GET", "path": "/auth/login", "doc": "Web API login page (?redirect=1 to go straight to Spotify)"},
+                {"method": "GET", "path": "/auth", "doc": "Web API login status"},
+                {"method": "POST", "path": "/auth/paste", "doc": "Body {url}: finish login with the redirected URL"},
+                {"method": "POST", "path": "/auth/logout", "doc": "Forget the Web API tokens"},
+            ])
+        if path == "/api/events" and method == "GET":
+            return self._sse()
+
+        try:
+            if path == "/auth" and method == "GET":
+                return self._send(200, {"result": auth.status()})
+            if path == "/auth/login" and method == "GET":
+                if query.get("redirect"):
+                    return self._result(("redirect", auth.login_url()))
+                return self._result(_login_page(query))
+            if path == "/auth/paste" and method == "POST":
+                st = auth.finish(url=body["url"])
+                form = self.headers.get("Content-Type", "").startswith("application/x-www-form-urlencoded")
+                return self._result(_done_page(st) if form else st)
+            if path == "/auth/logout" and method == "POST":
+                auth.logout()
+                return self._send(200, {"result": auth.status()})
+            if path.startswith("/api/spotify/"):
+                q = {k: v for k, v in query.items() if k != "token"}
+                return self._send(200, {"result": api.req(method, "/" + path[len("/api/spotify/"):], q,
+                                                          body if self.headers.get("Content-Length") else None)})
+        except (SpotifyError, PlayerError, ExtrasError) as e:
+            return self._send(e.status, {"error": str(e)})
+        except (KeyError, ValueError, TypeError) as e:
+            return self._send(400, {"error": f"bad request: {e}"})
+
+        matched_path = False
+        for m, rx, _, _, fn in ROUTES:
+            mt = rx.match(path)
+            if not mt:
+                continue
+            matched_path = True
+            if m != method:
+                continue
+            try:
+                params = {k: urllib.parse.unquote(v) for k, v in mt.groupdict().items()}
+                return self._result(fn(query, body, **params))
+            except (SpotifyError, PlayerError, ExtrasError) as e:
+                return self._send(e.status, {"error": str(e)})
+            except (KeyError, ValueError, TypeError) as e:
+                return self._send(400, {"error": f"bad request: {e}"})
+        self._send(405 if matched_path else 404, {"error": "method not allowed" if matched_path else "not found"})
+
+    def _result(self, result):
+        if isinstance(result, tuple) and isinstance(result[0], bytes):
+            return self._send(200, result[0], result[1], [("Cache-Control", "max-age=3600")])
+        if isinstance(result, tuple) and result[0] == "redirect":
+            return self._send(302, b"", "text/plain", [("Location", result[1])])
+        if isinstance(result, tuple) and result[0] == "html":
+            return self._send(200, result[1], "text/html; charset=utf-8")
+        return self._send(200, {"result": result})
+
+    def _sse(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        q = player.subscribe()
+        try:
+            if player.last:
+                q.put(("status", player.last))
+            while True:
+                try:
+                    event, data = q.get(timeout=15)
+                    self.wfile.write(f"event: {event}\ndata: {json.dumps(data)}\n\n".encode())
+                except queuelib.Empty:
+                    self.wfile.write(b": ping\n\n")
+                self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        finally:
+            player.unsubscribe(q)
+
+    def do_GET(self): self._dispatch("GET")
+    def do_POST(self): self._dispatch("POST")
+    def do_PUT(self): self._dispatch("PUT")
+    def do_PATCH(self): self._dispatch("PATCH")
+    def do_DELETE(self): self._dispatch("DELETE")
+
+
+def default_data_dir():
+    base = os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
+    return os.path.join(base, "music-api")
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("command", nargs="?", choices=["serve", "auth"], default="serve")
+    ap.add_argument("--host", default="127.0.0.1", help="use 0.0.0.0 to allow other devices on your network")
+    ap.add_argument("--port", type=int, default=8765)
+    ap.add_argument("--token", default=os.environ.get("MUSIC_API_TOKEN"), help="require Bearer token / ?token=")
+    ap.add_argument("--public", action="store_true",
+                    help="require a token even on localhost (for tunnels); stored in <data-dir>/token, created if missing")
+    ap.add_argument("--data-dir", default=os.environ.get("MUSIC_API_DATA_DIR") or default_data_dir())
+    ap.add_argument("--client-id", default=os.environ.get("SPOTIFY_CLIENT_ID"),
+                    help="Spotify app Client ID (developer.spotify.com/dashboard); remembered after first login")
+    ap.add_argument("--redirect-uri", default=os.environ.get("SPOTIFY_REDIRECT_URI"),
+                    help="must match the app's settings; default http://127.0.0.1:<port>/auth/callback")
+    ap.add_argument("--backend", choices=["auto", "soloist", "connect"], default=os.environ.get("MUSIC_API_BACKEND", "auto"),
+                    help="auto = soloist when its WebSocket is found, else connect")
+    ap.add_argument("--soloist-ws", default=os.environ.get("SOLOIST_WS"), help="ADDR:PORT (default: discover from data dir)")
+    ap.add_argument("--soloist-data-dir", default=os.environ.get("SOLOIST_DATA_DIR") or soloist_data_dir())
+    ap.add_argument("--device", default=os.environ.get("MUSIC_API_DEVICE"),
+                    help="connect backend: Connect device name or id to control (default: whichever is active)")
+    a = ap.parse_args()
+
+    global auth, api, player, soloist
+    os.makedirs(a.data_dir, mode=0o700, exist_ok=True)
+    auth = Auth(a.data_dir, a.client_id, a.redirect_uri or f"http://127.0.0.1:{a.port}/auth/callback")
+    api = WebAPI(auth)
+
+    if a.command == "auth":
+        print("Open this URL in any browser and log in:\n\n  " + auth.login_url() + "\n")
+        print(f"You'll land on {auth.redirect_uri}?code=... (it may fail to load; that's fine).")
+        st = auth.finish(url=input("Paste that full URL here: "))
+        print("Logged in. Scopes:", st["scope"])
+        return
+
+    if a.public and not a.token:
+        token_file = os.path.join(a.data_dir, "token")
+        if not os.path.exists(token_file):
+            with open(os.open(token_file, os.O_WRONLY | os.O_CREAT, 0o600), "w") as f:
+                f.write(secrets.token_urlsafe(32))
+        with open(token_file) as f:
+            a.token = f.read().strip()
+    if a.host not in ("127.0.0.1", "localhost", "::1") and not a.token:
+        ap.error("--token is required when listening beyond localhost")
+
+    backend = a.backend
+    if backend != "connect":
+        soloist = Soloist(a.soloist_ws, a.soloist_data_dir)
+        # auto: use Soloist if it's running or has ever run here (it may still be starting up)
+        if backend == "auto" and not (soloist.available() or os.path.isdir(soloist.data_dir)):
+            soloist, backend = None, "connect"
+        else:
+            backend = "soloist"
+    player = Player(backend, api, soloist, a.device)
+    if soloist:
+        soloist.on_event = player.on_soloist_event
+        threading.Thread(target=soloist.loop, daemon=True).start()
+    threading.Thread(target=player.loop, daemon=True).start()
+
+    Handler.token = a.token
+    srv = ThreadingHTTPServer((a.host, a.port), Handler)
+    srv.daemon_threads = True
+    print(f"Music API v2 on http://{a.host}:{a.port}/  backend={backend}  web-api={'logged in' if auth.logged_in else 'not logged in (open /auth/login)'}",
+          flush=True)
+    srv.serve_forever()
+
+
+if __name__ == "__main__":
+    main()
