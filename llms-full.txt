@@ -272,6 +272,9 @@ Cancel the timer (restores volume if a fade had started). Returns the sleep stat
 - Soloist backend: `{"upcoming": [...], "previous": [...]}`, each `{"uid", "source", "item"}` where `source` is `context`, `queue` or `autoplay`; up to 80 upcoming.
 - Upcoming entries also carry `added_by`: `{"id", "name", "avatar"}` of whoever queued that track through this API in the last 6 hours, else null.
 
+#### POST /api/queue/jump
+Body `{uid}` (from `GET /api/queue`, Soloist) or `{index}` (0 = the next entry): skip ahead to that Up Next entry, dropping the entries before it, like clicking a song in Spotify's queue. 409 if that uid is no longer in Up Next. Returns the status.
+
 #### POST /api/queue
 Body `{uri}` or `{uris: [...]}`: add tracks or episodes to the end of the user queue (bare IDs are treated as tracks). Albums and playlists can't be queued; play them, or queue their tracks one by one. Returns `{"added": [uris]}`.
 

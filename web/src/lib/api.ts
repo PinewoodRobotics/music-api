@@ -240,6 +240,8 @@ export const api = {
   play: (body: { uri?: string; uris?: string[]; context?: string; offset?: number | string } = {}) => post<Status>('/api/play', body),
   pause: () => post<Status>('/api/pause'),
   next: () => post<Status>('/api/next'),
+  jumpTo: (entry: { uid?: string | null; index: number }) =>
+    post<Status>('/api/queue/jump', entry.uid ? { uid: entry.uid } : { index: entry.index }),
   previous: () => post<Status>('/api/previous'),
   seek: (position_ms: number) => post<Status>('/api/seek', { position_ms: Math.max(0, Math.round(position_ms)) }),
   volume: (volume: number) => post<Status>('/api/volume', { volume: Math.round(volume) }),

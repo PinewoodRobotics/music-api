@@ -34,6 +34,7 @@ Path `{id}`s are bare 22-character Spotify IDs. `uri`/`uris`/`context` fields ta
 |---|---|---|
 | `GET` | `/api/queue` | Upcoming (and, with Soloist, previous) queue entries, each with added_by {id, name, avatar} when someone queued it through this API. ?limit=n (Soloist: up to 80) |
 | `POST` | `/api/queue` | Body {uri} \| {uris: [...]}: add to the end of the queue |
+| `POST` | `/api/queue/jump` | Body {uid} (Soloist) or {index}: skip ahead to that Up Next entry, dropping the ones before it |
 | `GET` | `/api/devices` | Spotify Connect devices on the account (plus the local Soloist device) |
 | `POST` | `/api/devices/transfer` | Body {device: name\|id\|"soloist", play?: bool}: move playback to a device |
 | `GET` | `/api/backend` | Which playback backend is in use and how it's doing |

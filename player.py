@@ -253,6 +253,21 @@ class Player:
         self._put("/me/player/next", method="POST")
         return self.status(fresh=True)
 
+    def jump(self, b):
+        """Skip ahead to an Up Next entry (by uid, else index), dropping the ones before it like Spotify does."""
+        up = self.queue(80)["upcoming"]
+        if b.get("uid"):
+            idx = next((i for i, e in enumerate(up) if e.get("uid") == b["uid"]), None)
+            if idx is None:
+                raise PlayerError("that song isn't in Up Next anymore", 409)
+        else:
+            idx = int(b["index"])
+            if not 0 <= idx < len(up):
+                raise PlayerError("no such Up Next entry", 404)
+        for _ in range(idx + 1):
+            self.next()
+        return self.status(fresh=True)
+
     def previous(self):
         if self.backend == "soloist":
             self._sol("skip_prev")

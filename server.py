@@ -255,6 +255,12 @@ def _enqueue(q, b):
     return res
 
 
+@route("POST", "/api/queue/jump")
+def _queue_jump(q, b):
+    """Body {uid} (Soloist) or {index}: skip ahead to that Up Next entry, dropping the ones before it"""
+    return player.jump(b)
+
+
 @route("GET", "/api/devices")
 def _devices(q, b):
     """Spotify Connect devices on the account (plus the local Soloist device)"""
