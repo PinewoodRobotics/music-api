@@ -186,6 +186,7 @@ Just `status.track`: the current track/episode object, or `null`.
 Play or resume. With no body, resumes. Body (all optional):
 
 - `uri`: one URI or link. Tracks and episodes play on their own; albums, playlists, artists and shows start that context.
+- `shuffle`: `true`/`false` sets shuffle before playing (the web app's Play button sends `false` so albums start at track 1 in order; Shuffle sends `true`).
 - `uris`: list of track/episode URIs (or bare track IDs) to play as an ad-hoc list.
 - `context`: album/playlist/artist/show URI, with
 - `offset`: where to start in the context, either an integer index (0-based, must be a JSON number) or a track URI/ID.

@@ -170,8 +170,10 @@ def _set_sys_output(q, b):
 @route("POST", "/api/play")
 def _play(q, b):
     """Play/resume. Body optional: {uri} (track, album, playlist, artist, episode, show; URI or open.spotify.com link),
-    {uris: [...]}, {context, offset: index|uri}, {position: seconds | position_ms}"""
-    res = player.play(b)
+    {uris: [...]}, {context, offset: index|uri}, {position: seconds | position_ms}, {shuffle?: bool} (set before playing)"""
+    if b.get("shuffle") is not None:
+        player.shuffle({"enabled": bool(b["shuffle"])})
+    res = player.play({k: v for k, v in b.items() if k != "shuffle"})
     named = [to_uri(b[k]) for k in ("uri", "context") if b.get(k)] + [to_uri(u, "track") for u in b.get("uris", [])]
     if named:
         credits.start(named, _req.user)

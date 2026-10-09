@@ -17,7 +17,7 @@ Path `{id}`s are bare 22-character Spotify IDs. `uri`/`uris`/`context` fields ta
 | `GET` | `/api/sleep` | Sleep timer state |
 | `POST` | `/api/sleep` | Body {minutes, fade?: seconds}: pause after N minutes, fading out over the last `fade` seconds (default 30) |
 | `DELETE` | `/api/sleep` | Cancel the sleep timer |
-| `POST` | `/api/play` | Play/resume. Body optional: {uri} (track, album, playlist, artist, episode, show; URI or open.spotify.com link), {uris: [...]}, {context, offset: index\|uri}, {position: seconds \| position_ms} |
+| `POST` | `/api/play` | Play/resume. Body optional: {uri} (track, album, playlist, artist, episode, show; URI or open.spotify.com link), {uris: [...]}, {context, offset: index\|uri}, {position: seconds \| position_ms}, {shuffle?: bool} (set before playing) |
 | `POST` | `/api/play-url` | Body {url}: play any open.spotify.com / spotify: link |
 | `POST` | `/api/pause` | Pause |
 | `POST` | `/api/next` | Skip to next |
