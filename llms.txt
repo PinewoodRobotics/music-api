@@ -1,0 +1,25 @@
+# Music API v2
+
+> HTTP JSON API and web remote for Spotify, run by Pinewood Robotics. It controls playback (play, pause, skip, seek, volume, shuffle, repeat, queue, devices, sleep timer), searches the catalog, manages playlists and the library, shows listening history, and adds synced lyrics (LRCLIB) and the host machine's audio mixer. Base URL: https://music-api.pinewoodrobotics.org
+
+Every request except the documentation files below needs an API token: send `Authorization: Bearer <token>`, or `?token=<token>` where you can't set headers (EventSource, `<img>`, browser links). Ask the user for a token if you don't have one; tokens look like `mapi_…`. Responses are JSON: `{"result": ...}` on success, `{"error": "..."}` with a 4xx/5xx status on failure.
+
+Path IDs are bare 22-character Spotify IDs. Body fields named `uri`, `uris` and `context` take `spotify:track:…` style URIs or open.spotify.com links. Search returns at most 10 results per type. Playback acts on a real speaker in a shared space, so confirm with the user before starting, skipping or changing volume unless they asked for it.
+
+To drive the API with no other context, read llms-full.txt first: it covers every endpoint, response shapes, curl examples, common workflows and Spotify's limits.
+
+## Docs
+
+- [Full reference for agents](https://music-api.pinewoodrobotics.org/llms-full.txt): Self-contained guide in one file: auth, response envelope, URI rules, every endpoint with parameters and examples, server-sent events, workflows, limits and gotchas
+- [API reference table](https://music-api.pinewoodrobotics.org/API.md): One table row per endpoint, generated from the server's route docstrings
+- [README](https://music-api.pinewoodrobotics.org/README.md): What the server is, its two playback backends, the four authentication layers, token management and deployment
+
+## API
+
+- [Endpoint list (live JSON)](https://music-api.pinewoodrobotics.org/api): `GET /api` with a token returns a bare JSON array of `{method, path, doc}` for every route on the running server
+- [Playback status](https://music-api.pinewoodrobotics.org/api/status): `GET /api/status` with a token returns the current state, track, position, volume, device and backend
+
+## Optional
+
+- [LLMS.md](https://music-api.pinewoodrobotics.org/LLMS.md): The same content as llms-full.txt, served as text/markdown
+- [Web remote](https://music-api.pinewoodrobotics.org/): Browser UI for people. Open it once with `?token=…` and it remembers the token

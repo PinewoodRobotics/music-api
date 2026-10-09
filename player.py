@@ -15,6 +15,9 @@ from spotify import SpotifyError, item, to_uri
 
 WS_PLAYABLE = ("track", "album", "playlist", "episode")
 REPEAT_ALIASES = {"one": "track", "all": "context", "none": "off"}
+# Web API `actions.disallows` keys -> the action names Soloist uses in `available_actions`
+DISALLOW_KEYS = {"resuming": "play", "pausing": "pause", "seeking": "seek", "skipping_next": "skip_next",
+                 "skipping_prev": "skip_prev", "toggling_shuffle": "shuffle", "toggling_repeat_context": "set_repeat"}
 
 
 class PlayerError(Exception):
@@ -189,7 +192,7 @@ class Player:
             "position_ms": pos, "position": round(pos / 1000, 3), "duration_ms": (track or {}).get("duration_ms"),
             "volume": dev.get("volume_percent"), "shuffle": p.get("shuffle_state"), "repeat": p.get("repeat_state"),
             "track": track, "context": {"uri": ctx.get("uri"), "type": ctx.get("type")} if ctx else None,
-            "actions": sorted(k for k, v in disallows.items() if not v) if disallows else [],
+            "actions": sorted({a for k, a in DISALLOW_KEYS.items() if not disallows.get(k)} | {"add_to_queue"}),
         }
 
     # ---------- transport ----------
@@ -201,6 +204,8 @@ class Player:
         uris = [to_uri(u, "track") for u in b.get("uris", [])]
         context = to_uri(b["context"]) if b.get("context") else None
         offset = b.get("offset")
+        if isinstance(offset, str) and offset.isdigit():
+            offset = int(offset)
         pos = b.get("position_ms", int(b["position"] * 1000) if b.get("position") is not None else None)
 
         if self.backend == "soloist":
@@ -364,7 +369,8 @@ class Player:
                 self._sol("play")
             return self.status()
         self._need_api("transferring to another device")
-        target = next((d for d in self.devices() if want in (d["id"], d["name"])), None)
+        target = next((d for d in self.devices()
+                       if want == d["id"] or want.lower() == (d["name"] or "").lower()), None)
         if not target or not target["id"]:
             raise PlayerError(f"device {want!r} not found", 404)
         self.api.req("PUT", "/me/player", body={"device_ids": [target["id"]], "play": bool(b.get("play"))})

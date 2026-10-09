@@ -49,15 +49,16 @@ class Tokens:
         """Import <data-dir>/token (e.g. the migrated v1 token) once; if auth is required and there are
         no tokens at all, generate one and write it there for the admin to read."""
         with self.lock:
-            if self.tokens:
+            if self.tokens or not required:
                 return None
             if os.path.exists(self.legacy_path):
                 with open(self.legacy_path) as f:
                     tok = f.read().strip()
                 if tok:
                     self._add(tok, "v1 token")
+                    os.remove(self.legacy_path)  # only the hash is kept, so revoking it really revokes it
                     return "imported"
-            if required and not self.static_hash:
+            if not self.static_hash:
                 tok = "mapi_" + secrets.token_urlsafe(32)
                 with open(os.open(self.legacy_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as f:
                     f.write(tok)

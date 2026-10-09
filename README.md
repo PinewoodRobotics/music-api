@@ -10,6 +10,18 @@ python3 server.py --host 0.0.0.0 --token SECRET            # LAN access
 ```
 
 `GET /api` lists every endpoint. See [API.md](API.md) for the full reference (regenerate it with `python3 gen_api_md.py > API.md`).
+Production lives at https://music-api.pinewoodrobotics.org (see [Running on macOS](#running-on-macos-launchd--cloudflare-tunnel)).
+
+## Docs
+
+All of these are served without a token, so you can point an LLM agent straight at them:
+
+- [`/llms.txt`](https://music-api.pinewoodrobotics.org/llms.txt): short index in the [llms.txt](https://llmstxt.org) format.
+- [`/llms-full.txt`](https://music-api.pinewoodrobotics.org/llms-full.txt) (also `/LLMS.md`): the whole reference in one file, written so an agent can drive the API with no other context. Endpoints, response shapes, curl examples, workflows, limits.
+- [`/API.md`](https://music-api.pinewoodrobotics.org/API.md): one table row per endpoint, generated from the route docstrings.
+- `/README.md`: this file.
+
+`llms.txt` and `llms-full.txt` are written by hand. Update them when you add or change a route.
 
 ## How it fits together
 
@@ -49,8 +61,23 @@ That covers starting a playlist at a given track, playing an artist, playing a l
    - on a headless box, run `python3 server.py auth` over SSH, or open `/auth/login` from your phone. Spotify will redirect
      to `127.0.0.1`, which won't load on the phone. Paste that URL into the box on the page.
    Tokens (with a refresh token) go to `~/.local/share/music-api/spotify-tokens.json` (mode 600) and refresh automatically.
-4. **This server's own token**, as in v1. Use `--token` / `$MUSIC_API_TOKEN` / `--public`. It's required off-localhost.
+4. **This server's own API tokens.** Send `Authorization: Bearer <token>` (or `?token=` for `EventSource`, `<img>` and links).
+   Required off-localhost, with `--public` (even from localhost), and as soon as any token exists. See [API tokens](#api-tokens).
    Soloist's WebSocket has *no* auth at all, so it stays bound to `127.0.0.1`, and this server is the only door in.
+
+### API tokens
+
+Tokens have no scopes: every token can do everything, including managing tokens.
+
+- `GET /api/tokens` lists them: `id`, `name`, `prefix` (the first few characters, to recognize one), `created`, `last_used`, and `current` (the one you're calling with).
+- `POST /api/tokens {name?}` creates one (`mapi_…`). The response is the only time the token itself is shown.
+- `DELETE /api/tokens/{id}` revokes one immediately. Any token can revoke any token, including itself. Revoking the last one is refused (409), so you can't lock yourself out.
+
+Only SHA-256 hashes are stored, in `<data-dir>/api-tokens.json` (mode 600; data dir defaults to `~/.local/share/music-api`).
+On the first start that requires auth, `<data-dir>/token` is imported as "v1 token" if it exists (that's where the v1 token was migrated),
+then deleted, so only its hash remains. If there's no such file either, a token is generated and written to `<data-dir>/token` (mode 600) for you to read.
+`--token` / `$MUSIC_API_TOKEN` still works as an extra static token. It isn't listed and can't be revoked through the API.
+To hand someone the web remote, create a token and send them `https://…/?token=<token>`; the page remembers it.
 
 ### Web API limits (development-mode apps, 2026 rules)
 
@@ -76,6 +103,26 @@ That covers starting a playlist at a given track, playing an artist, playing a l
 - **Build expiry.** Soloist builds expire 90 days after they're built (exit code 10).
   [`deploy/update-soloist.sh`](deploy/update-soloist.sh) runs daily and pulls the current build from Spotify's CDN.
   Spotify asks that the binary not be redistributed, so it's never committed here.
+
+## Running on macOS (launchd + Cloudflare tunnel)
+
+This is how production runs. Two launchd agents, both `RunAtLoad` + `KeepAlive`:
+
+- `~/Library/LaunchAgents/org.pinewoodrobotics.music-api.plist` runs `python3 server.py --public --client-id <id>`
+  from `~/Developer/music-api-v2`. Output goes to `server.log` in the repo directory (gitignored).
+  On a Mac there's no Soloist, so `auto` picks the `connect` backend: play on the Spotify desktop app or any other Connect device.
+- `org.pinewoodrobotics.music-api-tunnel` runs `cloudflared` with `~/.cloudflared/music-api.yml`, which maps
+  `music-api.pinewoodrobotics.org` to `http://127.0.0.1:8765`.
+
+```
+launchctl kickstart -k gui/$(id -u)/org.pinewoodrobotics.music-api    # restart after a code change
+tail -f ~/Developer/music-api-v2/server.log
+```
+
+`--public` makes every request need a token, because tunnelled requests arrive from `127.0.0.1` too.
+For Web API login through the public URL, add `https://music-api.pinewoodrobotics.org/auth/callback` as a Redirect URI
+in the Spotify app and add `--redirect-uri` with that URL to the plist. Otherwise use the paste flow.
+v1 (Music.app) lived in `~/Developer/music-api` and is retired.
 
 ## Beyond Spotify's APIs
 

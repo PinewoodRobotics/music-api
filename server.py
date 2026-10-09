@@ -611,10 +611,12 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Link", '</llms.txt>; rel="describedby"; type="text/plain"')
         for k, v in headers:
             self.send_header(k, v)
         self.end_headers()
-        self.wfile.write(body)
+        if self.command != "HEAD":
+            self.wfile.write(body)
 
     def _authorized(self, query):
         given = self.headers.get("Authorization", "").removeprefix("Bearer ").strip() or query.get("token", "")
@@ -668,7 +670,7 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/api" and method == "GET":
             return self._send(200, [{"method": m, "path": p, "doc": d} for m, _, p, d, _ in ROUTES] + [
-                {"method": "GET", "path": "/api/events", "doc": "Server-sent events: status (1/s), track, queue, sleep, error"},
+                {"method": "GET", "path": "/api/events", "doc": "Server-sent events: status (1/s with Soloist, every 2 s with connect), track, queue, sleep, error"},
                 {"method": "ANY", "path": "/api/spotify/{path}", "doc": "Raw Spotify Web API passthrough, e.g. GET /api/spotify/me/player"},
                 {"method": "GET", "path": "/auth/login", "doc": "Web API login page (?redirect=1 to go straight to Spotify)"},
                 {"method": "GET", "path": "/auth", "doc": "Web API login status"},
@@ -750,6 +752,12 @@ class Handler(BaseHTTPRequestHandler):
             player.unsubscribe(q)
 
     def do_GET(self): self._dispatch("GET")
+
+    def do_HEAD(self):
+        """For link checkers and agents probing the docs; API routes don't support HEAD."""
+        if urllib.parse.urlparse(self.path).path in ("/", *DOC_FILES):
+            return self._dispatch("GET")
+        self._send(405, {"error": "method not allowed"})
     def do_POST(self): self._dispatch("POST")
     def do_PUT(self): self._dispatch("PUT")
     def do_PATCH(self): self._dispatch("PATCH")

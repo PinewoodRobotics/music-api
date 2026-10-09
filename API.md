@@ -1,8 +1,10 @@
 # Music API v2 reference
 
-Every JSON response is `{"result": ...}` on success or `{"error": "..."}` with a 4xx/5xx status.
-When a token is set, send `Authorization: Bearer <token>` (or `?token=` for `EventSource` / `<img>`).
-IDs can be bare Spotify IDs; bodies that take `uri`/`uris` also accept `spotify:` URIs and open.spotify.com links.
+Base URL: `https://music-api.pinewoodrobotics.org` (or `http://127.0.0.1:8765` on the machine itself). For a self-contained guide written for LLM agents, see [llms-full.txt](https://music-api.pinewoodrobotics.org/llms-full.txt).
+
+Every JSON response is `{"result": ...}` on success or `{"error": "..."}` with a 4xx/5xx status (exceptions: `GET /api` returns a bare array; `/api/artwork` returns a redirect or image bytes; `/auth/login` returns HTML).
+Send an API token as `Authorization: Bearer <token>` (or `?token=` for `EventSource` / `<img>` / browser links). A token is required as soon as any token exists, when started with `--public`, or when listening beyond localhost.
+Path `{id}`s are bare 22-character Spotify IDs. `uri`/`uris`/`context` fields take `spotify:` URIs or open.spotify.com links; `/api/play` `uris`, `/api/queue` and `offset` also accept bare IDs (as tracks).
 
 ## Playback
 
@@ -84,6 +86,16 @@ IDs can be bare Spotify IDs; bodies that take `uri`/`uris` also accept `spotify:
 | `GET` | `/api/top/{kind}` | kind = tracks \| artists. ?time_range=short_term\|medium_term\|long_term&limit=&offset= |
 | `GET` | `/api/me` | Spotify profile of the logged-in Web API user |
 
+## Tokens
+
+| Method | Path | Notes |
+|---|---|---|
+| `GET` | `/api/tokens` | All API tokens (no secrets): id, name, prefix, created, last_used, current |
+| `POST` | `/api/tokens` | Body {name?}: create a token. The response is the only time the token itself is shown |
+| `DELETE` | `/api/tokens/{id}` | Revoke a token immediately (any token may revoke any other, or itself; never the last one) |
+
+Tokens have no scopes: any token can do everything, including creating and revoking tokens. Only SHA-256 hashes are stored (`<data-dir>/api-tokens.json`, mode 600). New tokens look like `mapi_…`. A `--token` / `$MUSIC_API_TOKEN` static token also works but isn't listed and can't be revoked here. Revoking the last listed token is refused (409) unless a static token is configured.
+
 ## System audio
 
 | Method | Path | Notes |
@@ -98,7 +110,8 @@ IDs can be bare Spotify IDs; bodies that take `uri`/`uris` also accept `spotify:
 | Method | Path | Notes |
 |---|---|---|
 | `POST` | `/api/playpause` | Toggle play/pause |
-| `GET` | `/api/events` | Server-sent events: `status` (1/s while anyone listens), `track`, `queue`, `sleep`, `error` |
+| `GET` | `/api` | This list as JSON: a bare array of `{method, path, doc}` (no `result` envelope) |
+| `GET` | `/api/events` | Server-sent events: `status` (every 1 s with Soloist, 2 s with connect, while anyone listens), `track`, `queue` (Soloist only), `sleep`, `error`. Use `?token=` with `EventSource` |
 | `ANY` | `/api/spotify/{path}` | Raw Spotify Web API passthrough with your login, e.g. `GET /api/spotify/me/player/devices` |
 
 ## Auth (Web API login)
@@ -110,3 +123,16 @@ IDs can be bare Spotify IDs; bodies that take `uri`/`uris` also accept `spotify:
 | `GET` | `/auth/callback` | OAuth redirect target (checked by PKCE state, no token needed) |
 | `POST` | `/auth/paste` | Body `{url}`: finish login by pasting the redirected URL (headless boxes) |
 | `POST` | `/auth/logout` | Forget the Web API tokens |
+
+## No token needed
+
+| Method | Path | Notes |
+|---|---|---|
+| `GET` | `/` | Web remote (open `/?token=…` once; the page remembers it) |
+| `GET` | `/llms.txt` | llms.txt index for LLM agents |
+| `GET` | `/llms-full.txt` | Complete agent-oriented reference in one file |
+| `GET` | `/LLMS.md` | Same content as `/llms-full.txt`, served as Markdown |
+| `GET` | `/API.md` | This file |
+| `GET` | `/README.md` | Overview, setup and deployment |
+| `GET` | `/auth/callback` | OAuth redirect target |
+| `OPTIONS` | `*` | CORS preflight (`Access-Control-Allow-Origin: *` on every response) |

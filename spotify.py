@@ -48,7 +48,7 @@ def _post_form(url, fields):
             msg = err.get("error_description") or err.get("error") or str(e)
         except ValueError:
             msg = str(e)
-        raise SpotifyError(f"Spotify accounts: {msg}", 401 if e.code in (400, 401) else 502)
+        raise SpotifyError(f"Spotify accounts: {msg}", 400 if e.code in (400, 401) else 502)
 
 
 class Auth:
@@ -132,12 +132,17 @@ class Auth:
 
     def access_token(self, force_refresh=False):
         if not self.logged_in:
-            raise SpotifyError("not logged in to the Spotify Web API; open /auth/login", 401)
+            raise SpotifyError("not logged in to the Spotify Web API; open /auth/login", 412)
         if force_refresh or self.tokens.get("expires_at", 0) - 60 < time.time():
-            tok = _post_form(ACCOUNTS + "/api/token", {
-                "grant_type": "refresh_token", "refresh_token": self.tokens["refresh_token"],
-                "client_id": self.client_id,
-            })
+            try:
+                tok = _post_form(ACCOUNTS + "/api/token", {
+                    "grant_type": "refresh_token", "refresh_token": self.tokens["refresh_token"],
+                    "client_id": self.client_id,
+                })
+            except SpotifyError as e:
+                if e.status == 502:
+                    raise
+                raise SpotifyError(f"Spotify login expired or was revoked ({e}); log in again at /auth/login", 412)
             self._store(tok)
         return self.tokens["access_token"]
 
