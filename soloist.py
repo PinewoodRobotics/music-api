@@ -217,13 +217,17 @@ class Soloist:
                 elif t == "device_changed":
                     pb["is_active"] = msg.get("is_active")
                     self.auth.update(is_active=msg.get("is_active"), device_name=msg.get("device_name"))
-            if self.pending and (t == "error" or (t == "command_result" and msg.get("command") == self.pending[0])
-                                 or (t, self.pending[0]) in (("playback_state", "get_state"),
-                                                             ("queue_changed", "get_queue"),
-                                                             ("auth_state", "get_auth_state"))):
+            reply = self.pending and (t == "error" or (t == "command_result" and msg.get("command") == self.pending[0])
+                                      or (t, self.pending[0]) in (("playback_state", "get_state"),
+                                                                  ("queue_changed", "get_queue"),
+                                                                  ("auth_state", "get_auth_state")))
+            if reply:
                 self.pending[1].append(msg)
                 self.cond.notify_all()
-        self.on_event(t, msg)
+        # A get_* reply is the answer to our question, not a change: re-broadcasting it makes every client
+        # that refetches on "queue" ask again, in a loop.
+        if not reply or t in ("error", "command_result"):
+            self.on_event(t, msg)
 
     def command(self, name, timeout=5, **fields):
         """Send one command and wait for its command_result / reply event. Raises SoloistError on error."""
