@@ -2,6 +2,7 @@ import { ChevronLeft, ChevronRight, Loader2 } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { AccountMenu } from './components/AccountMenu'
 import { BrandMark } from './components/Brand'
+import { MediaSessionBridge } from './components/MediaSessionBridge'
 import { MobileNav } from './components/MobileNav'
 import { Button } from './components/Modal'
 import { NowPlayingBar } from './components/NowPlayingBar'
@@ -12,6 +13,7 @@ import { Sidebar } from './components/Sidebar'
 import { Toasts } from './components/Toasts'
 import { usePalette } from './lib/color'
 import { matchRoute, navigate, useLocation, type Route } from './lib/router'
+import { focusSearch } from './lib/searchFocus'
 import { AlbumPage } from './pages/AlbumPage'
 import { ArtistPage } from './pages/ArtistPage'
 import { PlaylistsPage } from './pages/PlaylistsPage'
@@ -80,6 +82,16 @@ function useShortcuts() {
       t instanceof HTMLElement && (t.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(t.tagName) || t.getAttribute('role') === 'slider')
     const blocked = () => !!document.querySelector('[aria-modal="true"][role="dialog"]:not([aria-label="Now Playing"])')
     const down = (e: KeyboardEvent) => {
+      const commandK = e.key.toLowerCase() === 'k' && (e.metaKey || e.ctrlKey) && !e.altKey
+      const slash = e.key === '/' && !e.metaKey && !e.ctrlKey && !e.altKey && !typing(e.target)
+      if ((commandK || slash) && !blocked()) {
+        e.preventDefault()
+        if (!focusSearch()) {
+          navigate('/search')
+          setTimeout(focusSearch, 50)
+        }
+        return
+      }
       if (e.metaKey || e.ctrlKey || e.altKey || typing(e.target) || blocked()) return
       if (e.code === 'Space') {
         e.preventDefault()
@@ -157,8 +169,9 @@ function Shell() {
   }, [path])
 
   return (
-    <div className="flex h-dvh flex-col overflow-hidden bg-black pt-[env(safe-area-inset-top)] md:pt-0">
+    <div data-app-shell className="flex h-dvh flex-col overflow-hidden bg-black pt-[env(safe-area-inset-top)] md:pt-0">
       <AmbientTheme />
+      <MediaSessionBridge />
       <div className="flex min-h-0 flex-1 gap-2 md:p-2 md:pb-0">
         <Sidebar />
         <main

@@ -108,7 +108,7 @@ export function UpNext({ immersive = false }: { immersive?: boolean }) {
   }
 
   return (
-    <div className={`scroll-thin h-full overflow-y-auto pb-6 ${immersive ? 'px-0' : 'px-3'}`}>
+    <div className={`scroll-thin h-full overflow-y-auto overscroll-contain pb-6 ${immersive ? 'px-0' : 'px-3'}`}>
       {status?.track && !immersive && (
         <section className="mb-4">
           <h3 className="px-2 pb-2 pt-1 text-sm font-semibold text-white/90">Now playing</h3>

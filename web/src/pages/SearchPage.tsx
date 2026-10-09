@@ -185,6 +185,7 @@ export function SearchPage() {
           )}
           <input
             ref={input}
+            data-search-input
             autoFocus={!isTouch()}
             enterKeyHint="search"
             autoCapitalize="off"

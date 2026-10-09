@@ -1,5 +1,6 @@
 import { Library, Search } from 'lucide-react'
 import { useLocation } from '../lib/router'
+import { focusSearch } from '../lib/searchFocus'
 import { Link } from './Link'
 
 const tabs = [
@@ -17,6 +18,9 @@ export function MobileNav() {
           <Link
             key={href}
             href={href}
+            onClick={(e) => {
+              if (href === '/search' && path === '/search' && focusSearch()) e.preventDefault()
+            }}
             className={`flex min-h-14 flex-col items-center justify-center gap-1 pb-1 pt-2 text-[11px] font-medium transition-colors active:opacity-60 ${active ? 'text-fg' : 'text-dim'}`}
           >
             <Icon className="size-6" strokeWidth={active ? 2.4 : 1.8} />

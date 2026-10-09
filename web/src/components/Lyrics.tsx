@@ -164,7 +164,7 @@ function SyncedLyrics({ lines, size }: { lines: LyricsData['synced']; size: Lyri
       ref={container}
       onWheel={pauseAutoScroll}
       onTouchMove={pauseAutoScroll}
-      className={`no-scrollbar mask-fade-y relative h-full overflow-y-auto ${pad}`}
+      className={`no-scrollbar mask-fade-y relative h-full overflow-y-auto overscroll-contain ${pad}`}
     >
       <div className="h-[34%]" aria-hidden />
       {lines.map((line, i) => {

@@ -65,7 +65,7 @@ function Sheet() {
   const fine = useMediaQuery('(hover: hover) and (pointer: fine)')
   const { awake, wake, hold } = useIdle(fine)
   const close = useCallback(() => setExpanded(false), [setExpanded])
-  const { ref, dismiss, handlers } = useSwipeDismiss(close)
+  const { ref, backdropRef, dismiss } = useSwipeDismiss(close)
   useArtworkFlip(ref, `${compact}:${panel ?? 'art'}`)
 
   useEffect(() => {
@@ -81,40 +81,42 @@ function Sheet() {
   const art = status?.track?.artwork ?? null
 
   return (
-    <div
-      ref={ref}
-      {...handlers}
-      className={`animate-rise fixed inset-0 z-50 touch-none select-none overflow-hidden text-white will-change-transform ${awake ? '' : 'cursor-none'}`}
-      onPointerMoveCapture={wake}
-      onPointerDownCapture={wake}
-      role="dialog"
-      aria-modal="true"
-      aria-label="Now Playing"
-    >
-      <Mesh art={art} />
-      <div className="relative flex h-full flex-col pb-[max(env(safe-area-inset-bottom),14px)] pt-[env(safe-area-inset-top)]">
-        {fine ? (
-          <button
-            type="button"
-            onClick={dismiss}
-            aria-label="Close (Esc)"
-            title="Close (Esc)"
-            className={`absolute left-4 top-[max(env(safe-area-inset-top),16px)] z-10 grid size-11 place-items-center rounded-full bg-white/10 text-white/85 hover:bg-white/20 ${fade}`}
-          >
-            <ChevronDown className="size-6" />
-          </button>
-        ) : (
-          <button type="button" onClick={dismiss} aria-label="Close" className="mx-auto grid h-7 w-20 shrink-0 place-items-center">
-            <span className="h-[5px] w-10 rounded-full bg-white/45" />
-          </button>
-        )}
-        {compact ? (
-          <PhoneLayout art={art} panel={panel} onToggle={togglePanel} />
-        ) : (
-          <WideLayout art={art} panel={panel} onToggle={togglePanel} fine={fine} fade={fade} hold={hold} />
-        )}
+    <>
+      <div ref={backdropRef} className="fixed inset-0 z-[49] bg-black opacity-55" aria-hidden />
+      <div
+        ref={ref}
+        className={`animate-rise fixed inset-0 z-50 touch-none select-none overflow-hidden overscroll-none text-white will-change-transform ${awake ? '' : 'cursor-none'}`}
+        onPointerMoveCapture={wake}
+        onPointerDownCapture={wake}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Now Playing"
+      >
+        <Mesh art={art} />
+        <div className="relative flex h-full flex-col pb-[max(env(safe-area-inset-bottom),14px)] pt-[env(safe-area-inset-top)]">
+          {fine ? (
+            <button
+              type="button"
+              onClick={dismiss}
+              aria-label="Close (Esc)"
+              title="Close (Esc)"
+              className={`absolute left-4 top-[max(env(safe-area-inset-top),16px)] z-10 grid size-11 place-items-center rounded-full bg-white/10 text-white/85 hover:bg-white/20 ${fade}`}
+            >
+              <ChevronDown className="size-6" />
+            </button>
+          ) : (
+            <button type="button" onClick={dismiss} aria-label="Close" className="mx-auto grid h-7 w-20 shrink-0 place-items-center">
+              <span className="h-[5px] w-10 rounded-full bg-white/45" />
+            </button>
+          )}
+          {compact ? (
+            <PhoneLayout art={art} panel={panel} onToggle={togglePanel} />
+          ) : (
+            <WideLayout art={art} panel={panel} onToggle={togglePanel} fine={fine} fade={fade} hold={hold} />
+          )}
+        </div>
       </div>
-    </div>
+    </>
   )
 }
 
@@ -130,7 +132,7 @@ function Artwork({ art, className = '', style }: { art: string | null; className
 
 function PanelBody({ panel }: { panel: Panel }) {
   return (
-    <div data-no-swipe className="relative min-h-0 flex-1 animate-[fade-in_350ms_ease] touch-pan-y overflow-hidden">
+    <div data-swipe-ok className="relative min-h-0 flex-1 animate-[fade-in_350ms_ease] touch-pan-y overflow-hidden">
       <div className="absolute inset-0">{panel === 'lyrics' ? <Lyrics size="immersive" /> : <UpNext immersive />}</div>
     </div>
   )

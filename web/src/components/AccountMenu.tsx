@@ -4,6 +4,7 @@ import { useSession } from '../state/session'
 import { useUI } from '../state/ui'
 import { Avatar } from './Avatar'
 import { Popover, type AnchorRect } from './Popover'
+import { SyncToggle } from './SyncToggle'
 
 export function AccountMenu() {
   const { me, signOut } = useSession()
@@ -22,7 +23,7 @@ export function AccountMenu() {
         <span className="max-w-32 truncate max-md:hidden">{me.name}</span>
       </button>
       {anchor && (
-        <Popover anchor={anchor} align="end" onClose={() => setAnchor(null)} className="w-64 p-0">
+        <Popover anchor={anchor} align="end" onClose={() => setAnchor(null)} className="w-72 p-0">
           <div className="flex items-center gap-3 border-b border-white/[0.07] p-4">
             <Avatar person={me} className="size-10 text-base" />
             <div className="min-w-0">
@@ -30,6 +31,7 @@ export function AccountMenu() {
               <div className="text-xs text-dim">{me.kind === 'slack' ? 'Signed in with Slack' : 'Signed in with an API token'}</div>
             </div>
           </div>
+          <SyncToggle />
           <div className="p-1">
             {me.kind !== 'token' && (
               <button

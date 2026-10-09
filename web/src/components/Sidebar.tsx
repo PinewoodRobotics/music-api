@@ -1,6 +1,7 @@
 import { Search } from 'lucide-react'
 import type { ComponentType } from 'react'
 import { useLocation } from '../lib/router'
+import { focusSearch } from '../lib/searchFocus'
 import { useSession } from '../state/session'
 import { Brand } from './Brand'
 import { Link } from './Link'
@@ -11,6 +12,9 @@ function NavItem({ href, label, icon: Icon, active }: { href: string; label: str
   return (
     <Link
       href={href}
+      onClick={(e) => {
+        if (active && href === '/search' && focusSearch()) e.preventDefault()
+      }}
       className={`flex items-center gap-4 rounded-md px-3 py-2 text-[15px] font-semibold transition-colors ${active ? 'text-fg' : 'text-dim hover:text-fg'}`}
     >
       <Icon className="size-6" strokeWidth={active ? 2.4 : 2} />
