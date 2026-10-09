@@ -27,4 +27,7 @@ if [ -f "$BIN" ] && cmp -s "$NEW" "$BIN"; then
 fi
 install -m 755 "$NEW" "$BIN.new" && mv "$BIN.new" "$BIN"
 echo "Installed Soloist: $("$BIN" --version 2>/dev/null || echo unknown)"
-systemctl --user try-restart soloist.service 2>/dev/null || true
+# restart even if it stopped (an expired build exits with 10 and isn't auto-restarted)
+if systemctl --user is-enabled -q soloist.service 2>/dev/null; then
+  systemctl --user restart soloist.service
+fi

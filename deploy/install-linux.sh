@@ -17,13 +17,11 @@ sudo apt-get install -y python3 curl pipewire pipewire-pulse wireplumber pulseau
 sudo loginctl enable-linger "$USER"
 
 mkdir -p "$APP" "$CONF" "$HOME/.config/systemd/user"
-cp -R "$REPO"/server.py "$REPO"/player.py "$REPO"/soloist.py "$REPO"/spotify.py "$REPO"/extras.py \
-      "$REPO"/index.html "$REPO"/deploy "$APP"/
+cp -R "$REPO"/*.py "$REPO"/*.html "$REPO"/*.md "$REPO"/*.txt "$REPO"/deploy "$APP"/
 chmod +x "$APP"/deploy/*.sh
 if [ ! -f "$CONF/env" ]; then
   cp "$REPO/deploy/env.example" "$CONF/env"
-  TOKEN=$(python3 -c 'import secrets;print(secrets.token_urlsafe(32))')
-  sed -i "s|^MUSIC_API_TOKEN=.*|MUSIC_API_TOKEN=$TOKEN|" "$CONF/env"
+  [ -n "${NO_SOLOIST:-}" ] && sed -i "s|^MUSIC_API_BACKEND=.*|MUSIC_API_BACKEND=connect|" "$CONF/env"
 fi
 chmod 600 "$CONF/env"
 
@@ -47,5 +45,6 @@ Installed. Next:
   2. systemctl --user start soloist music-api
   3. In the Spotify app (same Wi-Fi), pick "\$DEVICE_NAME" once to pair Soloist.
   4. Log in to the Web API: python3 $APP/server.py auth   (or open http://<this-host>:8765/auth/login?token=...)
-Your API token is in $CONF/env (MUSIC_API_TOKEN).
+Your first API token is written to ~/.local/share/music-api/token when the API first starts
+(cat it once, then manage tokens with /api/tokens; you can delete that file afterwards).
 MSG

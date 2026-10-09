@@ -88,7 +88,30 @@ To hand someone the web remote, create a token and send them `https://…/?token
   audio features, related artists, popularity, batch lookups.
 - Saving and removing goes through the generic `/me/library` (`PUT/DELETE /api/library {uris}`, max 40 per call).
 
-## Raspberry Pi notes
+## Raspberry Pi setup (Soloist)
+
+Tested target: Pi 3 B+ or newer (incl. Zero 2 W) on **Raspberry Pi OS Lite 64-bit**, USB speakers. No cooling needed
+for audio; use a proper 5 V / 2.5 A supply (`vcgencmd get_throttled` should print `0x0`).
+
+1. Copy this repo to the Pi (e.g. `scp -r music-api-v2 pi@music.local:`), then on the Pi:
+   `cd music-api-v2 && sh deploy/install-linux.sh`
+2. Create a Soloist API key (developer.spotify.com/dashboard → Spotify Soloist API Key, Premium account) and fill in
+   `~/.config/music-api/env`: `SOLOIST_API_KEY`, `DEVICE_NAME`, `SPOTIFY_CLIENT_ID`.
+3. Pick the output: `wpctl status`, find the USB speakers under *Sinks*, then `wpctl set-default <id>`
+   (or put the node name in `SOLOIST_PIPEWIRE_DEVICE`).
+4. `systemctl --user start soloist music-api`, then in the Spotify app on the same Wi-Fi pick `DEVICE_NAME` once
+   to pair Soloist. `soloist ctl status` should now say logged in.
+5. Log in to the Web API over SSH: `python3 ~/.local/share/music-api-v2/server.py auth` and paste the redirected URL.
+   (Stop the service first or pass `--port 8770`; it only needs the same data dir.)
+6. Your first API token: `cat ~/.local/share/music-api/token`. Test with
+   `curl -H "Authorization: Bearer <token>" http://music.local:8765/api/status`; it should say `"backend": "soloist"`.
+   Then manage tokens with `/api/tokens` and delete that file.
+7. Logs: `journalctl --user -u soloist -u music-api -f`.
+
+To put `music-api.pinewoodrobotics.org` on the Pi instead of a Mac, install `cloudflared` there, copy
+`~/.cloudflared/music-api.yml` and the tunnel's credentials JSON, and run it as a service. Then stop the tunnel on the Mac.
+
+### Raspberry Pi notes
 
 - **Pi Zero W / Pi 1 (ARMv6) can't run Soloist.** Spotify only ships armv7 (`arm32`), arm64 and x86_64 builds.
   You have two options:
@@ -106,7 +129,9 @@ To hand someone the web remote, create a token and send them `https://…/?token
 
 ## Running on macOS (launchd + Cloudflare tunnel)
 
-This is how production runs. Two launchd agents, both `RunAtLoad` + `KeepAlive`:
+This is how it ran in production on the lab Mac before moving to the Pi (the agent is saved in
+[`deploy/macos/`](deploy/macos/org.pinewoodrobotics.music-api.plist); copy it to `~/Library/LaunchAgents/` and
+`launchctl bootstrap gui/$(id -u) <plist>` to bring it back). Two launchd agents, both `RunAtLoad` + `KeepAlive`:
 
 - `~/Library/LaunchAgents/org.pinewoodrobotics.music-api.plist` runs `python3 server.py --public --client-id <id>`
   from `~/Developer/music-api-v2`. Output goes to `server.log` in the repo directory (gitignored).
@@ -134,5 +159,8 @@ v1 (Music.app) lived in `~/Developer/music-api` and is retired.
 
 ## Status
 
-Built and smoke-tested on macOS. Tested so far: the route table, auth flow plumbing, LRCLIB lyrics and the macOS mixer.
-Not yet tested: the Web API calls (they need a login) and the Soloist backend (it needs a Linux box with an API key).
+- Tested against a real Spotify account (via the `connect` backend): every read endpoint, playlist create/edit/add/
+  reorder/remove/delete, library save/remove, lyrics, tokens, the public URL through the tunnel.
+- Not yet tested: playback control on a live device, and the Soloist backend end to end (needs the Pi + API key).
+  The WebSocket client follows Soloist's published API reference but hasn't talked to a real Soloist yet; if something's
+  off, `soloist ctl trace` shows the raw events to compare against `soloist.py`.
