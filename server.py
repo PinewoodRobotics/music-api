@@ -23,6 +23,7 @@ import mimetypes
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import extras
+import slack_bot
 from accounts import ADMIN, AccountError, Playlists, QueueCredits, Sessions, Slack
 from extras import ExtrasError
 from player import Player, PlayerError
@@ -33,7 +34,7 @@ from tokens import TokenError, Tokens
 HERE = os.path.dirname(os.path.abspath(__file__))
 SEARCH_TYPES = "track,album,artist,playlist,show,episode,audiobook"
 
-auth = api = player = soloist = tokens = slack = sessions = app_playlists = None
+auth = api = player = soloist = tokens = slack = sessions = app_playlists = bot = None
 credits = QueueCredits()
 _req = threading.local()  # per-request context: the token entry and the user that authenticated it
 WEB_DIST = os.path.join(HERE, "web", "dist")
@@ -750,6 +751,11 @@ class Handler(BaseHTTPRequestHandler):
             return dict(urllib.parse.parse_qsl(raw.decode()))
         return json.loads(raw or b"{}")
 
+    def _slack(self, path):
+        raw = self.rfile.read(min(int(self.headers.get("Content-Length") or 0), 1 << 20))
+        status, res = bot.handle(path, self.headers, raw)
+        self._send(status, json.dumps(res) if res is not None else b"")
+
     def _dispatch(self, method):
         url = urllib.parse.urlparse(self.path)
         query = dict(urllib.parse.parse_qsl(url.query))
@@ -779,6 +785,8 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/auth/slack/logout" and method == "POST":
                 sessions.delete(self._session_id())
                 return self._send(200, {"result": {"signed_out": True}}, headers=[self._set_cookie("", 0)])
+            if path.startswith("/slack/") and method == "POST":  # signed by Slack instead of token/session auth
+                return self._slack(path)
             if not self._authorized(query):
                 return self._send(401, {"error": "unauthorized"})
             why = self._forbidden(method, path)
@@ -804,6 +812,9 @@ class Handler(BaseHTTPRequestHandler):
                 {"method": "POST", "path": "/auth/logout", "doc": "Forget the Web API tokens"},
                 {"method": "GET", "path": "/auth/slack/login", "doc": "Sign in with Slack (?next=/path); sets a session cookie"},
                 {"method": "POST", "path": "/auth/slack/logout", "doc": "End the Slack session"},
+                {"method": "POST", "path": "/slack/commands", "doc": "Slack /music command (Slack signing secret instead of a token)"},
+                {"method": "POST", "path": "/slack/interactions", "doc": "Slack button clicks (signing secret)"},
+                {"method": "POST", "path": "/slack/events", "doc": "Slack Events API: url_verification, link_shared (signing secret)"},
             ])
         if path == "/api/events" and method == "GET":
             return self._sse()
@@ -925,7 +936,7 @@ def main():
                     help="connect backend: Connect device name or id to control (default: whichever is active)")
     a = ap.parse_args()
 
-    global auth, api, player, soloist, tokens, slack, sessions, app_playlists
+    global auth, api, player, soloist, tokens, slack, sessions, app_playlists, bot
     os.makedirs(a.data_dir, mode=0o700, exist_ok=True)
     auth = Auth(a.data_dir, a.client_id, a.redirect_uri or f"http://127.0.0.1:{a.port}/auth/callback")
     api = WebAPI(auth)
@@ -963,6 +974,8 @@ def main():
         soloist.on_event = player.on_soloist_event
         threading.Thread(target=soloist.loop, daemon=True).start()
     threading.Thread(target=player.loop, daemon=True).start()
+    bot = slack_bot.from_env(slack, player, api, credits)
+    bot.start()
 
     Handler.require_token = require
     srv = ThreadingHTTPServer((a.host, a.port), Handler)

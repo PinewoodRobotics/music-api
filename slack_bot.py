@@ -1,0 +1,580 @@
+"""Slack bot: a live "Now playing" feed in #music, the /music slash command, button interactivity and link unfurls.
+Stdlib only. Everything that talks to Slack runs on its own threads; the player never waits for it.
+
+The HTTP routes (/slack/commands, /slack/interactions, /slack/events) are verified with the signing secret
+and bypass token/session auth. The feed subscribes to Player events like the SSE endpoint does.
+"""
+import hashlib
+import hmac
+import json
+import os
+import queue as queuelib
+import sys
+import threading
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+
+from accounts import AccountError
+from player import PlayerError
+from spotify import SpotifyError, item, page, to_uri
+
+API = "https://slack.com/api"
+DEFAULT_TEAM = "T09DBUR4YER"
+DEFAULT_CHANNEL = "C0C80T1DNBF"
+DEFAULT_REMOTE = "https://music-api.pinewoodrobotics.org/"
+MAX_AGE = 300
+UPDATE_EVERY = 5
+SETTLE = 3
+USER_TTL = 3600
+FATAL = {"missing_scope", "not_authed", "invalid_auth", "token_revoked", "account_inactive", "not_in_channel",
+         "channel_not_found", "is_archived"}
+PLAYING = ("playing", "buffering")
+HELP = ("*Robotics Music* (`/music`) controls the lab speakers\n"
+        "`/music <song, artist or album>` search and add to the queue\n"
+        "`/music now`  what's playing   `/music queue`  what's next\n"
+        "`/music play`  `/music pause`  `/music skip`\n"
+        "Paste an open.spotify.com link after `/music` to queue or play it.")
+
+
+def log(msg):
+    print("slack: " + msg, file=sys.stderr, flush=True)
+
+
+def esc(s):
+    return (s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def spotify_url(uri):
+    parts = (uri or "").split(":")
+    return f"https://open.spotify.com/{parts[1]}/{parts[2]}" if len(parts) == 3 and parts[0] == "spotify" else None
+
+
+def duration(ms):
+    s = int((ms or 0) / 1000)
+    return f"{s // 60}:{s % 60:02d}"
+
+
+def artists_of(t):
+    return ", ".join(a["name"] for a in t.get("artists") or [] if a.get("name")) or (t.get("show") or {}).get("name") or ""
+
+
+def title_link(t):
+    url = spotify_url(t.get("uri"))
+    name = esc(t.get("name") or "Unknown")
+    return f"<{url}|{name}>" if url else name
+
+
+def subtitle(t):
+    return " · ".join(x for x in (esc(artists_of(t)), esc((t.get("album") or {}).get("name"))) if x)
+
+
+def verify_signature(secret, timestamp, signature, body, now=None):
+    try:
+        ts = int(timestamp)
+    except (TypeError, ValueError):
+        return False
+    if not secret or not signature or abs((now if now is not None else time.time()) - ts) > MAX_AGE:
+        return False
+    mac = hmac.new(secret.encode(), b"v0:" + str(ts).encode() + b":" + body, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(("v0=" + mac).encode(), signature.encode("utf-8", "replace"))
+
+
+def parse_command(text):
+    """'/music' text -> (verb, argument)."""
+    text = (text or "").strip()
+    head, _, rest = text.partition(" ")
+    verb = head.lower()
+    if not text or verb in ("help", "?"):
+        return "help", ""
+    if verb in ("now", "queue", "pause", "skip", "play") and not (verb in ("now", "queue", "pause", "skip") and rest):
+        return verb, rest.strip()
+    if verb == "next" and not rest:
+        return "skip", ""
+    if verb == "search" and rest.strip():
+        return "search", rest.strip()
+    return "search", text
+
+
+# ---------- Block Kit ----------
+
+def button(text, action_id, value=None, style=None, url=None):
+    b = {"type": "button", "text": {"type": "plain_text", "text": text}, "action_id": action_id}
+    if value is not None:
+        b["value"] = value
+    if style:
+        b["style"] = style
+    if url:
+        b["url"] = url
+    return b
+
+
+def card(t, accessory=True):
+    block = {"type": "section", "text": {"type": "mrkdwn", "text": f"*{title_link(t)}*\n{subtitle(t)}"}}
+    if accessory and t.get("artwork"):
+        block["accessory"] = {"type": "image", "image_url": t["artwork"], "alt_text": t.get("name") or "cover"}
+    return block
+
+
+def context(*parts):
+    return {"type": "context", "elements": [{"type": "mrkdwn", "text": p} for p in parts]}
+
+
+def avatar_context(user, text):
+    els = [{"type": "image", "image_url": user["avatar"], "alt_text": user.get("name") or "user"}] if user.get("avatar") else []
+    return {"type": "context", "elements": els + [{"type": "mrkdwn", "text": text}]}
+
+
+def upcoming_line(upcoming, n=3):
+    names = []
+    for e in (upcoming or [])[:n]:
+        it = e.get("item") or e
+        if it.get("name"):
+            names.append(f"{esc(it['name'])} - {esc(artists_of(it))}" if artists_of(it) else esc(it["name"]))
+    return "Up next: " + " · ".join(names) if names else None
+
+
+def now_playing_blocks(t, playing, queued_by=None, upcoming=None, remote=DEFAULT_REMOTE, block_id="feed"):
+    blocks = [card(t)]
+    if queued_by and queued_by.get("name"):
+        blocks.append(avatar_context(queued_by, f"Queued by {esc(queued_by['name'])}"))
+    line = upcoming_line(upcoming)
+    if line:
+        blocks.append(context(line))
+    listen = spotify_url(t.get("uri"))
+    els = [button("Pause" if playing else "Play", "playpause"), button("Skip", "skip")]
+    if listen:
+        els.append(button("Listen along", "listen_along", url=listen))
+    els.append(button("Open remote", "open_remote", url=remote))
+    blocks.append({"type": "actions", "block_id": block_id, "elements": els})
+    return blocks
+
+
+def now_playing_text(t):
+    return f"Now playing: {t.get('name')} - {artists_of(t)}"
+
+
+def played_blocks(t, queued_by=None):
+    who = f" · queued by {esc(queued_by['name'])}" if queued_by and queued_by.get("name") else ""
+    text = f"Played · *{title_link(t)}* - {esc(artists_of(t))}{who}"
+    els = [{"type": "image", "image_url": t["artwork"], "alt_text": t.get("name") or "cover"}] if t.get("artwork") else []
+    return [{"type": "context", "elements": els + [{"type": "mrkdwn", "text": text}]}]
+
+
+def track_row(t, block_id, label="Add to queue", action="queue_add"):
+    sub = f"{subtitle(t)} · {duration(t.get('duration_ms'))}"
+    row = {"type": "section", "text": {"type": "mrkdwn", "text": f"*{title_link(t)}*\n{sub}"}}
+    if t.get("artwork"):
+        row["accessory"] = {"type": "image", "image_url": t["artwork"], "alt_text": t.get("name") or "cover"}
+    return [row, {"type": "actions", "block_id": block_id,
+                  "elements": [button(label, action, t["uri"], "primary")]}]
+
+
+def collection_row(c):
+    kind = c.get("type")
+    sub = esc(artists_of(c)) if kind == "album" else f"playlist · {esc(c.get('owner') or '')}".rstrip(" ·")
+    if kind == "album":
+        sub = f"album · {sub}"
+    row = {"type": "section", "text": {"type": "mrkdwn", "text": f"*{title_link(c)}*\n{sub}"}}
+    if c.get("artwork"):
+        row["accessory"] = {"type": "image", "image_url": c["artwork"], "alt_text": c.get("name") or "cover"}
+    return [row, {"type": "actions", "block_id": "p:" + c["uri"], "elements": [button("Play", "play_uri", c["uri"])]}]
+
+
+def search_blocks(query, tracks, collections):
+    blocks = [context(f"Results for “{esc(query)}”")]
+    for t in tracks:
+        blocks += track_row(t, "q:" + t["uri"])
+    for c in collections:
+        blocks += collection_row(c)
+    if not tracks and not collections:
+        blocks.append(context("Nothing found."))
+    return blocks
+
+
+def queue_blocks(upcoming):
+    if not upcoming:
+        return [context("The queue is empty.")]
+    lines = []
+    for i, e in enumerate(upcoming[:10], 1):
+        it = e.get("item") or {}
+        by = f"  _queued by {esc(e['added_by']['name'])}_" if (e.get("added_by") or {}).get("name") else ""
+        lines.append(f"{i}. {title_link(it)} - {esc(artists_of(it))}{by}")
+    return [{"type": "section", "text": {"type": "mrkdwn", "text": "*Up next*\n" + "\n".join(lines)}}]
+
+
+def unfurl_blocks(it):
+    kind = it.get("type")
+    if kind == "track":
+        return track_row(it, "q:" + it["uri"])
+    return collection_row(it)
+
+
+# ---------- the bot ----------
+
+class SlackBot:
+    def __init__(self, slack, player, api, credits, signing_secret, channel=DEFAULT_CHANNEL, team=DEFAULT_TEAM,
+                 remote=DEFAULT_REMOTE):
+        self.slack, self.player, self.api, self.credits = slack, player, api, credits
+        self.token = slack.bot_token
+        self.secret, self.channel, self.team, self.remote = signing_secret, channel, team, remote
+        self.users, self.users_lock = {}, threading.Lock()
+        self.warned = set()
+        self.pause_until = 0
+        self.seen_events = {}
+        self.st, self.upcoming = {}, []
+        self.cur = None
+        self.cand = (None, 0)
+
+    @property
+    def enabled(self):
+        return bool(self.token and self.secret)
+
+    # ---------- HTTP to Slack ----------
+
+    def http(self, url, payload, token=None):
+        headers = {"Content-Type": "application/json; charset=utf-8"}
+        if token:
+            headers["Authorization"] = "Bearer " + token
+        req = urllib.request.Request(url, json.dumps(payload).encode(), headers)
+        try:
+            with urllib.request.urlopen(req, timeout=10) as r:
+                raw, status, hdrs = r.read(), r.status, r.headers
+        except urllib.error.HTTPError as e:
+            raw, status, hdrs = e.read(), e.code, e.headers
+        except (urllib.error.URLError, OSError) as e:
+            return 0, {"error": str(e)}, {}
+        try:
+            return status, json.loads(raw or b"{}"), hdrs
+        except ValueError:
+            return status, {"error": raw[:100].decode("utf-8", "replace")}, hdrs
+
+    def _warn(self, key, msg):
+        if key not in self.warned:
+            self.warned.add(key)
+            log(msg)
+
+    def call(self, method, **payload):
+        for attempt in (0, 1):
+            status, res, hdrs = self.http(f"{API}/{method}", payload, self.token)
+            if status == 429 and attempt == 0:
+                time.sleep(min(float(hdrs.get("Retry-After") or 1), 30))
+                continue
+            break
+        if status != 200 or not res.get("ok"):
+            err = res.get("error") or f"HTTP {status}"
+            self._warn((method, err), f"{method} failed: {err}")
+            if err in FATAL:
+                self.pause_until = time.time() + 300
+            return None
+        self.warned = {k for k in self.warned if k[0] != method}
+        return res
+
+    def respond(self, url, payload):
+        if not url:
+            return
+        status, res, _ = self.http(url, payload)
+        if status != 200:
+            self._warn(("response_url", status), f"response_url failed: HTTP {status} {res.get('error', '')}")
+
+    def say(self, text):
+        self.call("chat.postMessage", channel=self.channel, text=text, blocks=[context(text)], unfurl_links=False)
+
+    # ---------- requests ----------
+
+    def handle(self, path, headers, body):
+        """Verified entry point for the /slack/* routes. Returns (status, json-able or None)."""
+        if not self.enabled:
+            return 503, {"error": "Slack bot isn't configured"}
+        if not verify_signature(self.secret, headers.get("X-Slack-Request-Timestamp"),
+                                headers.get("X-Slack-Signature"), body):
+            return 401, {"error": "bad signature"}
+        try:
+            if path == "/slack/events":
+                return self.on_event(json.loads(body or b"{}"), headers)
+            form = dict(urllib.parse.parse_qsl(body.decode()))
+            if path == "/slack/commands":
+                return self.on_command(form)
+            if path == "/slack/interactions":
+                return self.on_interaction(json.loads(form.get("payload") or "{}"))
+        except (ValueError, UnicodeDecodeError):
+            return 400, {"error": "bad request"}
+        return 404, {"error": "not found"}
+
+    def spawn(self, fn, *args):
+        def run():
+            try:
+                fn(*args)
+            except Exception as e:  # noqa: BLE001 - a handler thread must never take the server down
+                self._warn(("thread", fn.__name__, str(e)[:60]), f"{fn.__name__}: {e!r}")
+        threading.Thread(target=run, daemon=True).start()
+
+    # ---------- users ----------
+
+    def fetch_user(self, uid):
+        return self.slack._call("users.info", self.token, user=uid)["user"].get("profile", {})
+
+    def user(self, uid, fallback=None):
+        now = time.time()
+        with self.users_lock:
+            hit = self.users.get(uid)
+        if hit and now - hit[1] < USER_TTL:
+            return hit[0]
+        try:
+            p = self.fetch_user(uid)
+            u = {"id": uid, "name": p.get("display_name") or p.get("real_name") or fallback or uid,
+                 "avatar": p.get("image_72") or p.get("image_192")}
+        except (AccountError, KeyError) as e:
+            self._warn(("users.info", str(e)[:60]), f"users.info failed: {e}")
+            return hit[0] if hit else {"id": uid, "name": fallback or uid, "avatar": None}
+        with self.users_lock:
+            self.users[uid] = (u, now)
+        return u
+
+    # ---------- commands ----------
+
+    def on_command(self, form):
+        if form.get("team_id") != self.team:
+            return 403, {"error": "wrong workspace"}
+        verb, arg = parse_command(form.get("text"))
+        if verb == "help":
+            return 200, {"response_type": "ephemeral", "text": HELP}
+        self.spawn(self.run_command, verb, arg, form.get("user_id"), form.get("user_name"), form.get("response_url"))
+        return 200, None
+
+    def ephemeral(self, url, blocks, text, replace=False):
+        self.respond(url, {"response_type": "ephemeral", "replace_original": replace, "text": text, "blocks": blocks})
+
+    def run_command(self, verb, arg, uid, uname, url):
+        try:
+            if verb in ("play", "pause", "skip") and not (verb == "play" and arg):
+                text = self.transport(verb, uid)
+                return self.respond(url, {"response_type": "ephemeral", "text": text})
+            if verb == "now":
+                return self.ephemeral(url, *self.now_card())
+            if verb == "queue":
+                up = self.credits.annotate(self.player.queue(10))["upcoming"]
+                return self.ephemeral(url, queue_blocks(up), "Up next")
+            if verb == "play":
+                arg = arg.strip()
+            if spotify_url(arg and _try_uri(arg)):
+                it = self.lookup(_try_uri(arg))
+                return self.ephemeral(url, unfurl_blocks(it), it.get("name") or "Spotify")
+            self.ephemeral(url, *self.search(arg))
+        except (PlayerError, SpotifyError) as e:
+            self.respond(url, {"response_type": "ephemeral", "text": f"Couldn't do that: {e}"})
+
+    def now_card(self):
+        st = self.player.status(fresh=True)
+        t = st.get("track")
+        if not t:
+            return [context("Nothing is playing.")], "Nothing is playing."
+        up = self.credits.annotate(self.player.queue(4)).get("upcoming", [])
+        return (now_playing_blocks(t, st.get("state") in PLAYING, self.credits.lookup(t["uri"]), up, self.remote,
+                                   block_id="card"), now_playing_text(t))
+
+    def search(self, q):
+        res = self.api.get("/search", q=q, type="track,album,playlist", limit=5)
+        tracks = (page(res.get("tracks")) or {}).get("items", [])[:5]
+        albums = (page(res.get("albums")) or {}).get("items", [])[:1]
+        playlists = (page(res.get("playlists")) or {}).get("items", [])[:1]
+        return search_blocks(q, tracks, albums + playlists), f"Results for {q}"
+
+    def lookup(self, uri):
+        kind, sid = uri.split(":")[1:]
+        path = {"track": "tracks", "album": "albums", "playlist": "playlists"}.get(kind)
+        if not path:
+            raise SpotifyError("only tracks, albums and playlists can be played from Slack", 400)
+        return item(self.api.get(f"/{path}/{sid}"))
+
+    def transport(self, verb, uid):
+        """Do play/pause/skip for a Slack user and leave a note in the channel."""
+        if verb == "skip":
+            self.player.next()
+            note, text = f"<@{uid}> skipped", "Skipped."
+        elif verb == "pause":
+            self.player.pause()
+            note, text = f"<@{uid}> paused", "Paused."
+        else:
+            self.player.play({})
+            note, text = f"<@{uid}> resumed playback", "Playing."
+        self.say(note)
+        return text
+
+    # ---------- interactions ----------
+
+    def on_interaction(self, p):
+        if p.get("type") != "block_actions":
+            return 200, None
+        if (p.get("team") or {}).get("id") != self.team:
+            return 403, {"error": "wrong workspace"}
+        self.spawn(self.run_interaction, p)
+        return 200, None
+
+    def run_interaction(self, p):
+        a = (p.get("actions") or [{}])[0]
+        uid = (p.get("user") or {}).get("id")
+        url = p.get("response_url")
+        ephemeral = bool((p.get("container") or {}).get("is_ephemeral"))
+        act = a.get("action_id")
+        try:
+            if act in ("playpause", "skip"):
+                playing = self.player.status(fresh=True).get("state") in PLAYING
+                self.transport("skip" if act == "skip" else "pause" if playing else "play", uid)
+                if ephemeral:
+                    time.sleep(0.7)
+                    self.ephemeral(url, *self.now_card(), replace=True)
+            elif act == "queue_add":
+                u = self.user(uid, (p.get("user") or {}).get("name"))
+                uri = to_uri(a.get("value"))
+                self.player.enqueue({"uri": uri})
+                self.credits.add([uri], u)
+                self.done(p, a, ephemeral, "Queued", f"Queued by {esc(u['name'])}")
+            elif act == "play_uri":
+                uri = to_uri(a.get("value"))
+                self.player.play({"uri": uri})
+                self.say(f"<@{uid}> started {spotify_url(uri) or uri}")
+                self.done(p, a, ephemeral, "Playing", "Playing now")
+        except (PlayerError, SpotifyError, ValueError) as e:
+            self.respond(url, {"response_type": "ephemeral", "replace_original": False, "text": f"Couldn't do that: {e}"})
+
+    def done(self, p, a, ephemeral, label, text):
+        url = p.get("response_url")
+        if not ephemeral:
+            return self.respond(url, {"response_type": "ephemeral", "replace_original": False, "text": f"{label}."})
+        blocks = (p.get("message") or {}).get("blocks")
+        if not blocks:
+            return self.respond(url, {"response_type": "ephemeral", "replace_original": True, "text": f"{label}."})
+        out = [context("✓ " + text) if b.get("block_id") == a.get("block_id") else b for b in blocks]
+        self.respond(url, {"response_type": "ephemeral", "replace_original": True, "text": label, "blocks": out})
+
+    # ---------- events / unfurl ----------
+
+    def on_event(self, ev, headers):
+        if ev.get("type") == "url_verification":
+            return 200, {"challenge": ev.get("challenge")}
+        if ev.get("team_id") != self.team:
+            return 403, {"error": "wrong workspace"}
+        now = time.time()
+        self.seen_events = {k: t for k, t in self.seen_events.items() if now - t < 600}
+        eid = ev.get("event_id")
+        if headers.get("X-Slack-Retry-Num") or eid in self.seen_events:
+            return 200, None
+        self.seen_events[eid] = now
+        e = ev.get("event") or {}
+        if e.get("type") == "link_shared":
+            self.spawn(self.unfurl, e)
+        return 200, None
+
+    def unfurl(self, e):
+        unfurls = {}
+        for link in e.get("links", [])[:5]:
+            try:
+                uri = to_uri(link.get("url"))
+                if uri.split(":")[1] in ("track", "album", "playlist"):
+                    unfurls[link["url"]] = {"blocks": unfurl_blocks(self.lookup(uri))}
+            except (ValueError, SpotifyError, PlayerError):
+                continue
+        if unfurls:
+            args = {"unfurl_id": e["unfurl_id"], "source": e.get("source")} if e.get("unfurl_id") else \
+                {"channel": e.get("channel"), "ts": e.get("message_ts")}
+            self.call("chat.unfurl", unfurls=unfurls, **args)
+
+    # ---------- live feed ----------
+
+    def start(self):
+        if not self.enabled:
+            log("SLACK_SIGNING_SECRET or SLACK_BOT_TOKEN missing; bot and #music feed are off")
+            return
+        threading.Thread(target=self.feed_loop, daemon=True).start()
+        log(f"bot on; feeding {self.channel}")
+
+    def feed_loop(self):
+        q = self.player.subscribe()
+        while True:
+            try:
+                ev, data = q.get(timeout=1)
+                if ev == "status":
+                    self.st = data
+                elif ev == "queue":
+                    self.upcoming = data.get("upcoming", [])
+            except queuelib.Empty:
+                pass
+            try:
+                self.tick(time.time())
+            except Exception as e:  # noqa: BLE001 - keep the feed alive
+                self._warn(("tick", str(e)[:60]), f"feed: {e!r}")
+
+    def rendered(self, cur):
+        return now_playing_blocks(cur["track"], cur["playing"], cur["by"], cur["upcoming"], self.remote)
+
+    def tick(self, now):
+        if now < self.pause_until:
+            return
+        t = self.st.get("track")
+        uri = t.get("uri") if t else None
+        playing = self.st.get("state") in PLAYING
+        if uri != self.cand[0]:
+            self.cand = (uri, now)
+        settled = now - self.cand[1] >= SETTLE
+        cur = self.cur
+        if cur and not t and settled:
+            self.finish(cur)
+            self.cur = None
+        elif t and playing and settled and (not cur or cur["uri"] != uri):
+            self.rotate(t, now)
+        elif cur and cur["uri"] == uri:
+            self.refresh(cur, playing, now)
+
+    def finish(self, cur):
+        self.call("chat.update", channel=self.channel, ts=cur["ts"], text=f"Played: {cur['track'].get('name')}",
+                  blocks=played_blocks(cur["track"], cur["by"]))
+
+    def rotate(self, t, now):
+        if self.cur:
+            self.finish(self.cur)
+            self.cur = None
+        try:
+            up = self.credits.annotate(self.player.queue(4)).get("upcoming", [])
+        except (PlayerError, SpotifyError):
+            up = self.upcoming
+        cur = {"uri": t["uri"], "track": t, "playing": True, "upcoming": up[:3],
+               "by": self.credits.lookup(t["uri"], consume=True), "ts": None, "sig": None, "sent": now}
+        res = self.call("chat.postMessage", channel=self.channel, text=now_playing_text(t),
+                        blocks=self.rendered(cur), unfurl_links=False, unfurl_media=False)
+        if res:
+            cur["ts"], cur["sig"] = res["ts"], self.sig(cur)
+            self.cur = cur
+        else:
+            self.cur = {**cur, "ts": None}
+
+    @staticmethod
+    def sig(cur):
+        return (cur["playing"], tuple((e.get("item") or e).get("uri") for e in cur["upcoming"]))
+
+    def refresh(self, cur, playing, now):
+        if not cur["ts"]:
+            return
+        cur["playing"] = playing
+        if self.upcoming:
+            cur["upcoming"] = self.upcoming[:3]
+        if self.sig(cur) == cur["sig"] or now - cur["sent"] < UPDATE_EVERY:
+            return
+        cur["sent"] = now
+        if self.call("chat.update", channel=self.channel, ts=cur["ts"], text=now_playing_text(cur["track"]),
+                     blocks=self.rendered(cur)):
+            cur["sig"] = self.sig(cur)
+
+
+def _try_uri(s):
+    try:
+        return to_uri(s)
+    except ValueError:
+        return None
+
+
+def from_env(slack, player, api, credits):
+    return SlackBot(slack, player, api, credits, os.environ.get("SLACK_SIGNING_SECRET"),
+                    os.environ.get("SLACK_MUSIC_CHANNEL") or DEFAULT_CHANNEL,
+                    slack.team_id or DEFAULT_TEAM, os.environ.get("SLACK_REMOTE_URL") or DEFAULT_REMOTE)

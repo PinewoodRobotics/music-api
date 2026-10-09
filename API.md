@@ -142,4 +142,7 @@ Tokens have no scopes: any token can do everything, including creating and revok
 | `GET` | `/API.md` | This file |
 | `GET` | `/README.md` | Overview, setup and deployment |
 | `GET` | `/auth/callback` | OAuth redirect target |
+| `POST` | `/slack/commands` | Slack `/music` slash command (checked by the Slack signing secret) |
+| `POST` | `/slack/interactions` | Slack button clicks (signing secret) |
+| `POST` | `/slack/events` | Slack Events API: URL verification and `link_shared` unfurls (signing secret) |
 | `OPTIONS` | `*` | CORS preflight (`Access-Control-Allow-Origin: *` on every response) |

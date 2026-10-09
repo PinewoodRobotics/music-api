@@ -287,6 +287,19 @@ class QueueCredits:
             self.by_uri = {u: [e for e in es if e[1] > cutoff] for u, es in self.by_uri.items()}
             self.by_uri = {u: es for u, es in self.by_uri.items() if es}
 
+    def lookup(self, uri, consume=False):
+        """Who queued `uri` (oldest pending credit), as {name, avatar}, or None."""
+        with self.lock:
+            es = self.by_uri.get(uri)
+            if not es or time.time() - es[0][1] > 6 * 3600:
+                return None
+            user = es[0][0]
+            if consume:
+                es.pop(0)
+                if not es:
+                    del self.by_uri[uri]
+            return user
+
     def annotate(self, queue):
         with self.lock:
             for e in queue.get("upcoming", []):

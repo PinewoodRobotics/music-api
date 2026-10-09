@@ -97,21 +97,52 @@ only exposes the first 100 tracks of playlists the account doesn't own (through 
 
 Setup: create a Slack app from this manifest at api.slack.com/apps, install it to the workspace, and put
 `SLACK_CLIENT_ID`, `SLACK_CLIENT_SECRET`, `SLACK_BOT_TOKEN` (`xoxb-…`) and `SLACK_REDIRECT_URI` in `~/.config/music-api/env`.
-The bot token is only used for `users.info` (display names) and `auth.test` (the workspace ID sign-ins must match).
+The bot token is used for `users.info` (display names), `auth.test` (the workspace ID sign-ins must match), and the Slack bot below.
+
+**Slack bot ("Robotics Music").** Set `SLACK_SIGNING_SECRET` (Basic Information > Signing Secret) and invite the bot to the channel
+(`SLACK_MUSIC_CHANNEL`, default #music). Without the secret the bot stays off and the server starts normally.
+- *Live feed:* every track change posts one "Now playing" message (art, queued-by, up next, Play/Pause, Skip, Listen along, Open remote).
+  It is edited on pause/resume and queue changes (at most every 5 s) and shrinks to a compact "Played" line when the track changes.
+- `/music <query>` searches (Add to queue / Play buttons), `/music now`, `/music queue`, `/music play|pause|skip`, `/music help`.
+  Pasting a Spotify link after `/music` works too. Skips, pauses and plays are announced in the channel with who did them.
+- Tracks queued from Slack are credited to that person, so the web app's Up Next shows "Added by".
+- Spotify track, album and playlist links shared in Slack unfurl with Add to queue / Play buttons.
+- `/slack/*` requests are verified with the signing secret (v0 HMAC, 5 minute window) and only accepted from the workspace.
 
 ```yaml
 display_information:
-  name: Music API
+  name: Robotics Music
+  description: So Musical!!
+features:
+  bot_user:
+    display_name: Robotics Music
+    always_online: true
+  slash_commands:
+    - command: /music
+      url: https://music-api.pinewoodrobotics.org/slack/commands
+      description: Search, queue and control the lab speakers
+      usage_hint: "[song, artist, link | now | queue | play | pause | skip | help]"
+      should_escape: false
+  unfurl_domains:
+    - open.spotify.com
 oauth_config:
   redirect_urls:
     - https://music-api.pinewoodrobotics.org/auth/slack/callback
   scopes:
     user: [openid, profile, email]
-    bot: [users:read]
-features:
-  bot_user:
-    display_name: Music API
+    bot: [users:read, chat:write, commands, links:read, links:write]
+settings:
+  event_subscriptions:
+    request_url: https://music-api.pinewoodrobotics.org/slack/events
+    bot_events: [link_shared]
+  interactivity:
+    is_enabled: true
+    request_url: https://music-api.pinewoodrobotics.org/slack/interactions
+  org_deploy_enabled: false
+  socket_mode_enabled: false
+  token_rotation_enabled: false
 ```
+After changing scopes, reinstall the app to the workspace so the bot token picks them up.
 
 ### Web API limits (development-mode apps, 2026 rules)
 
