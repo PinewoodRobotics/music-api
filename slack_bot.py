@@ -117,8 +117,9 @@ def button(text, action_id, value=None, style=None, url=None):
     return b
 
 
-def card(t, accessory=True):
-    block = {"type": "section", "text": {"type": "mrkdwn", "text": f"*{title_link(t)}*\n{subtitle(t)}"}}
+def card(t, accessory=True, by=None):
+    text = f"*{title_link(t)}*\n{subtitle(t)}" + (f"\n{who(by)}" if by and by.get("name") else "")
+    block = {"type": "section", "text": {"type": "mrkdwn", "text": text}}
     if accessory and t.get("artwork"):
         block["accessory"] = {"type": "image", "image_url": t["artwork"], "alt_text": t.get("name") or "cover"}
     return block
@@ -128,34 +129,24 @@ def context(*parts):
     return {"type": "context", "elements": [{"type": "mrkdwn", "text": p} for p in parts]}
 
 
-def avatar_context(user, text):
-    els = [{"type": "image", "image_url": user["avatar"], "alt_text": user.get("name") or "user"}] if user.get("avatar") else []
-    return {"type": "context", "elements": els + [{"type": "mrkdwn", "text": text}]}
 
-
-def upcoming_line(upcoming, n=3):
-    names = []
+def upcoming_blocks(upcoming, n=3):
+    rows = []
     for e in (upcoming or [])[:n]:
         it = e.get("item") or e
-        if it.get("name"):
-            names.append(f"{esc(it['name'])} - {esc(artists_of(it))}" if artists_of(it) else esc(it["name"]))
-    return "Up next: " + " · ".join(names) if names else None
+        if not it.get("name"):
+            continue
+        text = f"{esc(it['name'])} - {esc(artists_of(it))}" if artists_of(it) else esc(it["name"])
+        art = [{"type": "image", "image_url": it["artwork"], "alt_text": it["name"]}] if it.get("artwork") else []
+        rows.append({"type": "context", "elements": art + [{"type": "mrkdwn", "text": text}]})
+    return [context("*Up next*")] + rows if rows else []
 
 
 
 def now_playing_blocks(t, playing, credit=None, upcoming=None, remote=DEFAULT_REMOTE, block_id="feed"):
-    blocks = [card(t)]
-    if credit and (credit.get("by") or {}).get("name"):
-        by = credit["by"]
-        blocks.append(avatar_context(by, who(by)))
-    line = upcoming_line(upcoming)
-    if line:
-        blocks.append(context(line))
-    listen = spotify_url(t.get("uri"))
-    els = [button("Pause" if playing else "Play", "playpause"), button("Skip", "skip")]
-    if listen:
-        els.append(button("Listen along", "listen_along", url=listen))
-    els.append(button("Open remote", "open_remote", url=remote))
+    blocks = [card(t, by=(credit or {}).get("by"))] + upcoming_blocks(upcoming)
+    els = [button("Pause" if playing else "Play", "playpause"), button("Skip", "skip"),
+           button("More Controls", "open_remote", url=remote)]
     blocks.append({"type": "actions", "block_id": block_id, "elements": els})
     return blocks
 

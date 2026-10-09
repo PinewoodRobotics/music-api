@@ -140,19 +140,20 @@ class Blocks(unittest.TestCase):
         self.assertIn("<https://open.spotify.com/track/5W3cjX2J3tjhG8zb6u0qHn|One &lt;More&gt; Time>", blocks[0]["text"]["text"])
         self.assertIn("Daft Punk · Discovery", blocks[0]["text"]["text"])
         flat = json.dumps(blocks)
-        self.assertIn('"text": "Ada"', flat)
-        self.assertIn("Up next: Other", flat)
+        self.assertTrue(blocks[0]["text"]["text"].endswith("\nAda"))
+        self.assertEqual(blocks[1]["elements"][0]["text"], "*Up next*")
+        self.assertEqual(blocks[2]["elements"][0]["type"], "image")
+        self.assertIn("Other", blocks[2]["elements"][-1]["text"])
         acts = blocks[-1]["elements"]
-        self.assertEqual([a["action_id"] for a in acts], ["playpause", "skip", "listen_along", "open_remote"])
+        self.assertEqual([a["action_id"] for a in acts], ["playpause", "skip", "open_remote"])
         self.assertEqual(acts[0]["text"]["text"], "Pause")
-        self.assertEqual(acts[3]["url"], "https://r/")
+        self.assertEqual(acts[2]["text"]["text"], "More Controls")
+        self.assertEqual(acts[2]["url"], "https://r/")
         self.assertEqual(sb.now_playing_blocks(TRACK, False)[-1]["elements"][0]["text"]["text"], "Play")
 
-    def test_credit_is_name_and_avatar_only(self):
+    def test_credit_is_name_under_song(self):
         started = {"by": ADA, "how": "started"}
-        line = sb.now_playing_blocks(TRACK, True, started)[1]
-        self.assertEqual(line["type"], "context")
-        self.assertEqual(line["elements"][-1]["text"], "Ada")
+        self.assertTrue(sb.now_playing_blocks(TRACK, True, started)[0]["text"]["text"].endswith("\nAda"))
         self.assertIn(" · Ada", json.dumps(sb.played_blocks(TRACK, ADA_Q), ensure_ascii=False))
         flat = json.dumps(sb.now_playing_blocks(TRACK, True, ADA_Q) + sb.played_blocks(TRACK, started))
         self.assertNotIn("<@", flat)
@@ -345,7 +346,7 @@ class Feed(unittest.TestCase):
         bot.credit = ADA_Q
         self.run_feed(bot, [("playing", TRACK, 0), ("playing", TRACK, 4), ("playing", TRACK, 1)])
         self.assertEqual(len(self.calls(bot, "chat.postMessage")), 1)
-        self.assertIn('"text": "Ada"', json.dumps(self.calls(bot, "chat.postMessage")[0]["blocks"]))
+        self.assertIn("\\nAda", json.dumps(self.calls(bot, "chat.postMessage")[0]["blocks"]))
         bot.credit = None
         self.run_feed(bot, [("playing", TRACK2, sb.REUSE + 1), ("playing", TRACK2, 4)])
         upd, posts = self.calls(bot, "chat.update"), self.calls(bot, "chat.postMessage")
@@ -361,7 +362,7 @@ class Feed(unittest.TestCase):
         bot.credit = {"by": ADA, "how": "started"}
         self.run_feed(bot, [("playing", TRACK, 0), ("playing", TRACK, 4)])
         self.assertEqual([u.rsplit("/", 1)[1] for u, _ in bot.sent], ["chat.postMessage"])
-        self.assertIn('"text": "Ada"', json.dumps(self.calls(bot, "chat.postMessage")[0]["blocks"]))
+        self.assertIn("\\nAda", json.dumps(self.calls(bot, "chat.postMessage")[0]["blocks"]))
 
     def test_admin_credit_stays_plain(self):
         bot = make()

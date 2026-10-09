@@ -103,7 +103,7 @@ The bot token is used for `users.info` (display names), `auth.test` (the workspa
 
 **Slack bot ("Robotics Music").** Set `SLACK_SIGNING_SECRET` (Basic Information > Signing Secret) and invite the bot to the channel
 (`SLACK_MUSIC_CHANNEL`, default #music). Without the secret the bot stays off and the server starts normally.
-- *Live feed:* every track change posts one "Now playing" message (art, queued-by, up next, Play/Pause, Skip, Listen along, Open remote).
+- *Live feed:* every track change posts one "Now playing" message (art, title, who queued it, the next 3 songs with art, Play/Pause, Skip, More Controls).
   It is edited on pause/resume and queue changes (at most every 5 s) and shrinks to a compact "Played" line when the track changes.
 - `/music <query>` searches (Add to queue / Play buttons), `/music now`, `/music queue`, `/music play|pause|skip`, `/music help`.
   Pasting a Spotify link after `/music` works too. Skips, pauses and plays are announced in the channel with who did them.
