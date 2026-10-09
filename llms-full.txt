@@ -611,10 +611,10 @@ Other Spotify 4xx errors are passed through with their status and a message of t
 
 ## 8. Deployment (for maintainers)
 
-- Code: a Python 3.9+ stdlib-only server (`server.py`), at `~/Developer/music-api-v2` on a Mac. No dependencies.
-- launchd agent `~/Library/LaunchAgents/org.pinewoodrobotics.music-api.plist` runs `python3 server.py --public --client-id <id>` with KeepAlive; output goes to `server.log` in the repo directory.
-- Cloudflare tunnel agent `org.pinewoodrobotics.music-api-tunnel` (config `~/.cloudflared/music-api.yml`) maps `music-api.pinewoodrobotics.org` to `http://127.0.0.1:8765`.
-- Restart: `launchctl kickstart -k gui/$(id -u)/org.pinewoodrobotics.music-api`.
+- Code: a Python 3.9+ stdlib-only server (`server.py`), installed at `~/.local/share/music-api-v2` on a Raspberry Pi 3 B+ (Debian 13, user `ubuntu`). No dependencies.
+- systemd user units: `soloist.service` (Spotify Soloist, audio to the USB speakers via PipeWire), `music-api.service` (`server.py --host 0.0.0.0 --public`, settings from `~/.config/music-api/env`), `soloist-update.timer` (daily build refresh).
+- System service `cloudflared` (config `/etc/cloudflared/config.yml`) maps `music-api.pinewoodrobotics.org` to `http://127.0.0.1:8765`.
+- Restart: `systemctl --user restart music-api`. Logs: `journalctl --user-unit soloist --user-unit music-api -f`.
 - Data directory `~/.local/share/music-api`: `spotify-tokens.json` (Spotify login), `api-tokens.json` (hashed API tokens), `token` (bootstrap token file).
 - First start with auth required and no tokens yet: if `<data-dir>/token` exists (the v1 token was migrated there) it's imported as a token named "v1 token" and the plaintext file is deleted; otherwise a new token is generated and written to `<data-dir>/token` (mode 600) for the admin to read.
 - Spotify login through the public URL needs `https://music-api.pinewoodrobotics.org/auth/callback` listed as a Redirect URI in the Spotify app and the server started with `--redirect-uri` set to it; otherwise use the paste flow.

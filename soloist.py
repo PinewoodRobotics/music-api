@@ -132,6 +132,7 @@ class Soloist:
         self.last_error = None
         self.auth = {"logged_in": False, "is_active": False, "device_name": None}
         self.playback = None
+        self.position = None
         self.queue = {"previous": [], "upcoming": []}
         self.lock = threading.Lock()
         self.cmd_lock = threading.Lock()
@@ -195,9 +196,12 @@ class Soloist:
                     self.playback = None
             elif t == "playback_state":
                 self.playback = {k: v for k, v in msg.items() if k != "type"}
+                self._set_position(msg.get("position"))
                 self.auth["is_active"] = msg.get("is_active", self.auth["is_active"])
             elif t == "queue_changed":
                 self.queue = {"previous": msg.get("previous", []), "upcoming": msg.get("upcoming", [])}
+            elif t == "position_sync":
+                self._set_position(msg.get("position"))
             elif self.playback is not None:
                 pb = self.playback
                 if t == "track_changed":
@@ -210,8 +214,6 @@ class Soloist:
                     pb["context"] = msg.get("context")
                 elif t == "options_changed":
                     pb["options"] = msg.get("options")
-                elif t == "position_sync":
-                    pb["position"] = msg.get("position")
                 elif t == "device_changed":
                     pb["is_active"] = msg.get("is_active")
                     self.auth.update(is_active=msg.get("is_active"), device_name=msg.get("device_name"))
@@ -247,9 +249,15 @@ class Soloist:
             raise SoloistError(text, 409 if "auth" in text else 400)
         return msg
 
+    def _set_position(self, pos):
+        # On login Soloist can send position_sync before the first playback_state, and that state carries a
+        # stale position, so keep whichever anchor is newest rather than whichever arrived last.
+        if pos and (not self.position or pos.get("timestamp_ms", 0) >= self.position.get("timestamp_ms", 0)):
+            self.position = pos
+
     def position_ms(self):
         """Current position, interpolated from the last anchor."""
-        pos = (self.playback or {}).get("position") or {}
+        pos = self.position if self.playback else None
         if not pos:
             return 0
         elapsed = time.time() * 1000 - pos.get("timestamp_ms", 0)

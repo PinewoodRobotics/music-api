@@ -10,7 +10,8 @@ python3 server.py --host 0.0.0.0 --token SECRET            # LAN access
 ```
 
 `GET /api` lists every endpoint. See [API.md](API.md) for the full reference (regenerate it with `python3 gen_api_md.py > API.md`).
-Production lives at https://music-api.pinewoodrobotics.org (see [Running on macOS](#running-on-macos-launchd--cloudflare-tunnel)).
+Production lives at https://music-api.pinewoodrobotics.org: a Raspberry Pi 3 B+ running Soloist into USB speakers, behind a
+Cloudflare tunnel (see [Raspberry Pi setup](#raspberry-pi-setup-soloist)).
 
 ## Docs
 
@@ -100,16 +101,54 @@ for audio; use a proper 5 V / 2.5 A supply (`vcgencmd get_throttled` should prin
 3. Pick the output: `wpctl status`, find the USB speakers under *Sinks*, then `wpctl set-default <id>`
    (or put the node name in `SOLOIST_PIPEWIRE_DEVICE`).
 4. `systemctl --user start soloist music-api`, then in the Spotify app on the same Wi-Fi pick `DEVICE_NAME` once
-   to pair Soloist. `soloist ctl status` should now say logged in.
-5. Log in to the Web API over SSH: `python3 ~/.local/share/music-api-v2/server.py auth` and paste the redirected URL.
+   to pair Soloist. `soloist ctl status` should now say logged in. Use the desktop or mobile app; the web player only
+   lists devices that are already logged in. Pairing relies on mDNS, so the app must be on the Pi's subnet; see
+   [Pairing from another subnet](#pairing-from-another-subnet) if it isn't.
+5. Log in to the Web API over SSH: `python3 ~/.local/share/music-api-v2/server.py auth --client-id <id>` and paste the
+   redirected URL (`auth` doesn't read the env file, hence `--client-id`).
    It doesn't open a port, so the service can keep running; afterwards `systemctl --user restart music-api` so it picks up the login.
 6. Your first API token: `cat ~/.local/share/music-api/token`. Test with
    `curl -H "Authorization: Bearer <token>" http://music.local:8765/api/status`; it should say `"backend": "soloist"`.
    Then manage tokens with `/api/tokens` and delete that file.
-7. Logs: `journalctl --user -u soloist -u music-api -f`.
+7. Logs: `journalctl --user-unit soloist --user-unit music-api -f` (Pi OS keeps the journal in RAM, so `journalctl --user` finds nothing).
 
-To put `music-api.pinewoodrobotics.org` on the Pi instead of a Mac, install `cloudflared` there, copy
-`~/.cloudflared/music-api.yml` and the tunnel's credentials JSON, and run it as a service. Then stop the tunnel on the Mac.
+### Cloudflare tunnel
+
+`music-api.pinewoodrobotics.org` is a named tunnel run by a system `cloudflared` service on the Pi.
+The API service runs with `--public`, because tunnelled requests arrive from `127.0.0.1` and would otherwise skip the token check.
+To set it up again (install `cloudflared` from [pkg.cloudflare.com](https://pkg.cloudflare.com/index.html) first):
+
+```
+cloudflared tunnel login                                    # pick the pinewoodrobotics.org zone in the browser
+cloudflared tunnel create music-api
+cloudflared tunnel route dns -f music-api music-api.pinewoodrobotics.org
+sudo mkdir -p /etc/cloudflared && sudo cp ~/.cloudflared/<tunnel-id>.json /etc/cloudflared/
+sudo tee /etc/cloudflared/config.yml <<EOF
+tunnel: <tunnel-id>
+credentials-file: /etc/cloudflared/<tunnel-id>.json
+ingress:
+  - hostname: music-api.pinewoodrobotics.org
+    service: http://127.0.0.1:8765
+  - service: http_status:404
+EOF
+sudo cloudflared service install
+```
+
+Logs: `journalctl -u cloudflared -f`.
+
+### Pairing from another subnet
+
+Spotify apps find unpaired Connect devices over mDNS, which doesn't cross routers. If your computer is on a different
+subnet from the Pi but can reach it by IP, relay Soloist's pairing port through the computer and advertise it there
+(macOS shown; get the port and path with `avahi-browse -rt _spotify-connect._tcp` on the Pi):
+
+```
+ssh -N -g -L 0.0.0.0:<port>:127.0.0.1:<port> ubuntu@<pi-ip> &
+dns-sd -R "Lab Speakers" _spotify-connect._tcp local <port> Stack=SP VERSION=1.0 CPath=/zc
+```
+
+Restart the Spotify desktop app, pick the device, then stop both commands. Advertising the Pi's own address
+(`dns-sd -P … <pi-ip>`) doesn't work: the app ignores devices that resolve to another subnet.
 
 ### Raspberry Pi notes
 
@@ -161,6 +200,5 @@ v1 (Music.app) lived in `~/Developer/music-api` and is retired.
 
 - Tested against a real Spotify account (via the `connect` backend): every read endpoint, playlist create/edit/add/
   reorder/remove/delete, library save/remove, lyrics, tokens, the public URL through the tunnel.
-- Not yet tested: playback control on a live device, and the Soloist backend end to end (needs the Pi + API key).
-  The WebSocket client follows Soloist's published API reference but hasn't talked to a real Soloist yet; if something's
-  off, `soloist ctl trace` shows the raw events to compare against `soloist.py`.
+- Soloist backend running on a Pi 3 B+ (Soloist 1.3.9.5): pairing, status, play/pause, position, and audio out through
+  the tunnel. `soloist ctl trace` shows the raw events to compare against `soloist.py`.
