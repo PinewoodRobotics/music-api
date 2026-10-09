@@ -3,6 +3,7 @@ import { byline } from '../lib/format'
 import { usePlayer, usePosition } from '../state/player'
 import { useUI } from '../state/ui'
 import { Artwork } from './Artwork'
+import { CreditLine } from './CreditLine'
 import { IconButton } from './IconButton'
 import { PlayButton, SeekBar, Transport, VolumeControl } from './PlayerControls'
 
@@ -40,6 +41,7 @@ function DesktopBar() {
           <div className="min-w-0">
             <div className="truncate text-sm font-medium text-fg group-hover:underline">{track?.name ?? 'Nothing playing'}</div>
             <div className="truncate text-xs text-dim">{track ? byline(track) : status?.device?.name ?? 'Lab Speakers'}</div>
+            {track && <CreditLine credit={status?.credit} className="mt-1 text-[11px] text-faint" />}
           </div>
         </button>
       </div>

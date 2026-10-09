@@ -68,9 +68,12 @@ export type Status = {
   track: Track | null
   context: { uri: string; type: string; name?: string; artwork?: string | null } | null
   actions: string[]
+  credit?: Credit | null
 }
 
 export type Person = { id?: string; name: string; avatar: string | null }
+
+export type Credit = { by: Person; how: 'queued' | 'started' }
 
 export type QueueEntry = {
   uid: string | null

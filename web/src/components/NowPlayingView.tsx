@@ -5,6 +5,7 @@ import { navigate } from '../lib/router'
 import { usePlayer } from '../state/player'
 import { useUI, type Panel } from '../state/ui'
 import { Artwork } from './Artwork'
+import { CreditLine } from './CreditLine'
 import { IconButton } from './IconButton'
 import { Lyrics } from './Lyrics'
 import { SeekBar, Transport, VolumeControl } from './PlayerControls'
@@ -114,6 +115,7 @@ export function NowPlayingView() {
                   <div className="min-w-0">
                     <div className="truncate font-semibold">{track.name}</div>
                     <div className="truncate text-sm text-white/65">{byline(track)}</div>
+                    <CreditLine credit={status?.credit} className="mt-0.5 text-xs text-white/50" />
                   </div>
                 </div>
               )}
@@ -176,6 +178,7 @@ function Stage({ panelOpen }: { panelOpen: boolean }) {
       <div className="mt-6 min-w-0">
         <h1 className="truncate font-display text-[clamp(1.4rem,2.6vw,2.1rem)] font-bold leading-tight tracking-tight">{track.name}</h1>
         <p className="mt-1 truncate text-[clamp(1rem,1.6vw,1.25rem)] text-white/65">{byline(track)}</p>
+        <CreditLine credit={status?.credit} className="mt-2 text-sm text-white/50" />
       </div>
     </div>
   )

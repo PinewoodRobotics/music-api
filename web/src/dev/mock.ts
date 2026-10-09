@@ -75,6 +75,7 @@ const state: { status: Status; at: number } = {
     track: tracks[0],
     context: { uri: 'spotify:playlist:p1', type: 'playlist', name: 'Build Night' },
     actions: ['pause', 'seek', 'skip_next', 'skip_prev', 'shuffle', 'set_repeat', 'add_to_queue'],
+    credit: { by: maya, how: 'started' },
   },
 }
 
@@ -92,7 +93,7 @@ function setStatus(patch: Partial<Status>) {
 }
 
 function playTrack(track: Track, context: Status['context'] = state.status.context) {
-  setStatus({ track, duration_ms: track.duration_ms, position_ms: 0, state: 'playing', context })
+  setStatus({ track, duration_ms: track.duration_ms, position_ms: 0, state: 'playing', context, credit: { by: adam, how: 'started' } })
 }
 
 function queue(): Queue {
