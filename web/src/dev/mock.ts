@@ -181,7 +181,9 @@ function handle(method: string, url: URL, body: Record<string, unknown>): readon
   if (route === 'POST /api/next' || route === 'POST /api/previous') {
     const i = tracks.findIndex((t) => t.uri === state.status.track?.uri)
     const next = route.endsWith('next') ? (queued.shift() ?? tracks[(i + 1) % tracks.length]) : tracks[Math.max(0, i - 1)]
+    const from = state.status.track?.uri ?? ''
     playTrack(next)
+    state.status = { ...state.status, skip: { by: maya, from, at: Date.now() } }
     return ok(snapshot())
   }
   if (route === 'POST /api/seek') return mutate({ position_ms: Number(body.position_ms) })

@@ -3,7 +3,7 @@ import { useState, type ReactNode } from 'react'
 import { byline, formatTime } from '../../lib/format'
 import { usePlayer, usePosition } from '../../state/player'
 import type { Panel } from '../../state/ui'
-import { CreditLine } from '../CreditLine'
+import { CreditOrSkip } from '../SkipNote'
 import type { AnchorRect } from '../Popover'
 import { Slider } from '../Slider'
 import { TrackMenu } from '../TrackMenu'
@@ -216,7 +216,7 @@ export function TrackTitle({ size, withMenu = true }: { size: 'sm' | 'md' | 'lg'
       <div className="min-w-0 flex-1">
         <div className={`truncate font-semibold leading-tight ${title}`}>{track.name}</div>
         <div className={`truncate text-white/70 ${sub}`}>{byline(track)}</div>
-        <CreditLine credit={status?.credit} className="mt-1 text-[13px] text-white/60" />
+        <CreditOrSkip credit={status?.credit} className="mt-1 text-[13px] text-white/60" />
       </div>
       {withMenu && <TrackMenuButton />}
     </div>

@@ -69,10 +69,13 @@ export type Status = {
   context: { uri: string; type: string; name?: string; artwork?: string | null } | null
   actions: string[]
   credit?: Credit | null
+  skip?: Skip | null
   source?: 'context' | 'queue' | 'autoplay' | null
 }
 
 export type Person = { id?: string | null; name: string; avatar: string | null }
+
+export type Skip = { by: Person; from: string; at: number }
 
 export type Credit = { by: Person; how: 'queued' | 'started' | 'autoplay' }
 

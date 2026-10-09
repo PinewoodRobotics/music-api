@@ -14,6 +14,7 @@ import { Toasts } from './components/Toasts'
 import { usePalette } from './lib/color'
 import { matchRoute, navigate, useLocation, type Route } from './lib/router'
 import { focusSearch } from './lib/searchFocus'
+import { useSkipWatcher } from './lib/skipNote'
 import { AlbumPage } from './pages/AlbumPage'
 import { ArtistPage } from './pages/ArtistPage'
 import { PlaylistsPage } from './pages/PlaylistsPage'
@@ -60,6 +61,13 @@ function Root() {
       </PlayerProvider>
     </UIProvider>
   )
+}
+
+function SkipWatcher() {
+  const { status } = usePlayer()
+  const { me } = useSession()
+  useSkipWatcher(status?.skip, me?.id)
+  return null
 }
 
 function AmbientTheme() {
@@ -172,6 +180,7 @@ function Shell() {
     <div data-app-shell className="flex h-dvh flex-col overflow-hidden bg-black pt-[env(safe-area-inset-top)] md:pt-0">
       <AmbientTheme />
       <MediaSessionBridge />
+      <SkipWatcher />
       <div className="flex min-h-0 flex-1 gap-2 md:p-2 md:pb-0">
         <Sidebar />
         <main
