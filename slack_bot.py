@@ -48,9 +48,8 @@ def esc(s):
     return (s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
-def who(user, mention=False):
-    uid = user.get("id") or ""
-    return f"<@{uid}>" if mention and re.fullmatch(r"[UW][A-Z0-9]+", uid) else esc(user.get("name"))
+def who(user):
+    return esc(user.get("name"))
 
 
 def spotify_url(uri):
@@ -142,15 +141,12 @@ def upcoming_line(upcoming, n=3):
     return "Up next: " + " · ".join(names) if names else None
 
 
-def credit_verb(credit):
-    return "queued up" if credit["how"] == "queued" else "started"
 
-
-def now_playing_blocks(t, playing, credit=None, upcoming=None, remote=DEFAULT_REMOTE, block_id="feed", mention=False):
+def now_playing_blocks(t, playing, credit=None, upcoming=None, remote=DEFAULT_REMOTE, block_id="feed"):
     blocks = [card(t)]
     if credit and (credit.get("by") or {}).get("name"):
         by = credit["by"]
-        blocks.append(avatar_context(by, f"{credit_verb(credit).capitalize()} by {who(by, mention)}"))
+        blocks.append(avatar_context(by, who(by)))
     line = upcoming_line(upcoming)
     if line:
         blocks.append(context(line))
@@ -167,8 +163,8 @@ def now_playing_text(t):
     return f"Now playing: {t.get('name')} - {artists_of(t)}"
 
 
-def played_blocks(t, credit=None, mention=False):
-    by = f" · {credit_verb(credit)} by {who(credit['by'], mention)}" if credit and (credit.get("by") or {}).get("name") else ""
+def played_blocks(t, credit=None):
+    by = f" · {who(credit['by'])}" if credit and (credit.get("by") or {}).get("name") else ""
     text = f"Played · *{title_link(t)}* - {esc(artists_of(t))}{by}"
     els = [{"type": "image", "image_url": t["artwork"], "alt_text": t.get("name") or "cover"}] if t.get("artwork") else []
     return [{"type": "context", "elements": els + [{"type": "mrkdwn", "text": text}]}]
@@ -340,12 +336,9 @@ class SlackBot:
             self._warn(("response_url", status), f"response_url failed: HTTP {status} {res.get('error', '')}")
 
     def say(self, text, user=None):
-        """Channel note. With `user`, "{who}" is their bold name when posted and a real mention in an immediate edit."""
+        """Channel note; "{who}" becomes `user`'s bold display name (no mention, so nobody gets pinged)."""
         plain = text.replace("{who}", f"*{who(user)}*") if user else text
-        res = self.call("chat.postMessage", channel=self.channel, text=plain, blocks=[context(plain)], unfurl_links=False)
-        if res and user and who(user, True) != who(user):
-            mentioned = text.replace("{who}", who(user, True))
-            self.call("chat.update", channel=self.channel, ts=res["ts"], text=mentioned, blocks=[context(mentioned)])
+        self.call("chat.postMessage", channel=self.channel, text=plain, blocks=[context(plain)], unfurl_links=False)
 
     # ---------- requests ----------
 
@@ -608,9 +601,8 @@ class SlackBot:
             except Exception as e:  # noqa: BLE001 - keep the feed alive
                 self._warn(("tick", str(e)[:60]), f"feed: {e!r}")
 
-    def rendered(self, cur, mention=True):
-        return now_playing_blocks(cur["track"], cur["playing"], cur.get("credit"), cur["upcoming"], self.remote,
-                                  mention=mention)
+    def rendered(self, cur):
+        return now_playing_blocks(cur["track"], cur["playing"], cur.get("credit"), cur["upcoming"], self.remote)
 
     def tick(self, now):
         before = (self.cur or {}).get("ts")
@@ -638,7 +630,7 @@ class SlackBot:
 
     def finish(self, cur):
         self.call("chat.update", channel=self.channel, ts=cur["ts"], text=f"Played: {cur['track'].get('name')}",
-                  blocks=played_blocks(cur["track"], cur.get("credit"), mention=True))
+                  blocks=played_blocks(cur["track"], cur.get("credit")))
 
     def rotate(self, t, now):
         if self.cur:
@@ -651,15 +643,10 @@ class SlackBot:
         cur = {"uri": t["uri"], "track": t, "playing": True, "upcoming": up[:3],
                "credit": self.st.get("credit"), "ts": None, "sig": None, "sent": now}
         res = self.call("chat.postMessage", channel=self.channel, text=now_playing_text(t),
-                        blocks=self.rendered(cur, mention=False), unfurl_links=False, unfurl_media=False)
+                        blocks=self.rendered(cur), unfurl_links=False, unfurl_media=False)
         if res:
             cur["ts"], cur["sig"] = res["ts"], self.sig(cur)
             self.cur = cur
-            by = (cur["credit"] or {}).get("by")
-            if by and who(by, True) != who(by):
-                # Slack only notifies on newly posted messages, so the mention goes in via an edit
-                self.call("chat.update", channel=self.channel, ts=cur["ts"], text=now_playing_text(t),
-                          blocks=self.rendered(cur))
         else:
             self.cur = {**cur, "ts": None}
 

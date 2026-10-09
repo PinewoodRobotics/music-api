@@ -143,7 +143,7 @@ class Blocks(unittest.TestCase):
         self.assertIn("<https://open.spotify.com/track/5W3cjX2J3tjhG8zb6u0qHn|One &lt;More&gt; Time>", blocks[0]["text"]["text"])
         self.assertIn("Daft Punk · Discovery", blocks[0]["text"]["text"])
         flat = json.dumps(blocks)
-        self.assertIn("Queued up by Ada", flat)
+        self.assertIn('"text": "Ada"', flat)
         self.assertIn("Up next: Other", flat)
         acts = blocks[-1]["elements"]
         self.assertEqual([a["action_id"] for a in acts], ["playpause", "skip", "listen_along", "open_remote"])
@@ -151,14 +151,15 @@ class Blocks(unittest.TestCase):
         self.assertEqual(acts[3]["url"], "https://r/")
         self.assertEqual(sb.now_playing_blocks(TRACK, False)[-1]["elements"][0]["text"]["text"], "Play")
 
-    def test_credit_wording_and_mentions(self):
+    def test_credit_is_name_and_avatar_only(self):
         started = {"by": ADA, "how": "started"}
-        self.assertIn("Started by Ada", json.dumps(sb.now_playing_blocks(TRACK, True, started)))
-        self.assertIn("Started by <@U1>", json.dumps(sb.now_playing_blocks(TRACK, True, started, mention=True)))
-        self.assertIn("started by Ada", json.dumps(sb.played_blocks(TRACK, started)))
-        self.assertIn("queued up by <@U1>", json.dumps(sb.played_blocks(TRACK, ADA_Q, mention=True)))
-        admin = {"by": {"id": "admin", "name": "@admin"}, "how": "queued"}
-        self.assertIn("Queued up by @admin", json.dumps(sb.now_playing_blocks(TRACK, True, admin, mention=True)))
+        line = sb.now_playing_blocks(TRACK, True, started)[1]
+        self.assertEqual(line["type"], "context")
+        self.assertEqual(line["elements"][-1]["text"], "Ada")
+        self.assertIn(" · Ada", json.dumps(sb.played_blocks(TRACK, ADA_Q), ensure_ascii=False))
+        flat = json.dumps(sb.now_playing_blocks(TRACK, True, ADA_Q) + sb.played_blocks(TRACK, started))
+        self.assertNotIn("<@", flat)
+        self.assertNotIn(" by ", flat)
 
     def test_played_has_no_buttons(self):
         self.assertNotIn("button", json.dumps(sb.played_blocks(TRACK, ADA_Q)))
@@ -184,17 +185,15 @@ class Interactions(unittest.TestCase):
         self.assertIn("Queued by Ada", json.dumps(sent["blocks"]))
         self.assertNotIn("button", json.dumps(sent["blocks"][1]))
 
-    def test_play_uri_credits_start_and_mentions_in_note(self):
+    def test_play_uri_credits_start_and_names_in_note(self):
         bot = make()
         bot.on_interaction(self.payload({"action_id": "play_uri", "value": "spotify:album:2noRn2Aes5aoNVsU6iWThc"}))
         self.assertEqual(bot.credits.started["uris"], ["spotify:album:2noRn2Aes5aoNVsU6iWThc"])
         self.assertEqual(bot.credits.started["user"], ADA)
         posts = [p for u, p in bot.sent if u.endswith("chat.postMessage")]
-        upd = [p for u, p in bot.sent if u.endswith("chat.update")]
-        self.assertNotIn("<@", json.dumps(posts))
+        self.assertNotIn("<@", json.dumps(bot.sent))
         self.assertIn("*Ada* started", posts[0]["text"])
-        self.assertIn("<@U1> started", upd[0]["text"])
-        self.assertEqual(upd[0]["ts"], "1.1")
+        self.assertFalse([u for u, _ in bot.sent if u.endswith("chat.update")])
 
     def test_non_ephemeral_never_replaces(self):
         bot = make()
@@ -349,26 +348,23 @@ class Feed(unittest.TestCase):
         bot.credit = ADA_Q
         self.run_feed(bot, [("playing", TRACK, 0), ("playing", TRACK, 4), ("playing", TRACK, 1)])
         self.assertEqual(len(self.calls(bot, "chat.postMessage")), 1)
-        self.assertIn("Queued up by Ada", json.dumps(self.calls(bot, "chat.postMessage")[0]["blocks"]))
+        self.assertIn('"text": "Ada"', json.dumps(self.calls(bot, "chat.postMessage")[0]["blocks"]))
         bot.credit = None
         self.run_feed(bot, [("playing", TRACK2, 0), ("playing", TRACK2, 4)])
         upd, posts = self.calls(bot, "chat.update"), self.calls(bot, "chat.postMessage")
         self.assertEqual(len(posts), 2)
-        self.assertEqual(len(upd), 2)
-        self.assertIn("Queued up by <@U1>", json.dumps(upd[0]["blocks"]))
-        self.assertIn("queued up by <@U1>", json.dumps(upd[1]["blocks"]))
-        self.assertNotIn("button", json.dumps(upd[1]["blocks"]))
-        self.assertNotIn("<@", json.dumps(posts))
+        self.assertEqual(len(upd), 1)
+        self.assertIn(" · Ada", json.dumps(upd[0]["blocks"], ensure_ascii=False))
+        self.assertNotIn("button", json.dumps(upd[0]["blocks"]))
+        self.assertNotIn("<@", json.dumps(bot.sent))
         self.assertEqual([u.rsplit("/", 1)[1] for u, _ in bot.sent][-2:], ["chat.update", "chat.postMessage"])
 
-    def test_mention_edit_follows_post_and_refresh_keeps_it(self):
+    def test_card_posted_once_with_name(self):
         bot = make()
         bot.credit = {"by": ADA, "how": "started"}
         self.run_feed(bot, [("playing", TRACK, 0), ("playing", TRACK, 4)])
-        self.assertEqual([u.rsplit("/", 1)[1] for u, _ in bot.sent], ["chat.postMessage", "chat.update"])
-        self.assertIn("Started by <@U1>", json.dumps(self.calls(bot, "chat.update")[0]["blocks"]))
-        self.run_feed(bot, [("paused", TRACK, 6)])
-        self.assertIn("Started by <@U1>", json.dumps(self.calls(bot, "chat.update")[-1]["blocks"]))
+        self.assertEqual([u.rsplit("/", 1)[1] for u, _ in bot.sent], ["chat.postMessage"])
+        self.assertIn('"text": "Ada"', json.dumps(self.calls(bot, "chat.postMessage")[0]["blocks"]))
 
     def test_admin_credit_stays_plain(self):
         bot = make()
