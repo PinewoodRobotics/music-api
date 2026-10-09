@@ -155,9 +155,10 @@ def now_playing_text(t):
     return f"Now playing: {t.get('name')} - {artists_of(t)}"
 
 
-def played_blocks(t, credit=None):
+def played_blocks(t, credit=None, skipped_by=None):
     by = f" · {who(credit['by'])}" if credit and (credit.get("by") or {}).get("name") else ""
-    text = f"Played · *{title_link(t)}* - {esc(artists_of(t))}{by}"
+    skip = f" · skipped by {who(skipped_by)}" if skipped_by and skipped_by.get("name") else ""
+    text = f"Played · *{title_link(t)}* - {esc(artists_of(t))}{by}{skip}"
     els = [{"type": "image", "image_url": t["artwork"], "alt_text": t.get("name") or "cover"}] if t.get("artwork") else []
     return [{"type": "context", "elements": els + [{"type": "mrkdwn", "text": text}]}]
 
@@ -453,6 +454,7 @@ class SlackBot:
     def transport(self, verb, uid):
         """Do play/pause/skip for a Slack user (the feed card itself is the channel's feedback)."""
         if verb == "skip":
+            self.credits.skipped(self.user(uid))
             self.player.next()
             return "Skipped."
         if verb == "pause":
@@ -612,8 +614,10 @@ class SlackBot:
             self.refresh(cur, playing, now)
 
     def finish(self, cur):
+        skip = self.st.get("skip") or {}
+        skipped_by = skip.get("by") if skip.get("from") == cur["uri"] else None
         self.call("chat.update", channel=self.channel, ts=cur["ts"], text=f"Played: {cur['track'].get('name')}",
-                  blocks=played_blocks(cur["track"], cur.get("credit")))
+                  blocks=played_blocks(cur["track"], cur.get("credit"), skipped_by))
 
     def rotate(self, t, now):
         try:

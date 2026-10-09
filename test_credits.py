@@ -110,6 +110,22 @@ class AutoplayTest(unittest.TestCase):
         self.assertEqual(p.status()["source"], "autoplay")
 
 
+class SkipTest(unittest.TestCase):
+    def test_skip_is_credited_on_the_track_left_not_the_next(self):
+        c = Credits()
+        c.for_status(st(T1))
+        c.skipped(B)
+        self.assertEqual(c.recent_skip()["from"], T1)
+        self.assertEqual(c.recent_skip()["by"]["name"], "Bob")
+        self.assertEqual(c.for_status({**st(T2), "source": "autoplay"})["by"]["name"], "Autoplay")
+
+    def test_skip_expires(self):
+        c = Credits()
+        c.skipped(B)
+        c.skip["time"] -= Credits.SKIP_TTL + 1
+        self.assertIsNone(c.recent_skip())
+
+
 class PlayerCredit(unittest.TestCase):
     def test_status_includes_credit(self):
         p = Player("soloist", None, None, None)

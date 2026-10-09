@@ -203,18 +203,21 @@ def _playpause(q, b):
 @route("POST", "/api/next")
 def _next(q, b):
     """Skip to next"""
+    credits.skipped(_req.user)
     return player.next()
 
 
 @route("POST", "/api/previous")
 def _previous(q, b):
     """Previous track (restarts the current one if it's past the first few seconds)"""
+    credits.skipped(_req.user)
     return player.previous()
 
 
 @route("POST", "/api/back")
 def _back(q, b):
     """Alias of /api/previous (v1 compatibility)"""
+    credits.skipped(_req.user)
     return player.previous()
 
 
@@ -260,6 +263,7 @@ def _enqueue(q, b):
 @route("POST", "/api/queue/jump")
 def _queue_jump(q, b):
     """Body {uid} (Soloist) or {index}: skip ahead to that Up Next entry, dropping the ones before it"""
+    credits.skipped(_req.user)
     return player.jump(b)
 
 
@@ -1026,6 +1030,7 @@ def main():
             backend = "soloist"
     credits = Credits(os.path.join(a.data_dir, "credits.json"))
     player = Player(backend, api, soloist, a.device, credits.for_status)
+    player.skip_fn = credits.recent_skip
     if soloist:
         soloist.on_event = player.on_soloist_event
         threading.Thread(target=soloist.loop, daemon=True).start()

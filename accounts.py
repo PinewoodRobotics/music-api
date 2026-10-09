@@ -294,6 +294,7 @@ class Credits:
 
     QUEUE_TTL = 6 * 3600
     START_TTL = 12 * 3600
+    SKIP_TTL = 30
 
     def __init__(self, path=None):
         self.path = path
@@ -302,6 +303,7 @@ class Credits:
         self.by_uri = {u: [tuple(e) for e in es] for u, es in (d.get("queued") or {}).items()}  # uri -> [(user, time)] oldest first
         self.started = d.get("started")
         self.current = d.get("current")  # {uri, credit}
+        self.skip = None  # {user, time} of the last next/previous/jump
 
     @staticmethod
     def _user(user):
@@ -320,6 +322,20 @@ class Credits:
             self.by_uri = {u: [e for e in es if e[1] > cutoff] for u, es in self.by_uri.items()}
             self.by_uri = {u: es for u, es in self.by_uri.items() if es}
             self._save()
+
+    def skipped(self, user):
+        """Someone pressed next/previous or jumped in Up Next. The skip is credited on the track they left;
+        the next track keeps its own credit (queued/started/autoplay), since they didn't pick it."""
+        with self.lock:
+            uri = (self.current or {}).get("uri")
+            self.skip = {"by": self._user(user), "from": uri, "time": time.time()}
+
+    def recent_skip(self):
+        """{by, from, at} for SKIP_TTL seconds after a skip, else None."""
+        s = self.skip
+        if not s or time.time() - s["time"] > self.SKIP_TTL:
+            return None
+        return {"by": s["by"], "from": s["from"], "at": int(s["time"] * 1000)}
 
     def start(self, uris, user):
         with self.lock:

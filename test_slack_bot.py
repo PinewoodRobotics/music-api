@@ -159,6 +159,11 @@ class Blocks(unittest.TestCase):
         self.assertNotIn("<@", flat)
         self.assertNotIn(" by ", flat)
 
+    def test_played_line_names_the_skipper(self):
+        flat = json.dumps(sb.played_blocks(TRACK, {"by": ADA, "how": "started"}, {"name": "Bob"}), ensure_ascii=False)
+        self.assertIn(" · Ada · skipped by Bob", flat)
+        self.assertNotIn("skipped", json.dumps(sb.played_blocks(TRACK, {"by": ADA, "how": "started"})))
+
     def test_played_has_no_buttons(self):
         self.assertNotIn("button", json.dumps(sb.played_blocks(TRACK, ADA_Q)))
 

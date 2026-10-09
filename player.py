@@ -57,6 +57,7 @@ def entity(e):
 class Player:
     def __init__(self, backend, api, soloist=None, device=None, credit_fn=None):
         self.credit_fn = credit_fn
+        self.skip_fn = None
         self._src = (None, None, [])  # (track uri, its source, Up Next seen while it played)
         self.backend = backend          # "soloist" | "connect"
         self.api = api
@@ -149,7 +150,8 @@ class Player:
     def status(self, fresh=False):
         st = self._status(fresh)
         st = {**st, "source": self._source(st)}
-        return {**st, "credit": self.credit_fn(st) if self.credit_fn else None}
+        return {**st, "credit": self.credit_fn(st) if self.credit_fn else None,
+                "skip": self.skip_fn() if self.skip_fn else None}
 
     def _source(self, st):
         """Where the current track came from (context, queue or autoplay). Soloist only tags Up Next entries,
