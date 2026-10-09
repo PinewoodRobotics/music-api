@@ -102,7 +102,7 @@ for audio; use a proper 5 V / 2.5 A supply (`vcgencmd get_throttled` should prin
 4. `systemctl --user start soloist music-api`, then in the Spotify app on the same Wi-Fi pick `DEVICE_NAME` once
    to pair Soloist. `soloist ctl status` should now say logged in.
 5. Log in to the Web API over SSH: `python3 ~/.local/share/music-api-v2/server.py auth` and paste the redirected URL.
-   (Stop the service first or pass `--port 8770`; it only needs the same data dir.)
+   It doesn't open a port, so the service can keep running; afterwards `systemctl --user restart music-api` so it picks up the login.
 6. Your first API token: `cat ~/.local/share/music-api/token`. Test with
    `curl -H "Authorization: Bearer <token>" http://music.local:8765/api/status`; it should say `"backend": "soloist"`.
    Then manage tokens with `/api/tokens` and delete that file.
