@@ -69,11 +69,12 @@ export type Status = {
   context: { uri: string; type: string; name?: string; artwork?: string | null } | null
   actions: string[]
   credit?: Credit | null
+  source?: 'context' | 'queue' | 'autoplay' | null
 }
 
-export type Person = { id?: string; name: string; avatar: string | null }
+export type Person = { id?: string | null; name: string; avatar: string | null }
 
-export type Credit = { by: Person; how: 'queued' | 'started' }
+export type Credit = { by: Person; how: 'queued' | 'started' | 'autoplay' }
 
 export type QueueEntry = {
   uid: string | null
@@ -237,7 +238,7 @@ export const api = {
   queue: (limit = 50) => get<Queue>(`/api/queue?${qs({ limit })}`),
   lyrics: () => get<Lyrics>('/api/lyrics'),
 
-  play: (body: { uri?: string; uris?: string[]; context?: string; offset?: number | string } = {}) => post<Status>('/api/play', body),
+  play: (body: { uri?: string; uris?: string[]; context?: string; offset?: number | string; shuffle?: boolean } = {}) => post<Status>('/api/play', body),
   pause: () => post<Status>('/api/pause'),
   next: () => post<Status>('/api/next'),
   jumpTo: (entry: { uid?: string | null; index: number }) =>

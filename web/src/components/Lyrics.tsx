@@ -81,14 +81,16 @@ function useLineIndex(times: number[]) {
   return index
 }
 
-export function Lyrics({ size = 'sm' }: { size?: 'sm' | 'lg' }) {
+type LyricsSize = 'sm' | 'lg' | 'immersive'
+
+export function Lyrics({ size = 'sm' }: { size?: LyricsSize }) {
   const { status } = usePlayer()
   const track = status?.track
   const loaded = useLyrics(track?.type === 'track' ? track.uri : undefined)
 
   const message = (text: string) => (
     <div className="grid h-full place-items-center p-8 text-center">
-      <p className={`${size === 'lg' ? 'text-lg' : 'text-sm'} text-white/60`}>{text}</p>
+      <p className={`${size === 'sm' ? 'text-sm' : 'text-lg'} text-white/60`}>{text}</p>
     </div>
   )
 
@@ -108,7 +110,7 @@ export function Lyrics({ size = 'sm' }: { size?: 'sm' | 'lg' }) {
   if (lyrics.plain)
     return (
       <div className="scroll-thin h-full overflow-y-auto px-6 py-8">
-        <p className={`whitespace-pre-line font-display font-bold leading-snug text-white/80 ${size === 'lg' ? 'text-2xl' : 'text-lg'}`}>
+        <p className={`whitespace-pre-line font-display font-bold leading-snug text-white/80 ${size === 'sm' ? 'text-lg' : 'text-2xl'}`}>
           {lyrics.plain}
         </p>
       </div>
@@ -116,7 +118,7 @@ export function Lyrics({ size = 'sm' }: { size?: 'sm' | 'lg' }) {
   return message('No lyrics for this song.')
 }
 
-function SyncedLyrics({ lines, size }: { lines: LyricsData['synced']; size: 'sm' | 'lg' }) {
+function SyncedLyrics({ lines, size }: { lines: LyricsData['synced']; size: LyricsSize }) {
   const { seek } = usePlayer()
   const [times] = useState(() => lines.map((l) => l.time_ms))
   const index = useLineIndex(times)
@@ -133,19 +135,38 @@ function SyncedLyrics({ lines, size }: { lines: LyricsData['synced']; size: 'sm'
     first.current = false
   }, [index])
 
+  const [browsing, setBrowsing] = useState(false)
+  const browseTimer = useRef<ReturnType<typeof setTimeout>>(undefined)
   const pauseAutoScroll = () => {
     userScrollUntil.current = Date.now() + 4000
+    setBrowsing(true)
+    clearTimeout(browseTimer.current)
+    browseTimer.current = setTimeout(() => setBrowsing(false), 4000)
   }
+  useEffect(() => () => clearTimeout(browseTimer.current), [])
 
-  const text = size === 'lg' ? 'text-[clamp(1.5rem,2.4vw,2.25rem)] leading-[1.25]' : 'text-xl leading-snug'
+  const immersive = size === 'immersive'
+  const text = immersive
+    ? 'text-[clamp(1.7rem,2.9vw,2.9rem)] leading-[1.18] font-extrabold'
+    : size === 'lg'
+      ? 'text-[clamp(1.5rem,2.4vw,2.25rem)] leading-[1.25] font-bold'
+      : 'text-xl leading-snug font-bold'
+  const pad = immersive ? 'px-1' : size === 'lg' ? 'px-2' : 'px-5'
+  const lineStyle = (i: number) => {
+    if (!immersive || browsing || i === index) return undefined
+    const distance = i - index
+    const blur = distance > 0 ? Math.min(3.5, distance * 0.75) : 1.2
+    return { filter: `blur(${blur}px)` }
+  }
 
   return (
     <div
       ref={container}
       onWheel={pauseAutoScroll}
       onTouchMove={pauseAutoScroll}
-      className={`no-scrollbar mask-fade-y relative h-full overflow-y-auto ${size === 'lg' ? 'px-2 py-[30vh]' : 'px-5 py-[40%]'}`}
+      className={`no-scrollbar mask-fade-y relative h-full overflow-y-auto ${pad}`}
     >
+      <div className="h-[34%]" aria-hidden />
       {lines.map((line, i) => {
         const state = i === index ? 'now' : i < index ? 'past' : 'future'
         return (
@@ -154,14 +175,20 @@ function SyncedLyrics({ lines, size }: { lines: LyricsData['synced']; size: 'sm'
             type="button"
             data-line={i}
             onClick={() => seek(line.time_ms)}
-            className={`block w-full origin-left py-2 text-left font-display font-bold tracking-tight transition-[color,opacity,transform] duration-500 ${text} ${
-              state === 'now' ? 'text-white' : state === 'past' ? 'text-white/30 hover:text-white/70' : 'text-white/40 hover:text-white/70'
-            } ${state === 'now' && size === 'lg' ? 'scale-[1.02]' : ''}`}
+            style={lineStyle(i)}
+            className={`block w-full origin-left text-left font-display tracking-tight transition-[color,opacity,transform,filter] duration-500 ${immersive ? 'py-2.5' : 'py-2'} ${text} ${
+              state === 'now'
+                ? 'text-white'
+                : state === 'past'
+                  ? `${immersive ? 'text-white/35' : 'text-white/30'} hover:text-white/70`
+                  : `${immersive ? 'text-white/45' : 'text-white/40'} hover:text-white/70`
+            } ${state === 'now' && size !== 'sm' ? 'scale-[1.02]' : ''}`}
           >
-            {line.text || <span aria-label="Instrumental break">♪</span>}
+            {line.text || <span aria-label="Instrumental break" className="tracking-[0.25em]">•••</span>}
           </button>
         )
       })}
+      <div className="h-[60%]" aria-hidden />
     </div>
   )
 }

@@ -26,7 +26,7 @@ export function MediaCard({ title, subtitle, artwork, round, href, onPlay, playi
       tabIndex={0}
       onClick={open}
       onKeyDown={(e) => e.key === 'Enter' && open()}
-      className="group cursor-pointer rounded-lg p-3 transition-colors hover:bg-white/[0.06] focus-visible:bg-white/[0.06] max-sm:p-2"
+      className="group cursor-pointer rounded-lg p-3 transition hover:bg-white/[0.06] focus-visible:bg-white/[0.06] active:scale-[0.98] active:bg-white/[0.06] max-sm:p-2"
     >
       <div className="relative mb-3">
         <Artwork src={artwork} round={round} className="aspect-square w-full shadow-[0_8px_24px_rgba(0,0,0,0.5)]" />
@@ -35,7 +35,7 @@ export function MediaCard({ title, subtitle, artwork, round, href, onPlay, playi
             type="button"
             aria-label={playing ? `Pause ${title}` : `Play ${title}`}
             onClick={play}
-            className={`absolute bottom-2 right-2 grid size-12 place-items-center rounded-full bg-accent text-ink shadow-xl shadow-black/40 transition-all duration-200 hover:scale-105 max-md:hidden ${
+            className={`absolute bottom-2 right-2 grid size-12 place-items-center rounded-full bg-accent text-ink shadow-xl shadow-black/40 transition-all duration-200 hover:scale-105 [@media(hover:none)]:hidden ${
               playing || pending ? 'translate-y-0 opacity-100' : 'translate-y-2 opacity-0 group-hover:translate-y-0 group-hover:opacity-100 group-focus-visible:translate-y-0 group-focus-visible:opacity-100'
             }`}
           >

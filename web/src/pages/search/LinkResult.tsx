@@ -135,7 +135,7 @@ function Header({ data }: { data: Resolved }) {
               playing={current && isPlaying}
               pending={pending === 'link:play'}
               label={current && isPlaying ? 'Pause' : `Play ${data.name}`}
-              onClick={() => (current ? togglePlay() : void start('link:play', () => api.play({ uri: playUri })))}
+              onClick={() => (current ? togglePlay() : void start('link:play', () => api.play({ uri: playUri, shuffle: false }), false))}
             />
           )}
           {data.kind === 'track' && playUri && (
@@ -242,7 +242,7 @@ function Tracks({ data }: { data: Resolved }) {
               type="button"
               aria-label={`More options for ${t.name}`}
               onClick={(e) => openMenu(t, e, true)}
-              className="grid size-8 place-items-center rounded-full text-dim hover:text-fg md:invisible md:group-hover:visible md:group-focus-within:visible"
+              className="grid size-8 place-items-center rounded-full text-dim hover:text-fg active:bg-white/10 md:invisible md:group-hover:visible md:group-focus-within:visible [@media(hover:none)]:visible [@media(hover:none)]:size-11"
             >
               <MoreHorizontal className="size-5" />
             </button>

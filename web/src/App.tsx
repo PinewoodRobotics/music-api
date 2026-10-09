@@ -14,8 +14,7 @@ import { usePalette } from './lib/color'
 import { matchRoute, navigate, useLocation, type Route } from './lib/router'
 import { AlbumPage } from './pages/AlbumPage'
 import { ArtistPage } from './pages/ArtistPage'
-import { HomePage } from './pages/HomePage'
-import { LibraryPage } from './pages/LibraryPage'
+import { PlaylistsPage } from './pages/PlaylistsPage'
 import { OpenLinkPage } from './pages/OpenLinkPage'
 import { Message } from './pages/Message'
 import { PlaylistPage } from './pages/PlaylistPage'
@@ -104,12 +103,10 @@ function useShortcuts() {
 
 function Page({ route }: { route: Route }) {
   switch (route.name) {
-    case 'home':
-      return <HomePage />
+    case 'playlists':
+      return <PlaylistsPage />
     case 'search':
       return <SearchPage />
-    case 'library':
-      return <LibraryPage />
     case 'playlist':
       return <PlaylistPage key={route.id} id={route.id} />
     case 'album':
@@ -160,7 +157,7 @@ function Shell() {
   }, [path])
 
   return (
-    <div className="flex h-dvh flex-col overflow-hidden bg-black">
+    <div className="flex h-dvh flex-col overflow-hidden bg-black pt-[env(safe-area-inset-top)] md:pt-0">
       <AmbientTheme />
       <div className="flex min-h-0 flex-1 gap-2 md:p-2 md:pb-0">
         <Sidebar />

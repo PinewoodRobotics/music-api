@@ -10,9 +10,10 @@ type Props = {
   valueText?: string
   className?: string
   thick?: boolean
+  tone?: 'default' | 'glass'
 }
 
-export function Slider({ value, max, label, step, onCommit, onPreview, valueText, className = '', thick }: Props) {
+export function Slider({ value, max, label, step, onCommit, onPreview, valueText, className = '', thick, tone = 'default' }: Props) {
   const ref = useRef<HTMLDivElement>(null)
   const [drag, setDrag] = useState<number | null>(null)
 
@@ -25,6 +26,7 @@ export function Slider({ value, max, label, step, onCommit, onPreview, valueText
     onPreview?.(v)
   }
   const down = (e: PointerEvent<HTMLDivElement>) => {
+    e.stopPropagation()
     if (max <= 0) return
     e.currentTarget.setPointerCapture(e.pointerId)
     update(valueAt(e.clientX))
@@ -64,20 +66,28 @@ export function Slider({ value, max, label, step, onCommit, onPreview, valueText
       onPointerUp={up}
       onPointerCancel={() => update(null)}
       onKeyDown={key}
-      className={`group relative flex h-4 cursor-pointer touch-none items-center ${className}`}
+      className={`group relative -my-3.5 flex h-11 cursor-pointer touch-none select-none items-center ${className}`}
     >
-      <div className={`relative w-full overflow-hidden rounded-full bg-white/20 ${thick ? 'h-1.5' : 'h-1'}`}>
-        <div
-          className={`absolute inset-y-0 left-0 rounded-full ${dragging ? 'bg-accent' : 'bg-fg group-hover:bg-accent'}`}
-          style={{ width: `${pct}%` }}
-        />
-      </div>
-      <div
-        className={`pointer-events-none absolute size-3 -translate-x-1/2 rounded-full bg-white shadow-md shadow-black/50 transition-opacity ${
-          dragging ? 'opacity-100' : 'opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100'
-        }`}
-        style={{ left: `${pct}%` }}
-      />
+      {tone === 'glass' ? (
+        <div className={`relative w-full overflow-hidden rounded-full bg-white/25 transition-[height] duration-200 ${dragging ? 'h-2.5' : 'h-[5px]'}`}>
+          <div className={`absolute inset-y-0 left-0 rounded-full ${dragging ? 'bg-white' : 'bg-white/80'}`} style={{ width: `${pct}%` }} />
+        </div>
+      ) : (
+        <>
+          <div className={`relative w-full overflow-hidden rounded-full bg-white/20 ${thick ? 'h-1.5' : 'h-1 [@media(hover:none)]:h-1.5'}`}>
+            <div
+              className={`absolute inset-y-0 left-0 rounded-full ${dragging ? 'bg-accent' : 'bg-fg group-hover:bg-accent'}`}
+              style={{ width: `${pct}%` }}
+            />
+          </div>
+          <div
+            className={`pointer-events-none absolute size-3 -translate-x-1/2 rounded-full bg-white shadow-md shadow-black/50 transition-[opacity,scale] [@media(hover:none)]:size-3.5 ${
+              dragging ? 'scale-125 opacity-100' : 'opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100 [@media(hover:none)]:opacity-100'
+            }`}
+            style={{ left: `${pct}%` }}
+          />
+        </>
+      )}
     </div>
   )
 }

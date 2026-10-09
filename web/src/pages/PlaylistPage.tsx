@@ -1,11 +1,11 @@
-import { ListMusic, Pencil, Search, Shuffle, Trash2 } from 'lucide-react'
+import { ListMusic, Pencil, Search, Trash2 } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import { api, ApiError, type AppPlaylist, type Track } from '../lib/api'
 import { formatLength, plural } from '../lib/format'
 import { navigate } from '../lib/router'
 import { useAsync } from '../lib/useAsync'
 import { Attribution } from '../components/Attribution'
-import { BigPlayButton, CollectionHeader, Dot } from '../components/CollectionHeader'
+import { BigPlayButton, CollectionHeader, Dot, ShuffleButton } from '../components/CollectionHeader'
 import { IconButton } from '../components/IconButton'
 import { Button } from '../components/Modal'
 import { TrackList } from '../components/TrackList'
@@ -114,18 +114,15 @@ export function PlaylistPage({ id }: { id: string }) {
           pending={pending === playlist.uri}
           playing={isCurrent && isPlaying}
           label={isCurrent && isPlaying ? 'Pause' : `Play ${playlist.name}`}
-          onClick={() => (isCurrent ? togglePlay() : void start(playlist.uri, () => api.playPlaylist(playlist.id)))}
+          onClick={() => (isCurrent ? togglePlay() : void start(playlist.uri, () => api.playPlaylist(playlist.id, { shuffle: false }), false))}
         />
-        <IconButton label="Shuffle play" onClick={() => void start(`${playlist.uri}:shuffle`, () => api.playPlaylist(playlist.id, { shuffle: true }))}
-          disabled={pending === `${playlist.uri}:shuffle`} className="size-11">
-          <Shuffle className="size-6" />
-        </IconButton>
+        <ShuffleButton pending={pending === `${playlist.uri}:shuffle`} onClick={() => void start(`${playlist.uri}:shuffle`, () => api.playPlaylist(playlist.id, { shuffle: true }), true)} />
         {playlist.can_edit && (
           <>
-            <IconButton label="Edit details" onClick={() => openDialog({ kind: 'edit', playlist })} className="size-11">
+            <IconButton size="lg" label="Edit details" onClick={() => openDialog({ kind: 'edit', playlist })}>
               <Pencil className="size-5" />
             </IconButton>
-            <IconButton label="Delete playlist" onClick={() => openDialog({ kind: 'delete', playlist })} className="size-11">
+            <IconButton size="lg" label="Delete playlist" onClick={() => openDialog({ kind: 'delete', playlist })}>
               <Trash2 className="size-5" />
             </IconButton>
           </>

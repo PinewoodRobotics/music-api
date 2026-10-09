@@ -1,6 +1,7 @@
 import { Clock3, Loader2, MoreHorizontal, Play } from 'lucide-react'
 import { useState, type MouseEvent } from 'react'
 import type { AppPlaylist, Track } from '../lib/api'
+import { isTouch } from '../lib/device'
 import { byline, formatTime, idFromUri } from '../lib/format'
 import { usePlayer } from '../state/player'
 import { Artwork } from './Artwork'
@@ -21,7 +22,7 @@ type Props = {
   header?: boolean
 }
 
-const touch = () => window.matchMedia('(hover: none)').matches
+const touch = isTouch
 
 export function TrackList({ tracks, onPlay, context, playlist, onRemoved, showArt = true, showAlbum = true, numbered = true, header = true }: Props) {
   const { status, isPlaying, pending } = usePlayer()
@@ -78,8 +79,8 @@ export function TrackList({ tracks, onPlay, context, playlist, onRemoved, showAr
               if (e.key === 'Enter') onPlay(i)
             }}
             onContextMenu={(e) => openMenu(i, e, false)}
-            className={`group grid h-14 items-center gap-4 rounded-md px-4 outline-none max-md:px-2 max-md:!grid-cols-[minmax(0,1fr)_2.75rem_2rem] max-md:gap-2 ${
-              active ? 'bg-white/[0.1]' : 'hover:bg-white/[0.05] focus-visible:bg-white/[0.07]'
+            className={`group grid h-14 items-center gap-4 rounded-md px-4 outline-none max-md:px-2 max-md:!grid-cols-[minmax(0,1fr)_2.75rem_2.75rem] max-md:gap-1 max-md:h-16 ${
+              active ? 'bg-white/[0.1]' : 'hover:bg-white/[0.05] focus-visible:bg-white/[0.07] active:bg-white/[0.08]'
             }`}
             style={grid}
           >
@@ -135,7 +136,7 @@ export function TrackList({ tracks, onPlay, context, playlist, onRemoved, showAr
                             <Link
                               href={`/artist/${idFromUri(a.uri)}`}
                               onClick={(e) => e.stopPropagation()}
-                              className="hover:text-fg hover:underline"
+                              className="hover:text-fg hover:underline [@media(hover:none)]:pointer-events-none"
                             >
                               {a.name}
                             </Link>
@@ -152,7 +153,7 @@ export function TrackList({ tracks, onPlay, context, playlist, onRemoved, showAr
                   <Link
                     href={`/album/${idFromUri(track.album.uri)}`}
                     onClick={(e) => e.stopPropagation()}
-                    className="hover:text-fg hover:underline"
+                    className="hover:text-fg hover:underline [@media(hover:none)]:pointer-events-none"
                   >
                     {track.album.name}
                   </Link>
@@ -165,8 +166,8 @@ export function TrackList({ tracks, onPlay, context, playlist, onRemoved, showAr
               aria-label={`More options for ${track.name}`}
               onClick={(e) => openMenu(i, e, true)}
               onDoubleClick={(e) => e.stopPropagation()}
-              className={`grid size-8 place-items-center rounded-full text-dim hover:text-fg ${
-                active ? 'visible' : 'md:invisible md:group-hover:visible md:group-focus-within:visible'
+              className={`grid size-8 place-items-center rounded-full text-dim hover:text-fg active:bg-white/10 [@media(hover:none)]:size-11 ${
+                active ? 'visible' : 'md:invisible md:group-hover:visible md:group-focus-within:visible [@media(hover:none)]:visible'
               }`}
             >
               <MoreHorizontal className="size-5" />

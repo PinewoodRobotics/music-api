@@ -94,3 +94,72 @@ export function usePalette(url: string | null | undefined) {
   }, [url])
   return palette
 }
+
+const meshCache = new Map<string, string[]>()
+export const DEFAULT_MESH = ['hsl(36 55% 45%)', 'hsl(18 50% 38%)', 'hsl(48 45% 52%)', 'hsl(28 40% 30%)']
+
+function meshFrom(pixels: Uint8ClampedArray): string[] {
+  const bins = Array.from({ length: 12 }, () => ({ score: 0, h: 0, s: 0, l: 0, n: 0 }))
+  let lightSum = 0
+  let count = 0
+  for (let i = 0; i < pixels.length; i += 4) {
+    const [h, s, l] = rgbToHsl(pixels[i], pixels[i + 1], pixels[i + 2])
+    lightSum += l
+    count++
+    if (s < 0.15 || l < 0.08 || l > 0.95) continue
+    const bin = bins[Math.floor(h / 30) % 12]
+    const weight = s * (1 - Math.abs(l - 0.5)) + 0.05
+    bin.score += weight
+    bin.h += h * weight
+    bin.s += s * weight
+    bin.l += l * weight
+    bin.n += weight
+  }
+  const ranked = bins.filter((b) => b.n > 0 && b.score > count / 400).sort((a, b) => b.score - a.score)
+  if (!ranked.length) {
+    const l = Math.round(clamp(lightSum / Math.max(count, 1), 0.25, 0.5) * 100)
+    return [`hsl(230 8% ${l}%)`, `hsl(230 6% ${l - 8}%)`, `hsl(230 10% ${l + 8}%)`, `hsl(230 5% ${l - 14}%)`]
+  }
+  const colors = ranked.slice(0, 4).map((b) => {
+    const h = Math.round(b.h / b.n)
+    const s = Math.round(clamp(b.s / b.n, 0.3, 0.72) * 100)
+    const l = Math.round(clamp(b.l / b.n, 0.36, 0.6) * 100)
+    return { h, s, l }
+  })
+  while (colors.length < 4) {
+    const base = colors[colors.length % Math.max(1, ranked.length)] ?? colors[0]
+    colors.push({ h: (base.h + 18 * colors.length) % 360, s: base.s, l: clamp(base.l + (colors.length % 2 ? -10 : 8), 28, 62) })
+  }
+  return colors.map(({ h, s, l }) => `hsl(${h} ${s}% ${l}%)`)
+}
+
+export function useMesh(url: string | null | undefined) {
+  const [mesh, setMesh] = useState<string[]>(() => (url && meshCache.get(url)) || DEFAULT_MESH)
+  useEffect(() => {
+    if (!url) return setMesh(DEFAULT_MESH)
+    const hit = meshCache.get(url)
+    if (hit) return setMesh(hit)
+    let live = true
+    const img = new Image()
+    img.crossOrigin = 'anonymous'
+    img.onload = () => {
+      try {
+        const canvas = document.createElement('canvas')
+        canvas.width = canvas.height = 32
+        const ctx = canvas.getContext('2d', { willReadFrequently: true })
+        if (!ctx) return
+        ctx.drawImage(img, 0, 0, 32, 32)
+        const colors = meshFrom(ctx.getImageData(0, 0, 32, 32).data)
+        meshCache.set(url, colors)
+        if (live) setMesh(colors)
+      } catch {
+        return
+      }
+    }
+    img.src = url
+    return () => {
+      live = false
+    }
+  }, [url])
+  return mesh
+}

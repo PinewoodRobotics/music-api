@@ -1,4 +1,4 @@
-import { ChevronUp, ListMusic, Maximize2, MicVocal } from 'lucide-react'
+import { ChevronUp, ListMusic, Maximize2, MicVocal, SkipForward } from 'lucide-react'
 import { byline } from '../lib/format'
 import { usePlayer, usePosition } from '../state/player'
 import { useUI } from '../state/ui'
@@ -18,7 +18,7 @@ export function NowPlayingBar() {
 
 function DesktopBar() {
   const { status } = usePlayer()
-  const { setExpanded, panel, togglePanel } = useUI()
+  const { setExpanded, panel, showPanel } = useUI()
   const track = status?.track
   return (
     <footer className="hidden h-[88px] shrink-0 grid-cols-[minmax(0,1fr)_minmax(0,1.7fr)_minmax(0,1fr)] items-center gap-4 px-4 md:grid">
@@ -50,10 +50,10 @@ function DesktopBar() {
         <SeekBar />
       </div>
       <div className="flex items-center justify-end gap-1">
-        <IconButton label="Lyrics" active={panel === 'lyrics'} onClick={() => togglePanel('lyrics')}>
+        <IconButton label="Lyrics" active={panel === 'lyrics'} onClick={() => showPanel('lyrics')}>
           <MicVocal className="size-[18px]" />
         </IconButton>
-        <IconButton label="Up next" active={panel === 'queue'} onClick={() => togglePanel('queue')}>
+        <IconButton label="Up next" active={panel === 'queue'} onClick={() => showPanel('queue')}>
           <ListMusic className="size-[18px]" />
         </IconButton>
         <VolumeControl className="w-36" />
@@ -78,27 +78,36 @@ function MiniProgress() {
 }
 
 function MiniPlayer() {
-  const { status } = usePlayer()
+  const { status, next } = usePlayer()
   const { setExpanded } = useUI()
   const track = status?.track
   if (!track) return null
+  const canSkip = status.actions.length === 0 || status.actions.includes('skip_next')
   return (
-    <div className="px-2 pb-1 md:hidden">
-      <div
-        role="button"
-        tabIndex={0}
-        onClick={() => setExpanded(true)}
-        onKeyDown={(e) => e.key === 'Enter' && setExpanded(true)}
-        className="relative flex h-14 items-center gap-3 overflow-hidden rounded-lg bg-glow px-2 shadow-lg shadow-black/50"
-      >
-        <Artwork src={track.artwork} className="size-10 shrink-0 rounded-[4px]" />
-        <div className="min-w-0 flex-1">
-          <div className="truncate text-[13px] font-semibold">{track.name}</div>
-          <div className="truncate text-xs text-white/70">{byline(track)}</div>
-        </div>
-        <div onClick={(e) => e.stopPropagation()}>
-          <PlayButton size="sm" className="!bg-transparent !text-fg" />
-        </div>
+    <div className="px-2 pb-1.5 md:hidden">
+      <div className="relative flex h-16 items-center overflow-hidden rounded-xl bg-glow shadow-lg shadow-black/50 transition-colors">
+        <button
+          type="button"
+          onClick={() => setExpanded(true)}
+          aria-label="Open Now Playing"
+          className="flex h-full min-w-0 flex-1 items-center gap-3 pl-2 text-left active:opacity-70"
+        >
+          <Artwork src={track.artwork} className="size-12 shrink-0 rounded-md" />
+          <div className="min-w-0">
+            <div className="truncate text-[15px] font-semibold leading-tight">{track.name}</div>
+            <div className="truncate text-[13px] text-white/70">{byline(track)}</div>
+          </div>
+        </button>
+        <PlayButton size="mini" />
+        <button
+          type="button"
+          onClick={next}
+          disabled={!canSkip}
+          aria-label="Next"
+          className="mr-1 grid size-11 shrink-0 place-items-center text-fg transition active:scale-90 disabled:opacity-35"
+        >
+          <SkipForward className="size-6 fill-current" />
+        </button>
         <MiniProgress />
       </div>
     </div>

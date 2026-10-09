@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from 'react'
 import { api, type SearchResults } from '../lib/api'
 import { byline, year } from '../lib/format'
 import { detectLink, looksLikeUrl } from '../lib/links'
+import { isTouch } from '../lib/device'
 import { navigate, useLocation } from '../lib/router'
 import { MediaCard, Section } from '../components/MediaCard'
 import { CardsSkeleton, RowsSkeleton } from '../components/Skeleton'
@@ -53,7 +54,7 @@ function Results({ q, data }: { q: string; data: SearchResults }) {
   if (!top) return <Message title={`No results for “${q}”`} body="Check the spelling, or try fewer words." />
 
   const playing = (uri: string) => status?.context?.uri === uri && isPlaying
-  const playUri = (uri: string) => (status?.context?.uri === uri ? togglePlay() : void start(uri, () => api.play({ uri })))
+  const playUri = (uri: string) => (status?.context?.uri === uri ? togglePlay() : void start(uri, () => api.play({ uri, shuffle: false }), false))
   const songs = allSongs ? tracks : tracks.slice(0, 5)
 
   return (
@@ -184,12 +185,16 @@ export function SearchPage() {
           )}
           <input
             ref={input}
-            autoFocus
+            autoFocus={!isTouch()}
+            enterKeyHint="search"
+            autoCapitalize="off"
+            autoCorrect="off"
+            spellCheck={false}
             value={text}
             onChange={(e) => setText(e.target.value)}
             placeholder="Search, or paste a Spotify or Apple Music link"
             aria-label="Search"
-            className="min-w-0 flex-1 bg-transparent text-[15px] text-fg outline-none placeholder:text-faint"
+            className="min-w-0 flex-1 bg-transparent text-base text-fg outline-none placeholder:text-faint"
           />
           {text && (
             <button

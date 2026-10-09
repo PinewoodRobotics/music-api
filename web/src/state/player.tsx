@@ -19,11 +19,11 @@ type Player = {
   previous: () => void
   seek: (ms: number) => void
   seekBy: (deltaMs: number) => void
-  setVolume: (volume: number) => void
+  setVolume: (volume: number, final?: boolean) => void
   toggleMute: () => void
   toggleShuffle: () => void
   cycleRepeat: () => void
-  start: (key: string, call: () => Promise<Status>) => Promise<void>
+  start: (key: string, call: () => Promise<Status>, shuffle?: boolean) => Promise<void>
   pending: string | null
   addToQueue: (uris: string[]) => Promise<void>
   refreshQueue: () => void
@@ -32,6 +32,7 @@ type Player = {
 const PlayerContext = createContext<Player | null>(null)
 const REPEAT_ORDER: RepeatMode[] = ['off', 'context', 'track']
 const LAST_VOLUME_KEY = 'lastVolume'
+const VOLUME_INTERVAL_MS = 150
 
 const isStatus = (v: unknown): v is Status => !!v && typeof v === 'object' && 'state' in v && 'backend' in v
 
@@ -183,12 +184,30 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     [commit, send],
   )
 
+  const volumeLatest = useRef(0)
+  const volumeSentAt = useRef(0)
+  const volumeSentValue = useRef<number | null>(null)
   const setVolume = useCallback(
-    (volume: number) => {
+    (volume: number, final = false) => {
       const v = Math.max(0, Math.min(100, Math.round(volume)))
-      optimistic({ volume: v })
-      if (volumeTimer.current) clearTimeout(volumeTimer.current)
-      volumeTimer.current = setTimeout(() => void send(() => api.volume(v), ['volume']), 120)
+      volumeLatest.current = v
+      overrides.current.volume = { value: v, until: Date.now() + 3000 }
+      const flush = () => {
+        volumeTimer.current = null
+        volumeSentAt.current = Date.now()
+        const latest = volumeLatest.current
+        optimistic({ volume: latest })
+        if (latest === volumeSentValue.current) return
+        volumeSentValue.current = latest
+        void send(() => api.volume(latest), ['volume'])
+      }
+      if (final) {
+        if (volumeTimer.current) clearTimeout(volumeTimer.current)
+        return flush()
+      }
+      const wait = VOLUME_INTERVAL_MS - (Date.now() - volumeSentAt.current)
+      if (wait <= 0) flush()
+      else if (!volumeTimer.current) volumeTimer.current = setTimeout(flush, wait)
     },
     [optimistic, send],
   )
@@ -230,8 +249,8 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         const v = status?.volume ?? 0
         if (v > 0) {
           storage.set(LAST_VOLUME_KEY, String(v))
-          setVolume(0)
-        } else setVolume(Number(storage.get(LAST_VOLUME_KEY)) || 50)
+          setVolume(0, true)
+        } else setVolume(Number(storage.get(LAST_VOLUME_KEY)) || 50, true)
       },
       toggleShuffle: () => {
         const enabled = !status?.shuffle
@@ -243,7 +262,8 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         optimistic({ repeat: mode })
         void send(() => api.repeat(mode), ['repeat'])
       },
-      start: async (key, call) => {
+      start: async (key, call, shuffle) => {
+        if (shuffle !== undefined) optimistic({ shuffle })
         setPending(key)
         await send(call)
         setPending((k) => (k === key ? null : k))

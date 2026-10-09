@@ -1,29 +1,28 @@
-import { ChevronDown, ListMusic, MicVocal } from 'lucide-react'
-import { useCallback, useEffect, useRef, useState } from 'react'
-import { byline, idFromUri } from '../lib/format'
-import { navigate } from '../lib/router'
+import { ChevronDown } from 'lucide-react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type RefObject } from 'react'
+import { useMediaQuery } from '../lib/device'
+import { useSwipeDismiss } from '../lib/useSwipeDismiss'
 import { usePlayer } from '../state/player'
 import { useUI, type Panel } from '../state/ui'
-import { Artwork } from './Artwork'
-import { CreditLine } from './CreditLine'
-import { IconButton } from './IconButton'
 import { Lyrics } from './Lyrics'
-import { SeekBar, Transport, VolumeControl } from './PlayerControls'
+import { DeviceIndicator, GlassSeek, GlassVolume, ModePills, TrackMenuButton, Transport, TrackTitle, ViewToggle } from './nowplaying/Controls'
+import { Mesh } from './nowplaying/Mesh'
 import { UpNext } from './UpNext'
 
 const IDLE_MS = 3000
 
-function useIdle() {
+function useIdle(enabled: boolean) {
   const [awake, setAwake] = useState(true)
   const timer = useRef<ReturnType<typeof setTimeout>>(undefined)
   const held = useRef(false)
   const wake = useCallback(() => {
     setAwake(true)
     clearTimeout(timer.current)
+    if (!enabled) return
     timer.current = setTimeout(() => {
       if (!held.current) setAwake(false)
     }, IDLE_MS)
-  }, [])
+  }, [enabled])
   useEffect(() => {
     wake()
     return () => clearTimeout(timer.current)
@@ -32,172 +31,216 @@ function useIdle() {
     held.current = on
     if (!on) wake()
   }
-  return { awake, wake, hold }
+  return { awake: awake || !enabled, wake, hold }
 }
 
-function contextPath(uri: string | undefined) {
-  if (!uri) return null
-  const [, type] = uri.split(':')
-  return type === 'playlist' || type === 'album' || type === 'artist' ? `/${type}/${idFromUri(uri)}` : null
+function useArtworkFlip(root: RefObject<HTMLDivElement | null>, key: string) {
+  const last = useRef<{ key: string; rect: DOMRect } | null>(null)
+  useLayoutEffect(() => {
+    const el = root.current?.querySelector<HTMLElement>('[data-np-art]')
+    if (!el) return
+    const rect = el.getBoundingClientRect()
+    const prev = last.current
+    last.current = { key, rect }
+    if (!prev || prev.key === key || !rect.width || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return
+    el.style.transformOrigin = 'top left'
+    el.style.transition = 'none'
+    el.style.transform = `translate(${prev.rect.left - rect.left}px, ${prev.rect.top - rect.top}px) scale(${prev.rect.width / rect.width})`
+    requestAnimationFrame(() => {
+      el.style.transition = 'transform 450ms cubic-bezier(0.2, 0.8, 0.2, 1)'
+      el.style.transform = ''
+    })
+  })
 }
 
 export function NowPlayingView() {
-  const { expanded, setExpanded, panel, togglePanel } = useUI()
+  const { expanded } = useUI()
+  return expanded ? <Sheet /> : null
+}
+
+function Sheet() {
+  const { setExpanded, panel, togglePanel } = useUI()
   const { status } = usePlayer()
-  const { awake, wake, hold } = useIdle()
-  const track = status?.track
+  const compact = useMediaQuery('(max-width: 767px)')
+  const fine = useMediaQuery('(hover: hover) and (pointer: fine)')
+  const { awake, wake, hold } = useIdle(fine)
+  const close = useCallback(() => setExpanded(false), [setExpanded])
+  const { ref, dismiss, handlers } = useSwipeDismiss(close)
+  useArtworkFlip(ref, `${compact}:${panel ?? 'art'}`)
 
   useEffect(() => {
-    if (!expanded) return
-    wake()
     const key = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setExpanded(false)
+      if (e.key === 'Escape') dismiss()
       wake()
     }
     window.addEventListener('keydown', key)
     return () => window.removeEventListener('keydown', key)
-  }, [expanded, setExpanded, wake])
-
-  if (!expanded) return null
+  }, [dismiss, wake])
 
   const fade = `transition-opacity duration-700 ${awake ? 'opacity-100' : 'pointer-events-none opacity-0'}`
-  const context = status?.context
-  const ctxPath = contextPath(context?.uri)
-
-  const openContext = () => {
-    if (!ctxPath) return
-    setExpanded(false)
-    navigate(ctxPath)
-  }
+  const art = status?.track?.artwork ?? null
 
   return (
     <div
-      className={`animate-rise fixed inset-0 z-50 overflow-hidden bg-black text-white ${awake ? '' : 'cursor-none'}`}
-      onPointerMove={wake}
-      onPointerDown={wake}
+      ref={ref}
+      {...handlers}
+      className={`animate-rise fixed inset-0 z-50 touch-none select-none overflow-hidden text-white will-change-transform ${awake ? '' : 'cursor-none'}`}
+      onPointerMoveCapture={wake}
+      onPointerDownCapture={wake}
       role="dialog"
       aria-modal="true"
       aria-label="Now Playing"
     >
-      <Backdrop art={track?.artwork} />
-      <div className="relative flex h-full flex-col pb-[max(env(safe-area-inset-bottom),1rem)] pt-[max(env(safe-area-inset-top),0.75rem)]">
-        <header className={`flex items-center gap-3 px-4 sm:px-6 ${fade}`}>
-          <IconButton label="Close (Esc)" onClick={() => setExpanded(false)} className="!text-white/80 hover:!text-white">
+      <Mesh art={art} />
+      <div className="relative flex h-full flex-col pb-[max(env(safe-area-inset-bottom),14px)] pt-[env(safe-area-inset-top)]">
+        {fine ? (
+          <button
+            type="button"
+            onClick={dismiss}
+            aria-label="Close (Esc)"
+            title="Close (Esc)"
+            className={`absolute left-4 top-[max(env(safe-area-inset-top),16px)] z-10 grid size-11 place-items-center rounded-full bg-white/10 text-white/85 hover:bg-white/20 ${fade}`}
+          >
             <ChevronDown className="size-6" />
-          </IconButton>
-          <div className="min-w-0 flex-1 text-center">
-            {context?.name && (
-              <>
-                <div className="text-[11px] text-white/60">Playing from</div>
-                <button
-                  type="button"
-                  onClick={openContext}
-                  disabled={!ctxPath}
-                  className="max-w-full truncate text-sm font-semibold enabled:hover:underline"
-                >
-                  {context.name}
-                </button>
-              </>
-            )}
+          </button>
+        ) : (
+          <button type="button" onClick={dismiss} aria-label="Close" className="mx-auto grid h-7 w-20 shrink-0 place-items-center">
+            <span className="h-[5px] w-10 rounded-full bg-white/45" />
+          </button>
+        )}
+        {compact ? (
+          <PhoneLayout art={art} panel={panel} onToggle={togglePanel} />
+        ) : (
+          <WideLayout art={art} panel={panel} onToggle={togglePanel} fine={fine} fade={fade} hold={hold} />
+        )}
+      </div>
+    </div>
+  )
+}
+
+type LayoutProps = { art: string | null; panel: Panel | null; onToggle: (p: Panel) => void }
+
+function Artwork({ art, className = '', style }: { art: string | null; className?: string; style?: CSSProperties }) {
+  return art ? (
+    <img data-np-art src={art} alt="" draggable={false} style={style} className={`bg-white/10 object-cover shadow-[0_24px_60px_-12px_rgba(0,0,0,0.55)] ${className}`} />
+  ) : (
+    <div data-np-art style={style} className={`bg-white/15 ${className}`} />
+  )
+}
+
+function PanelBody({ panel }: { panel: Panel }) {
+  return (
+    <div data-no-swipe className="relative min-h-0 flex-1 animate-[fade-in_350ms_ease] touch-pan-y overflow-hidden">
+      <div className="absolute inset-0">{panel === 'lyrics' ? <Lyrics size="immersive" /> : <UpNext immersive />}</div>
+    </div>
+  )
+}
+
+function PhoneLayout({ art, panel, onToggle }: LayoutProps) {
+  return (
+    <div className="flex min-h-0 flex-1 flex-col px-6">
+      {panel ? (
+        <>
+          <div className="flex items-center gap-3.5 pb-3 pt-2">
+            <Artwork art={art} className="size-16 shrink-0 rounded-md" />
+            <TrackTitle size="sm" />
           </div>
-          <div className="size-9" />
-        </header>
+          {panel === 'queue' && <ModePills className="mb-4" />}
+          <PanelBody panel={panel} />
+        </>
+      ) : (
+        <>
+          <div className="grid min-h-0 flex-1 place-items-center py-4 [container-type:size]">
+            <Artwork art={art} className="rounded-xl" style={{ width: 'min(100cqw, 100cqh)', height: 'min(100cqw, 100cqh)' }} />
+          </div>
+          <div className="pb-1">
+            <TrackTitle size="md" />
+          </div>
+        </>
+      )}
+      <div className="pt-5">
+        <GlassSeek />
+      </div>
+      <div className="my-2">
+        <Transport size="lg" />
+      </div>
+      <GlassVolume />
+      <div className="mt-4 flex items-center justify-between">
+        <ViewToggle panel="lyrics" current={panel} onToggle={onToggle} />
+        <DeviceIndicator />
+        <ViewToggle panel="queue" current={panel} onToggle={onToggle} />
+      </div>
+    </div>
+  )
+}
 
-        <main className="flex min-h-0 flex-1 gap-10 px-6 py-4 lg:px-12">
-          <section className={`min-h-0 flex-1 flex-col items-center justify-center ${panel ? 'hidden lg:flex' : 'flex'}`}>
-            <Stage panelOpen={!!panel} />
-          </section>
-          {panel && (
-            <aside className="flex min-h-0 w-full flex-col lg:w-[min(46%,600px)]">
-              {track && (
-                <div className="mb-3 flex items-center gap-3 lg:hidden">
-                  <Artwork src={track.artwork} className="size-12 shrink-0" />
-                  <div className="min-w-0">
-                    <div className="truncate font-semibold">{track.name}</div>
-                    <div className="truncate text-sm text-white/65">{byline(track)}</div>
-                    <CreditLine credit={status?.credit} className="mt-0.5 text-xs text-white/50" />
-                  </div>
-                </div>
-              )}
-              <div className={`min-h-0 flex-1 ${panel === 'queue' ? 'rounded-xl bg-black/25 pt-3 backdrop-blur-sm' : ''}`}>
-                {panel === 'lyrics' ? <Lyrics size="lg" /> : <UpNext />}
-              </div>
-            </aside>
-          )}
-        </main>
-
-        <footer
-          className={`mx-auto w-full max-w-5xl px-6 ${fade}`}
+function WideLayout({ art, panel, onToggle, fine, fade, hold }: LayoutProps & { fine: boolean; fade: string; hold: (on: boolean) => void }) {
+  const column = panel ? 'min(40vw, 54vh)' : fine ? 'min(60vh, 56vw)' : 'min(52vh, 70vw)'
+  return (
+    <div className="relative flex min-h-0 flex-1 items-center justify-center gap-[6vw] px-[5vw] pb-4">
+      <div className="flex shrink-0 flex-col transition-[width] duration-500" style={{ width: column }}>
+        <Artwork art={art} className="aspect-square w-full rounded-xl" />
+        <div
+          className={fine ? fade : ''}
           onPointerEnter={(e) => e.pointerType === 'mouse' && hold(true)}
           onPointerLeave={(e) => e.pointerType === 'mouse' && hold(false)}
         >
-          <SeekBar large />
-          <div className="mt-2 grid grid-cols-[1fr_auto_1fr] items-center gap-2 max-sm:grid-cols-1">
-            <div className="max-sm:hidden" />
-            <Transport size="lg" />
-            <div className="flex items-center justify-end gap-1 max-sm:mt-1">
-              <PanelToggle panel="lyrics" current={panel} onToggle={togglePanel} />
-              <PanelToggle panel="queue" current={panel} onToggle={togglePanel} />
-              <VolumeControl className="ml-2 w-32 max-sm:ml-4 max-sm:w-auto max-sm:flex-1" />
-            </div>
+          <div className="mt-6">
+            <TrackTitle size={fine ? 'sm' : 'lg'} withMenu={!fine} />
           </div>
-        </footer>
+          {fine ? <DesktopStrip panel={panel} onToggle={onToggle} /> : <TabletControls />}
+        </div>
       </div>
-    </div>
-  )
-}
-
-function PanelToggle({ panel, current, onToggle }: { panel: Panel; current: Panel | null; onToggle: (p: Panel) => void }) {
-  const Icon = panel === 'lyrics' ? MicVocal : ListMusic
-  return (
-    <IconButton label={panel === 'lyrics' ? 'Lyrics' : 'Up next'} active={current === panel} onClick={() => onToggle(panel)} className={current === panel ? '' : '!text-white/70 hover:!text-white'}>
-      <Icon className="size-5" />
-    </IconButton>
-  )
-}
-
-function Stage({ panelOpen }: { panelOpen: boolean }) {
-  const { status } = usePlayer()
-  const track = status?.track
-  const size = panelOpen ? 'min(52vh, 34vw)' : 'min(54vh, 82vw, 560px)'
-  if (!track)
-    return (
-      <div className="text-center">
-        <Artwork src={null} className="mx-auto size-56" />
-        <p className="mt-6 text-lg text-white/70">Nothing playing</p>
-      </div>
-    )
-  return (
-    <div style={{ width: size }} className="transition-[width] duration-500">
-      <img
-        key={track.artwork ?? 'none'}
-        src={track.artwork ?? undefined}
-        alt=""
-        className="aspect-square w-full rounded-lg bg-white/10 object-cover shadow-[0_30px_80px_-20px_rgba(0,0,0,0.8)]"
-      />
-      <div className="mt-6 min-w-0">
-        <h1 className="truncate font-display text-[clamp(1.4rem,2.6vw,2.1rem)] font-bold leading-tight tracking-tight">{track.name}</h1>
-        <p className="mt-1 truncate text-[clamp(1rem,1.6vw,1.25rem)] text-white/65">{byline(track)}</p>
-        <CreditLine credit={status?.credit} className="mt-2 text-sm text-white/50" />
-      </div>
-    </div>
-  )
-}
-
-function Backdrop({ art }: { art: string | null | undefined }) {
-  return (
-    <div className="absolute inset-0" aria-hidden>
-      <div className="absolute inset-0 bg-ambient" />
-      {art && (
-        <img
-          key={art}
-          src={art}
-          alt=""
-          className="animate-[fade-in_1.2s_ease] absolute left-1/2 top-1/2 size-[140vmax] -translate-x-1/2 -translate-y-1/2 object-cover opacity-70 blur-[100px] saturate-[1.6]"
-        />
+      {panel && (
+        <div className="flex h-[min(84vh,920px)] min-w-0 max-w-[660px] flex-1 flex-col">
+          {panel === 'queue' && <ModePills className="mb-5 max-w-xs" />}
+          <PanelBody panel={panel} />
+        </div>
       )}
-      <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_30%_40%,transparent,rgba(0,0,0,0.55))]" />
-      <div className="absolute inset-0 bg-gradient-to-b from-black/25 via-black/30 to-black/70" />
+      {!fine && (
+        <>
+          <div className="absolute bottom-2 left-[5vw]">
+            <DeviceIndicator />
+          </div>
+          <div className="absolute bottom-0 right-[5vw] flex gap-3">
+            <ViewToggle panel="lyrics" current={panel} onToggle={onToggle} />
+            <ViewToggle panel="queue" current={panel} onToggle={onToggle} />
+          </div>
+        </>
+      )}
     </div>
+  )
+}
+
+function DesktopStrip({ panel, onToggle }: { panel: Panel | null; onToggle: (p: Panel) => void }) {
+  return (
+    <div className="mt-4">
+      <GlassSeek timesAbove />
+      <div className="mt-3 grid grid-cols-[1fr_auto_1fr] items-center">
+        <div>
+          <TrackMenuButton subtle />
+        </div>
+        <Transport size="md" />
+        <div className="flex justify-end gap-1">
+          <ViewToggle small panel="lyrics" current={panel} onToggle={onToggle} />
+          <ViewToggle small panel="queue" current={panel} onToggle={onToggle} />
+        </div>
+      </div>
+      <GlassVolume className="mt-4" />
+    </div>
+  )
+}
+
+function TabletControls() {
+  return (
+    <>
+      <div className="pt-5">
+        <GlassSeek />
+      </div>
+      <div className="my-2">
+        <Transport size="lg" withModes />
+      </div>
+      <GlassVolume />
+    </>
   )
 }

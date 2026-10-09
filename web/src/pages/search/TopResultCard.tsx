@@ -26,7 +26,7 @@ export function TopResultCard({ top }: { top: TopResult }) {
   const { uri, name, artwork } = top.item
   const { sub, href } = details(top)
   const current = top.kind === 'track' ? status?.track?.uri === uri : status?.context?.uri === uri
-  const play = () => (current ? togglePlay() : void start(uri, () => api.play({ uri })))
+  const play = () => (current ? togglePlay() : void start(uri, () => api.play({ uri, shuffle: false }), false))
 
   return (
     <div

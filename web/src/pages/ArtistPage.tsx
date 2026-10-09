@@ -3,7 +3,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { api, errorMessage, type Album } from '../lib/api'
 import { year } from '../lib/format'
 import { useAsync } from '../lib/useAsync'
-import { BigPlayButton, CollectionHeader } from '../components/CollectionHeader'
+import { BigPlayButton, CollectionHeader, ShuffleButton } from '../components/CollectionHeader'
 import { CardGrid, MediaCard, Section } from '../components/MediaCard'
 import { Button } from '../components/Modal'
 import { CardsSkeleton, HeaderSkeleton } from '../components/Skeleton'
@@ -71,8 +71,9 @@ export function ArtistPage({ id }: { id: string }) {
           playing={isCurrent && isPlaying}
           pending={pending === a.uri}
           label={isCurrent && isPlaying ? 'Pause' : `Play ${a.name}`}
-          onClick={() => (isCurrent ? togglePlay() : void start(a.uri, () => api.play({ uri: a.uri })))}
+          onClick={() => (isCurrent ? togglePlay() : void start(a.uri, () => api.play({ uri: a.uri, shuffle: false }), false))}
         />
+        <ShuffleButton pending={pending === `${a.uri}:shuffle`} onClick={() => void start(`${a.uri}:shuffle`, () => api.play({ uri: a.uri, shuffle: true }), true)} />
       </CollectionHeader>
       <div className="relative px-3 pb-10">
         {groups.map(([title, list]) =>
@@ -88,7 +89,7 @@ export function ArtistPage({ id }: { id: string }) {
                     href={`/album/${al.id}`}
                     playing={status?.context?.uri === al.uri && isPlaying}
                     pending={pending === al.uri}
-                    onPlay={() => (status?.context?.uri === al.uri ? togglePlay() : void start(al.uri, () => api.play({ uri: al.uri })))}
+                    onPlay={() => (status?.context?.uri === al.uri ? togglePlay() : void start(al.uri, () => api.play({ uri: al.uri, shuffle: false }), false))}
                   />
                 ))}
               </CardGrid>

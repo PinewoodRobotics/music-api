@@ -1,4 +1,4 @@
-import { Home, Search } from 'lucide-react'
+import { Search } from 'lucide-react'
 import type { ComponentType } from 'react'
 import { useLocation } from '../lib/router'
 import { useSession } from '../state/session'
@@ -26,13 +26,16 @@ export function Sidebar() {
     <aside className="hidden w-[280px] shrink-0 flex-col gap-2 md:flex">
       <div className="rounded-lg bg-panel px-3 pb-3 pt-4">
         <div className="mb-4 px-3">
-          <Brand />
+          <Link href="/" aria-label="Playlists" className="block rounded-md">
+            <Brand />
+          </Link>
         </div>
-        <NavItem href="/" label="Home" icon={Home} active={path === '/'} />
         <NavItem href="/search" label="Search" icon={Search} active={path === '/search'} />
       </div>
       <div className="flex min-h-0 flex-1 flex-col rounded-lg bg-panel">
-        <h2 className="px-5 pb-2 pt-4 text-[15px] font-semibold text-fg">Playlists</h2>
+        <Link href="/" className={`px-5 pb-2 pt-4 text-[15px] font-semibold hover:underline ${path === '/' ? 'text-fg' : 'text-fg/90'}`}>
+          Playlists
+        </Link>
         <div className="scroll-thin min-h-0 flex-1 overflow-y-auto px-2 pb-2">
           <PlaylistActions compact />
           {playlists && playlists.length > 0 && <div className="mx-2 my-2 h-px bg-white/[0.06]" />}

@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { api, type Track } from '../lib/api'
 import { formatLength, idFromUri, plural, year } from '../lib/format'
 import { useAsync } from '../lib/useAsync'
-import { BigPlayButton, CollectionHeader, Dot } from '../components/CollectionHeader'
+import { BigPlayButton, CollectionHeader, Dot, ShuffleButton } from '../components/CollectionHeader'
 import { Link } from '../components/Link'
 import { TrackList } from '../components/TrackList'
 import { usePlayer } from '../state/player'
@@ -79,8 +79,9 @@ export function AlbumPage({ id }: { id: string }) {
           pending={pending === a.uri}
           playing={isCurrent && isPlaying}
           label={isCurrent && isPlaying ? 'Pause' : `Play ${a.name}`}
-          onClick={() => (isCurrent ? togglePlay() : void start(a.uri, () => api.play({ uri: a.uri })))}
+          onClick={() => (isCurrent ? togglePlay() : void start(a.uri, () => api.play({ uri: a.uri, shuffle: false }), false))}
         />
+        <ShuffleButton pending={pending === `${a.uri}:shuffle`} onClick={() => void start(`${a.uri}:shuffle`, () => api.play({ uri: a.uri, shuffle: true }), true)} />
       </CollectionHeader>
       <div className="relative px-4 pb-10 max-sm:px-2">
         <TrackList

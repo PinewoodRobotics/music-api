@@ -42,7 +42,7 @@ export function Modal({ title, onClose, children, dismissable = true, wide = fal
 }
 
 export const fieldClass =
-  'w-full rounded-md border border-transparent bg-white/[0.07] px-3 py-2.5 text-sm text-fg placeholder:text-faint outline-none transition-colors focus:border-white/25 focus:bg-white/[0.1]'
+  'w-full rounded-md border border-transparent bg-white/[0.07] px-3 py-2.5 text-base text-fg placeholder:text-faint outline-none transition-colors focus:border-white/25 focus:bg-white/[0.1]'
 
 export function Field({ label, children }: { label: string; children: ReactNode }) {
   return (

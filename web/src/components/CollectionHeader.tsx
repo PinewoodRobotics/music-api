@@ -1,4 +1,4 @@
-import { Loader2 } from 'lucide-react'
+import { Loader2, Shuffle } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { usePalette } from '../lib/color'
 import { fitTitle } from '../lib/fitTitle'
@@ -68,3 +68,18 @@ export function BigPlayButton({ playing, onClick, label, pending }: { playing: b
 }
 
 export const Dot = () => <span className="text-white/50">•</span>
+
+export function ShuffleButton({ onClick, pending }: { onClick: () => void; pending?: boolean }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={pending}
+      aria-label="Shuffle play"
+      title="Shuffle play"
+      className="grid size-11 place-items-center rounded-full text-dim transition-colors hover:text-fg disabled:opacity-50"
+    >
+      {pending ? <Loader2 className="size-6 animate-spin" /> : <Shuffle className="size-6" />}
+    </button>
+  )
+}

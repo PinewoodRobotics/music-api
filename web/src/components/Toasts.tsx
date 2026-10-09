@@ -4,7 +4,7 @@ import { useToastList } from '../state/toast'
 export function Toasts() {
   const { toasts, dismiss } = useToastList()
   return (
-    <div className="pointer-events-none fixed inset-x-0 bottom-[150px] z-[80] flex flex-col items-center gap-2 px-4 md:bottom-28" aria-live="polite">
+    <div className="pointer-events-none fixed inset-x-0 bottom-[calc(150px+env(safe-area-inset-bottom))] z-[80] flex flex-col items-center gap-2 px-4 md:bottom-28" aria-live="polite">
       {toasts.map((t) => (
         <button
           key={t.id}

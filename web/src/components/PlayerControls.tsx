@@ -5,10 +5,10 @@ import { usePlayer, usePosition } from '../state/player'
 import { IconButton } from './IconButton'
 import { Slider } from './Slider'
 
-export function PlayButton({ size = 'md', className = '' }: { size?: 'sm' | 'md' | 'lg'; className?: string }) {
+export function PlayButton({ size = 'md', className = '' }: { size?: 'mini' | 'sm' | 'md' | 'lg'; className?: string }) {
   const { isPlaying, togglePlay, status } = usePlayer()
-  const dims = { sm: 'size-9', md: 'size-10', lg: 'size-16' }[size]
-  const icon = { sm: 'size-4', md: 'size-[18px]', lg: 'size-7' }[size]
+  const dims = { mini: 'size-11 !bg-transparent !text-fg', sm: 'size-9', md: 'size-10', lg: 'size-16' }[size]
+  const icon = { mini: 'size-6', sm: 'size-4', md: 'size-[18px]', lg: 'size-7' }[size]
   const Icon = isPlaying ? Pause : Play
   return (
     <button
@@ -29,21 +29,34 @@ export function Transport({ size = 'md' }: { size?: 'md' | 'lg' }) {
   const can = (action: string) => !!status?.track && (status.actions.length === 0 || status.actions.includes(action))
   const RepeatIcon = status?.repeat === 'track' ? Repeat1 : Repeat
   const repeatLabel = { off: 'Enable repeat', context: 'Enable repeat one', track: 'Disable repeat' }[status?.repeat ?? 'off']
-  const skip = size === 'lg' ? 'size-7' : 'size-5'
-  const side = size === 'lg' ? 'size-5' : 'size-4'
+  const large = size === 'lg'
+  const skip = large ? 'size-8' : 'size-5'
+  const side = large ? 'size-6' : 'size-4'
   return (
-    <div className={`flex items-center justify-center ${size === 'lg' ? 'gap-6' : 'gap-3'}`}>
-      <IconButton label={status?.shuffle ? 'Disable shuffle' : 'Enable shuffle'} active={!!status?.shuffle} onClick={toggleShuffle} disabled={!can('shuffle')}>
+    <div className={`flex items-center ${large ? 'mx-auto w-full max-w-sm justify-between md:w-auto md:justify-center md:gap-6' : 'justify-center gap-3'}`}>
+      <IconButton
+        size={large ? 'lg' : 'md'}
+        label={status?.shuffle ? 'Disable shuffle' : 'Enable shuffle'}
+        active={!!status?.shuffle}
+        onClick={toggleShuffle}
+        disabled={!can('shuffle')}
+      >
         <Shuffle className={side} />
       </IconButton>
-      <IconButton label="Previous" onClick={previous} disabled={!can('skip_prev')} className={size === 'lg' ? 'size-12' : ''}>
+      <IconButton size={large ? 'xl' : 'md'} label="Previous" onClick={previous} disabled={!can('skip_prev')}>
         <SkipBack className={`${skip} fill-current`} />
       </IconButton>
-      <PlayButton size={size === 'lg' ? 'lg' : 'md'} />
-      <IconButton label="Next" onClick={next} disabled={!can('skip_next')} className={size === 'lg' ? 'size-12' : ''}>
+      <PlayButton size={large ? 'lg' : 'md'} />
+      <IconButton size={large ? 'xl' : 'md'} label="Next" onClick={next} disabled={!can('skip_next')}>
         <SkipForward className={`${skip} fill-current`} />
       </IconButton>
-      <IconButton label={repeatLabel} active={!!status?.repeat && status.repeat !== 'off'} onClick={cycleRepeat} disabled={!can('set_repeat')}>
+      <IconButton
+        size={large ? 'lg' : 'md'}
+        label={repeatLabel}
+        active={!!status?.repeat && status.repeat !== 'off'}
+        onClick={cycleRepeat}
+        disabled={!can('set_repeat')}
+      >
         <RepeatIcon className={side} />
       </IconButton>
     </div>
@@ -95,7 +108,7 @@ export function VolumeControl({ className = '' }: { className?: string }) {
         step={5}
         valueText={`${volume}%`}
         onPreview={(v) => v !== null && setVolume(v)}
-        onCommit={setVolume}
+        onCommit={(v) => setVolume(v, true)}
       />
     </div>
   )
