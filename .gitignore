@@ -6,3 +6,5 @@ spotify-tokens.json
 .env
 env
 .DS_Store
+web/node_modules
+web/dist

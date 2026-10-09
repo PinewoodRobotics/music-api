@@ -5,6 +5,7 @@ Slack's OpenID userInfo has the real name but not the display name, so a bot tok
 looks that up. Sessions are random IDs stored hashed in <data-dir>/sessions.json (mode 600).
 """
 import hashlib
+import html
 import json
 import os
 import re
@@ -206,7 +207,7 @@ class Playlists:
     def _out(self, p, user):
         meta = self.meta.get(p["id"]) or {}
         images = p.get("images") or []
-        return {"id": p["id"], "uri": p.get("uri"), "name": p.get("name"), "description": p.get("description") or "",
+        return {"id": p["id"], "uri": p.get("uri"), "name": p.get("name"), "description": html.unescape(html.unescape(p.get("description") or "")),
                 "artwork": images[0].get("url") if images else None,
                 "total": ((p.get("items") or p.get("tracks") or {}).get("total")),
                 "created_by": meta.get("created_by"), "source_url": meta.get("source_url"),
@@ -251,8 +252,7 @@ class Playlists:
         for i in range(0, len(uris), 100):
             api.req("POST", f"/playlists/{pl['id']}/items", body={"uris": uris[i:i + 100]})
         self._record(pl["id"], user, f"https://open.spotify.com/playlist/{source_id}")
-        pl.setdefault("items", {})["total"] = len(uris)
-        return {"playlist": self._out(pl, user), "imported": len(uris), "total": None,
+        return {"playlist": {**self._out(pl, user), "total": len(uris)}, "imported": len(uris), "total": None,
                 "truncated": len(uris) >= IMPORT_LIMIT}
 
     def edit(self, api, user, playlist_id, b):
