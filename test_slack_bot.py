@@ -333,6 +333,32 @@ class Feed(unittest.TestCase):
         self.assertNotIn("button", json.dumps(upd[0]["blocks"]))
         self.assertEqual([u.rsplit("/", 1)[1] for u, _ in bot.sent][-2:], ["chat.update", "chat.postMessage"])
 
+    def test_restart_adopts_or_collapses_previous_message(self):
+        import os, tempfile
+        path = os.path.join(tempfile.mkdtemp(), "feed.json")
+        bot = make()
+        bot.state_path = path
+        self.run_feed(bot, [("playing", TRACK, 0), ("playing", TRACK, 4)])
+        self.assertEqual(len(self.calls(bot, "chat.postMessage")), 1)
+
+        again = sb.SlackBot(FakeSlack(), FakePlayer(), FakeApi(), QueueCredits(), SECRET, state_path=path)
+        again.sent = []
+        again.http = bot.http = lambda url, payload, token=None: (again.sent.append((url, payload)) or (200, {"ok": True, "ts": "2.2"}, {}))
+        self.run_feed(again, [("playing", TRACK, 0), ("playing", TRACK, 4), ("paused", TRACK, 6)])
+        self.assertEqual(self.calls(again, "chat.postMessage"), [])
+        self.assertTrue(all(p["ts"] == "1.1" for p in self.calls(again, "chat.update")))
+
+        third = sb.SlackBot(FakeSlack(), FakePlayer(), FakeApi(), QueueCredits(), SECRET, state_path=path)
+        third.sent = []
+        third.http = lambda url, payload, token=None: (third.sent.append((url, payload)) or (200, {"ok": True, "ts": "3.3"}, {}))
+        self.run_feed(third, [("playing", TRACK2, 0), ("playing", TRACK2, 4)])
+        upd = self.calls(third, "chat.update")
+        self.assertEqual([u["ts"] for u in upd], ["1.1"])
+        self.assertNotIn("button", json.dumps(upd[0]["blocks"]))
+        self.assertEqual(len(self.calls(third, "chat.postMessage")), 1)
+        with open(path) as f:
+            self.assertEqual(json.load(f)["ts"], "3.3")
+
     def test_no_post_when_idle_or_paused(self):
         bot = make()
         self.run_feed(bot, [("idle", None, 0), ("idle", None, 10), ("paused", TRACK, 10), ("paused", TRACK, 10)])

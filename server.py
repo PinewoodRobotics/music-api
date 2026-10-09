@@ -1011,7 +1011,8 @@ def main():
         threading.Thread(target=soloist.loop, daemon=True).start()
     threading.Thread(target=player.loop, daemon=True).start()
     bot = slack_bot.from_env(slack, player, api, credits, resolve=lambda url: links.resolve(api, url),
-                             importer=lambda url, user: app_playlists.import_link(api, user, url))
+                             importer=lambda url, user: app_playlists.import_link(api, user, url),
+                             state_path=os.path.join(a.data_dir, "slack-feed.json"))
     bot.start()
 
     Handler.require_token = require

@@ -238,7 +238,7 @@ def link_blocks(r):
 
 class SlackBot:
     def __init__(self, slack, player, api, credits, signing_secret, channel=DEFAULT_CHANNEL, team=DEFAULT_TEAM,
-                 remote=DEFAULT_REMOTE, resolve=None, importer=None):
+                 remote=DEFAULT_REMOTE, resolve=None, importer=None, state_path=None):
         self.slack, self.player, self.api, self.credits = slack, player, api, credits
         self.token = slack.bot_token
         self.secret, self.channel, self.team, self.remote = signing_secret, channel, team, remote
@@ -249,8 +249,32 @@ class SlackBot:
         self.pause_until = 0
         self.seen_events = {}
         self.st, self.upcoming = {}, []
-        self.cur = None
-        self.cand = (None, 0)
+        self.state_path = state_path
+        self.cur = self.load_cur()
+        self.cand = ((self.cur or {}).get("uri"), 0)
+
+    def load_cur(self):
+        """The feed message from before a restart, so it gets updated or collapsed instead of duplicated."""
+        try:
+            with open(self.state_path) as f:
+                cur = json.load(f)
+        except (TypeError, OSError, ValueError):
+            return None
+        if not cur or not cur.get("ts"):
+            return None
+        return {**cur, "sig": None, "sent": 0}
+
+    def save_cur(self):
+        if not self.state_path:
+            return
+        cur = self.cur if self.cur and self.cur.get("ts") else None
+        tmp = self.state_path + ".tmp"
+        try:
+            with open(tmp, "w") as f:
+                json.dump(cur and {k: v for k, v in cur.items() if k != "sig"}, f)
+            os.replace(tmp, self.state_path)
+        except OSError as e:
+            self._warn(("state", str(e)[:60]), f"couldn't save feed state: {e}")
 
     @property
     def enabled(self):
@@ -571,6 +595,12 @@ class SlackBot:
         return now_playing_blocks(cur["track"], cur["playing"], cur["by"], cur["upcoming"], self.remote)
 
     def tick(self, now):
+        before = (self.cur or {}).get("ts")
+        self.step(now)
+        if (self.cur or {}).get("ts") != before:
+            self.save_cur()
+
+    def step(self, now):
         if now < self.pause_until:
             return
         t = self.st.get("track")
@@ -628,8 +658,8 @@ class SlackBot:
             cur["sig"] = self.sig(cur)
 
 
-def from_env(slack, player, api, credits, resolve=None, importer=None):
+def from_env(slack, player, api, credits, resolve=None, importer=None, state_path=None):
     return SlackBot(slack, player, api, credits, os.environ.get("SLACK_SIGNING_SECRET"),
                     os.environ.get("SLACK_MUSIC_CHANNEL") or DEFAULT_CHANNEL,
                     slack.team_id or DEFAULT_TEAM, os.environ.get("SLACK_REMOTE_URL") or DEFAULT_REMOTE,
-                    resolve, importer)
+                    resolve, importer, state_path)
