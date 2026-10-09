@@ -5,3 +5,4 @@ spotify-tokens.json
 *.log
 .env
 env
+.DS_Store
