@@ -136,7 +136,7 @@ function queue(): Queue {
   return {
     upcoming: [
       ...queued.map((item, n) => ({ uid: `q${n}`, source: 'queue' as const, item, added_by: n === 0 ? maya : adam })),
-      ...ctx.slice(i + 1).map((item, n) => ({ uid: `c${n}`, source: 'context' as const, item, added_by: null })),
+      ...[...ctx.slice(i + 1), ...tracks, ...tracks].map((item, n) => ({ uid: `c${n}`, source: 'context' as const, item, added_by: null })),
     ],
     previous: [],
   }

@@ -68,10 +68,14 @@ function Row({ track, current, playing, pending, addedBy, onMenu, onPlay, immers
   )
 }
 
+const FADE_PX = 56
+const edgeFade = (top: boolean) =>
+  `linear-gradient(to bottom, transparent 0, black ${top ? FADE_PX : 0}px, black calc(100% - ${FADE_PX}px), transparent 100%)`
+
 function groupTitle(entry: QueueEntry, contextName: string | undefined, immersive: boolean) {
   if (entry.source === 'queue') return 'Next in queue'
   if (entry.source === 'autoplay') return 'Autoplay'
-  if (immersive) return 'Continue Playing'
+  if (immersive) return 'Playing Next'
   return contextName ? `Next from ${contextName}` : 'Next up'
 }
 
@@ -83,7 +87,7 @@ function GroupHeading({ title, contextName, immersive }: { title: string; contex
         {title === 'Autoplay' && <Radio className="size-4" aria-hidden />}
         {title}
       </h3>
-      {title === 'Continue Playing' && contextName && <p className="truncate text-[13px] text-white/65">From {contextName}</p>}
+      {title === 'Playing Next' && contextName && <p className="truncate text-[13px] text-white/65">From {contextName}</p>}
     </div>
   )
 }
@@ -92,6 +96,7 @@ export function UpNext({ immersive = false }: { immersive?: boolean }) {
   const { status, queue, isPlaying, refreshQueue } = usePlayer()
   useEffect(refreshQueue, [refreshQueue])
   const [jumping, setJumping] = useState<string | null>(null)
+  const [scrolled, setScrolled] = useState(false)
   const [menu, setMenu] = useState<{ track: Track; anchor: AnchorRect; align: 'start' | 'end' } | null>(null)
   const upcoming = (queue?.upcoming ?? []).filter((e): e is QueueEntry & { item: Track } => !!e.item)
   const groups: { title: string; entries: typeof upcoming }[] = []
@@ -108,7 +113,11 @@ export function UpNext({ immersive = false }: { immersive?: boolean }) {
   }
 
   return (
-    <div className={`scroll-thin h-full overflow-y-auto overscroll-contain pb-6 ${immersive ? 'px-0' : 'px-3'}`}>
+    <div
+      onScroll={immersive ? (e) => setScrolled(e.currentTarget.scrollTop > 4) : undefined}
+      style={immersive ? { maskImage: edgeFade(scrolled), WebkitMaskImage: edgeFade(scrolled) } : undefined}
+      className={`scroll-thin h-full overflow-y-auto overscroll-contain ${immersive ? 'px-0 pb-20' : 'px-3 pb-6'}`}
+    >
       {status?.track && !immersive && (
         <section className="mb-4">
           <h3 className="px-2 pb-2 pt-1 text-sm font-semibold text-white/90">Now playing</h3>

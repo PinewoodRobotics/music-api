@@ -216,7 +216,18 @@ function WideLayout({ art, panel, onToggle, fine, idle, fade, hold }: WideProps)
       </div>
       {panel && (
         <div className="flex h-[min(84vh,920px)] min-w-0 max-w-[660px] flex-1 flex-col">
-          {panel === 'queue' && <ModePills className="mb-5 max-w-xs" />}
+          {panel === 'queue' && (
+            <div
+              aria-hidden={idle}
+              className={`grid transition-[grid-template-rows,opacity] duration-[400ms] ease-[cubic-bezier(0.25,0.1,0.25,1)] ${
+                idle ? 'pointer-events-none grid-rows-[0fr] opacity-0' : 'grid-rows-[1fr] opacity-100'
+              }`}
+            >
+              <div className="min-h-0 overflow-hidden">
+                <ModePills className="mb-5" />
+              </div>
+            </div>
+          )}
           <PanelBody panel={panel} />
         </div>
       )}
