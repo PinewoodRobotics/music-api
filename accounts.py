@@ -199,6 +199,11 @@ class Playlists:
         self.hidden_path = hidden_path
         self.lock = threading.Lock()
         self.meta = _read_json(self.path, {})
+        self.on_change = None
+
+    def _changed(self):
+        if self.on_change:
+            self.on_change()
 
     def hidden(self):
         entries = _read_json(self.hidden_path, {}).get("playlists", []) if self.hidden_path else []
@@ -213,6 +218,7 @@ class Playlists:
                                       "source_url": source_url,
                                       "created": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
             _write_json(self.path, self.meta)
+        self._changed()
 
     def can_edit(self, playlist_id, user):
         owner = (self.meta.get(playlist_id) or {}).get("created_by") or {}
@@ -279,6 +285,7 @@ class Playlists:
         body = {k: b[k] for k in ("name", "description") if k in b}
         if body:
             api.req("PUT", f"/playlists/{playlist_id}", body=body)
+            self._changed()
         return self.get(api, playlist_id, user)
 
     def delete(self, api, user, playlist_id):
@@ -287,7 +294,30 @@ class Playlists:
         with self.lock:
             if self.meta.pop(playlist_id, None):
                 _write_json(self.path, self.meta)
+        self._changed()
         return {"removed": f"spotify:playlist:{playlist_id}"}
+
+    def duplicate(self, api, user, playlist_id, name=None):
+        """Copy a visible playlist's tracks into a new private playlist credited to `user`."""
+        if self.is_hidden(playlist_id):
+            raise AccountError("playlist not found", 404)
+        src = api.get(f"/playlists/{playlist_id}")
+        uris, offset = [], 0
+        while True:
+            res = api.get(f"/playlists/{playlist_id}/items", limit=50, offset=offset, additional_types="track")
+            for row in res.get("items", []):
+                t = (row or {}).get("item") or (row or {}).get("track") or {}
+                if t.get("uri") and not t.get("is_local"):
+                    uris.append(t["uri"])
+            offset += 50
+            if not res.get("next"):
+                break
+        name = (name or "").strip() or f"{src.get('name') or 'Playlist'} (copy)"
+        pl = api.req("POST", "/me/playlists", body={"name": name[:100], "description": html.unescape(html.unescape(src.get("description") or ""))[:300], "public": False})
+        for i in range(0, len(uris), 100):
+            api.req("POST", f"/playlists/{pl['id']}/items", body={"uris": uris[i:i + 100]})
+        self._record(pl["id"], user, f"https://open.spotify.com/playlist/{playlist_id}")
+        return {**self._out(pl, user), "total": len(uris)}
 
 
 class Credits:

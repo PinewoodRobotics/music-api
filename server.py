@@ -27,6 +27,7 @@ import links
 import slack_bot
 from accounts import ADMIN, SESSION_COOKIE_AGE, AccountError, Credits, PersonalTokens, Playlists, Sessions, Slack
 from extras import ExtrasError
+from library import Library
 from activity import Activity
 from player import REPEAT_ALIASES, Player, PlayerError
 from soloist import Soloist, SoloistError, default_data_dir as soloist_data_dir
@@ -36,7 +37,7 @@ from tokens import TokenError, Tokens
 HERE = os.path.dirname(os.path.abspath(__file__))
 SEARCH_TYPES = "track,album,artist,playlist,show,episode,audiobook"
 
-auth = api = player = soloist = tokens = slack = sessions = app_playlists = bot = personal = None
+auth = api = player = soloist = tokens = slack = sessions = app_playlists = bot = personal = library = None
 credits = activity = None
 _req = threading.local()  # per-request context: the token entry and the user that authenticated it
 WEB_DIST = os.path.join(HERE, "web", "dist")
@@ -549,6 +550,7 @@ def _playlist_add(q, b, id):
         body["position"] = int(b["position"])
     res = api.req("POST", f"/playlists/{id}/items", body=body)
     uris = body["uris"]
+    library.invalidate()
     entry = _log_playlist("playlist_add", id, count=len(uris))
     activity.enrich(entry, lambda: {"names": activity_log.track_names(api, uris)})
     return res
@@ -559,6 +561,7 @@ def _playlist_remove(q, b, id):
     """Body {uris: [...]} (removes every occurrence)"""
     uris = _uris(q, b)
     res = api.req("DELETE", f"/playlists/{id}/items", body={"items": [{"uri": u} for u in uris]})
+    library.invalidate()
     _log_playlist("playlist_remove", id, count=len(uris))
     return res
 
@@ -570,7 +573,10 @@ def _playlist_reorder(q, b, id):
         body = {"uris": _uris(q, b)}
     else:
         body = {k: int(b[k]) for k in ("range_start", "insert_before", "range_length") if k in b}
-    return api.req("PUT", f"/playlists/{id}/items", body=body)
+    res = api.req("PUT", f"/playlists/{id}/items", body=body)
+    library.invalidate()
+    _log_playlist("playlist_reorder", id)
+    return res
 
 
 @route("GET", "/api/playlists/{id}/image")
@@ -638,12 +644,25 @@ def _app_create(q, b):
 
 @route("POST", "/api/app/playlists/import")
 def _app_import(q, b):
-    """Body {url}: copy a Spotify or Apple Music playlist/album into a new playlist
-    → {playlist, imported, total, truncated, source, unmatched: [{name, artists}]}"""
-    res = app_playlists.import_link(api, _req.user, b.get("url"))
+    """Body {url}: copy a Spotify or Apple Music playlist/song link into a new playlist
+    → {playlist, imported, total, truncated, source, unmatched: [{name, artists}]}.
+    Album links are added to the Library as albums instead → {kind: "album", album: {...}}"""
+    res = library.import_link(api, _req.user, b.get("url"))
+    if res.get("kind") == "album":
+        if not res["album"].get("already"):
+            _log("album_add", {"id": res["album"]["id"], "name": res["album"]["name"]})
+        return res
     pl = res["playlist"]
     _log("playlist_import", {"id": pl["id"], "name": pl["name"], "imported": res["imported"], "source": res["source"]})
     return res
+
+
+@route("POST", "/api/app/playlists/{id}/duplicate")
+def _app_duplicate(q, b, id):
+    """Body {name?}: copy a playlist's tracks into a new playlist credited to you → the new playlist"""
+    pl = app_playlists.duplicate(api, _req.user, id, b.get("name"))
+    _log("playlist_duplicate", {"id": pl["id"], "name": pl["name"], "from": id})
+    return pl
 
 
 @route("POST", "/api/resolve")
@@ -677,6 +696,67 @@ def _app_delete(q, b, id):
         name = None
     res = app_playlists.delete(api, _req.user, id)
     _log("playlist_delete", {"id": id, "name": name})
+    return res
+
+
+# ---------- web app: library (playlists + albums + songs) ----------
+
+@route("GET", "/api/app/library")
+def _app_library(q, b):
+    """?kind=all|playlists|albums&sort=recent|name|creator (default all, recent). → {items: [...]}: playlists as in
+    /api/app/playlists plus kind "playlist", albums as in POST /api/app/library/albums with kind "album" """
+    return library.list(api, _req.user, q.get("kind") or "all", q.get("sort") or "recent")
+
+
+@route("POST", "/api/app/library/albums")
+def _app_album_add(q, b):
+    """Body {url | uri}: a Spotify album URI/link or an Apple Music album link with a Spotify match (else 422: use Import as playlist).
+    Admins may also pass {added_by: {id, name, avatar}, added: ISO time}. Idempotent (existing → "already": true).
+    → {kind: "album", id, uri, name, artists: [{uri, name}], artwork, total, year, duration_ms, added_by, added, source_url, can_edit}"""
+    admin = _req.user.get("admin")
+    album = library.add_album(api, _req.user, b.get("url") or b.get("uri"),
+                              added_by=b.get("added_by") if admin else None, added=b.get("added") if admin else None)
+    if not album.get("already"):
+        _log("album_add", {"id": album["id"], "name": album["name"]})
+    return album
+
+
+@route("GET", "/api/app/library/albums/{id}")
+def _app_album(q, b, id):
+    """A library album plus "tracks": every track as a compact item"""
+    return library.get_album(api, id, _req.user)
+
+
+@route("DELETE", "/api/app/library/albums/{id}")
+def _app_album_remove(q, b, id):
+    """Remove an album from the Library (whoever added it, or an admin) → {removed: "spotify:album:..."}"""
+    try:
+        name = library.get_album(api, id, _req.user)["name"] if id in library.albums else None
+    except (SpotifyError, AccountError):
+        name = None
+    res = library.remove_album(_req.user, id)
+    _log("album_remove", {"id": id, "name": name})
+    return res
+
+
+@route("GET", "/api/app/library/songs")
+def _app_songs(q, b):
+    """?q=&sort=recent|title|artist|album&offset=&limit= (default 100, max 500). Every distinct track across the Library's
+    playlists and albums → {items: [{...track item, sources: [{kind: playlist|album, id, name}], added}], total}"""
+    rows = library.songs(api, _req.user, q.get("q"), q.get("sort") or "recent")
+    offset, limit = max(0, int(q.get("offset") or 0)), max(1, min(int(q.get("limit") or 100), 500))
+    return {"items": rows[offset:offset + limit], "total": len(rows)}
+
+
+@route("POST", "/api/app/library/songs/play")
+def _app_songs_play(q, b):
+    """Body {uri, sort?, q?}: play the songs list (same q/sort as GET /api/app/library/songs) as a queue of up to 100
+    tracks starting at uri; credited to you"""
+    uri = to_uri(b.get("uri"), "track")
+    song, uris = library.play_queue(api, _req.user, uri, b.get("q"), b.get("sort") or "recent")
+    res = player.play({"uris": uris})
+    credits.start(uris, _req.user)
+    _log("library_songs_play", {"uri": uri, "name": song.get("name"), "count": len(uris)})
     return res
 
 
@@ -1110,7 +1190,7 @@ def main():
                     help="connect backend: Connect device name or id to control (default: whichever is active)")
     a = ap.parse_args()
 
-    global auth, api, player, soloist, tokens, slack, sessions, app_playlists, bot, personal, credits, activity
+    global auth, api, player, soloist, tokens, slack, sessions, app_playlists, bot, personal, credits, activity, library
     os.makedirs(a.data_dir, mode=0o700, exist_ok=True)
     auth = Auth(a.data_dir, a.client_id, a.redirect_uri or f"http://127.0.0.1:{a.port}/auth/callback")
     api = WebAPI(auth)
@@ -1126,6 +1206,7 @@ def main():
     sessions = Sessions(a.data_dir)
     personal = PersonalTokens(a.data_dir)
     app_playlists = Playlists(a.data_dir, a.hidden_playlists)
+    library = Library(a.data_dir, app_playlists)
     slack = Slack(os.environ.get("SLACK_CLIENT_ID"), os.environ.get("SLACK_CLIENT_SECRET"), os.environ.get("SLACK_BOT_TOKEN"),
                   a.slack_redirect_uri or f"http://127.0.0.1:{a.port}/auth/slack/callback",
                   os.environ.get("SLACK_TEAM_ID"), filter(None, os.environ.get("SLACK_ADMINS", "").split(",")))

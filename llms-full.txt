@@ -273,7 +273,7 @@ What people did in the last 24 hours, oldest first: `{"entries": [...], "latest"
 
 Entry: `{"id": 42, "at": 1760000000000, "by": {"id", "name", "avatar"}, "action": "queue_add", "detail": {...}, "origin": "web"}`. `id` increases monotonically; `at` is unix milliseconds. `origin` is `web` (session cookie), `api` (API token), `media-session` (request header `X-Client-Origin` starting with `media-session`, i.e. the OS media controls) or `slack` (the bot's buttons and `/music` commands).
 
-Only successful actions are recorded. Names can arrive late: the entry is first sent with URIs only, then sent again with the same `id` and `names`/`name` filled in, so replace by `id`. `volume` entries coalesce: the same person changing volume again within 10 s updates that entry (new `at` and `volume`, same `id`).
+Only successful actions are recorded. Names can arrive late: the entry is first sent with URIs only, then sent again with the same `id` and `names`/`name` filled in, so replace by `id`. `volume` entries coalesce: the same person changing volume again within 10 s updates that entry (new `at` and `volume`, same `id`); so do `playlist_reorder` entries for the same person and playlist.
 
 | `action` | `detail` |
 |---|---|
@@ -293,6 +293,10 @@ Only successful actions are recorded. Names can arrive late: the entry is first 
 | `playlist_add` | `{id, count, name?, names?}` |
 | `playlist_remove` | `{id, count, name?}` |
 | `playlist_play` | `{id, name?}` |
+| `playlist_duplicate` | `{id, name, from}`: the new playlist and the id it was copied from |
+| `playlist_reorder` | `{id, name?}` |
+| `album_add`, `album_remove` | `{id, name}` of a Library album (`name` can be null on remove) |
+| `library_songs_play` | `{uri, name, count}`: song the Library list was started from and how many tracks were queued |
 
 ### Queue and devices
 
@@ -446,7 +450,7 @@ Recently played tracks. `?limit=` (max 50) `&before=` or `&after=` (unix millise
 #### GET /api/me
 The logged-in Spotify user: `{"id", "name", "uri", "artwork"}`.
 
-### Web app (accounts and shared playlists)
+### Web app (accounts and the shared Library)
 
 These power the web app. With an API token you act as `@admin`.
 
@@ -469,10 +473,51 @@ The playlists the web app shows: every playlist in the account except the hidden
 Body `{name, description?}`. Creates a private playlist on the account, credited to you. Returns the playlist object.
 
 #### POST /api/app/playlists/import
-Body `{url}`: an open.spotify.com playlist link or `spotify:playlist:` URI of a **public** playlist. Copies its tracks into a new playlist credited to you. Returns `{"playlist": {...}, "imported": 100, "total": null, "truncated": true}`. Only the first 100 tracks can be read (Spotify exposes no more for playlists the account doesn't own), and the source's real length is unknown, so `truncated` just means the cap was hit. 404 if Spotify has no public playlist there.
+Body `{url}`: a Spotify or Apple Music playlist (or song) link. Copies its tracks into a new playlist credited to you and returns `{"playlist": {...}, "imported": 100, "total": null, "truncated": true, "source": "spotify"|"apple", "unmatched": [{"name", "artists"}]}`. Spotify playlists must be **public** and only the first 100 tracks can be read, so `truncated` just means the cap was hit. 404 if there is no public playlist there.
+
+**Album links are routed to the Library instead** (Spotify `open.spotify.com/album/...` or `spotify:album:`, Apple Music `music.apple.com/.../album/...` without `?i=`): no playlist is created, the album is added as in `POST /api/app/library/albums` and the response is `{"kind": "album", "album": {...album object...}}` (`album.already` is true if it was there already). 422 if an Apple album has no Spotify album match.
+
+#### POST /api/app/playlists/{id}/duplicate
+Body `{name?}` (default "<name> (copy)"). Copies the playlist's tracks into a new private playlist credited to you. Returns the new playlist object (`total` = tracks copied). Any signed-in user may duplicate any visible playlist.
+
+#### The Library
+
+The Library is the app's shared playlists plus albums saved as references to the real Spotify album (no copy of the tracks). Albums are stored in `<data-dir>/library-albums.json` (mode 600); album metadata is fetched from Spotify and cached for an hour.
+
+Album object (`kind` is `"album"`; `duration_ms` can be null when the album is long):
+```json
+{"kind": "album", "id": "1kCHru7uhxBUdzkm4gzRQc", "uri": "spotify:album:1kCHru7uhxBUdzkm4gzRQc", "name": "Hamilton",
+ "artists": [{"uri": "spotify:artist:...", "name": "Lin-Manuel Miranda"}], "artwork": "https://...", "total": 46, "year": "2015",
+ "duration_ms": 8820000, "added_by": {"id": "U0123", "name": "Adam", "avatar": "https://..."}, "added": "2026-10-09T20:41:00Z",
+ "source_url": "https://open.spotify.com/album/...", "can_edit": true}
+```
+`can_edit` is true for whoever added the album and for admins.
+
+#### GET /api/app/library
+`?kind=all|playlists|albums&sort=recent|name|creator` (defaults `all`, `recent` = newest added first; `creator` groups by who added it). Returns `{"items": [...]}`: playlists with the shape of `GET /api/app/playlists` plus `"kind": "playlist"`, and album objects. Playlists not made through the app have no date and sort last under `recent`. `GET /api/app/playlists` still works as before.
+
+#### POST /api/app/library/albums
+Body `{url}` or `{uri}`: a Spotify album link/URI, or an Apple Music album link that matches a whole Spotify album. Returns the album object. Idempotent: adding an existing album returns it with `"already": true`. 400 for anything that isn't an album link; 422 (suggesting Import as playlist) when an Apple album has no Spotify album match. Admins may also pass `added_by: {id, name, avatar}` and `added: "<ISO time>"` to credit someone else (used by `deploy/migrate_album_playlists.py`).
+
+#### GET /api/app/library/albums/{id}, DELETE /api/app/library/albums/{id}
+`GET` returns the album object plus `"tracks"`: every track as a compact item (`uri, id, name, artists, album, duration_ms, explicit, track_number, artwork`). `DELETE` removes it from the Library (whoever added it, or an admin; else 403) and returns `{"removed": "spotify:album:..."}`. 404 if it isn't in the Library.
+
+#### GET /api/app/library/songs
+`?q=&sort=recent|title|artist|album&offset=&limit=` (limit default 100, max 500). Every distinct track across the Library's playlists and albums. `q` matches title, artist or album case-insensitively; `recent` is newest first.
+```json
+{"items": [{"uri": "spotify:track:...", "id": "...", "type": "track", "name": "Satisfied", "artists": [{"uri": "...", "name": "..."}],
+            "album": {"uri": "...", "name": "Hamilton"}, "duration_ms": 331000, "artwork": "https://...",
+            "sources": [{"kind": "album", "id": "1kCHru7uhxBUdzkm4gzRQc", "name": "Hamilton"}, {"kind": "playlist", "id": "...", "name": "Lab bangers"}],
+            "added": "2026-10-09T20:41:00Z"}],
+ "total": 812}
+```
+`added` is the earliest time the song entered the Library. The aggregated list is cached for about 2 minutes and rebuilt right after any Library change made through this API (adding/removing albums, creating/importing/duplicating/renaming/deleting playlists, adding/removing/reordering playlist tracks). Playlists whose tracks Spotify won't list are skipped.
+
+#### POST /api/app/library/songs/play
+Body `{uri, sort?, q?}` (same `sort` and `q` as the songs list). Plays the songs list as an ad-hoc queue (up to 100 tracks, starting at `uri`, in the list's order) and credits you as the starter. 404 if `uri` isn't in the filtered list.
 
 #### GET /api/app/playlists/{id}, PATCH /api/app/playlists/{id}, DELETE /api/app/playlists/{id}
-One playlist; `PATCH` body `{name?, description?}`; `DELETE` removes it. Changing or deleting needs `can_edit` (whoever created it, or an admin), else 403. Use `/api/playlists/{id}/items` to list, add and remove tracks, and `/api/playlists/{id}/play` to play.
+One playlist; `PATCH` body `{name?, description?}`; `DELETE` removes it. Changing or deleting needs `can_edit` (whoever created it, or an admin), else 403. Use `/api/playlists/{id}/items` to list, add, remove and reorder tracks (`PUT` with `{range_start, insert_before, range_length?}`; open to every signed-in user for visible playlists), and `/api/playlists/{id}/play` to play.
 
 ### Tokens
 

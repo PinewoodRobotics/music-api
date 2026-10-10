@@ -13,6 +13,7 @@ import time
 TTL = 86400
 PRUNE_EVERY = 3600
 VOLUME_WINDOW_MS = 10000
+COALESCED = {"volume": None, "playlist_reorder": "id"}
 LOOKUP_KINDS = {"track": "tracks", "album": "albums", "playlist": "playlists", "artist": "artists",
                 "show": "shows", "episode": "episodes", "audiobook": "audiobooks"}
 MAX_LOOKUPS = 5
@@ -131,8 +132,10 @@ class Activity:
             if self.now() - self.pruned_at > PRUNE_EVERY:
                 self._prune()
             by = {k: user.get(k) for k in ("id", "name", "avatar")}
-            prev = next((e for e in reversed(self.entries) if e["action"] == action and e["by"]["id"] == by["id"]), None) \
-                if action == "volume" else None
+            same = COALESCED.get(action)
+            prev = next((e for e in reversed(self.entries) if e["action"] == action and e["by"]["id"] == by["id"]
+                         and (same is None or e["detail"].get(same) == detail.get(same))), None) \
+                if action in COALESCED else None
             if prev and at - prev["at"] <= VOLUME_WINDOW_MS:
                 prev["at"], prev["detail"], prev["origin"] = at, detail, origin
                 entry = prev

@@ -207,6 +207,21 @@ def _apple(api, country, kind, aid, song_id):
             "tracks": _match_all(api, songs[:500])}
 
 
+def album_ref(url):
+    """('spotify', album_uri) for a Spotify album link/URI, ('apple', None) for an Apple Music album link, else None."""
+    url = (url or "").strip()
+    apple = APPLE_RX.search(url)
+    if apple:
+        return ("apple", None) if apple.group(2) == "album" and not apple.group(4) else None
+    if "spotify" in url:
+        try:
+            uri = to_uri(url)
+        except ValueError:
+            return None
+        return ("spotify", uri) if uri.startswith("spotify:album:") else None
+    return None
+
+
 def resolve(api, url):
     """A Spotify or Apple Music song/album/playlist link → {source, kind, name, subtitle, artwork, url,
     spotify_uri, tracks: [{name, artists, album, duration_ms, artwork, uri}], total, matched, truncated}."""
