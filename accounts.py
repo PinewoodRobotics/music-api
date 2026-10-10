@@ -4,11 +4,13 @@ Stdlib only.
 Slack's OpenID userInfo has the real name but not the display name, so a bot token with users:read
 looks that up. Sessions are random IDs stored hashed in <data-dir>/sessions.json (mode 600).
 """
+import base64
 import hashlib
 import html
 import json
 import os
 import secrets
+import sys
 import threading
 import time
 import urllib.error
@@ -69,7 +71,9 @@ class Slack:
         data = urllib.parse.urlencode(params).encode() if params else None
         res = _http_json(f"{SLACK}/api/{method}", data, {"Authorization": "Bearer " + token})
         if not res.get("ok"):
-            raise AccountError(f"Slack {method}: {res.get('error', 'failed')}", 502)
+            err = AccountError(f"Slack {method}: {res.get('error', 'failed')}", 502)
+            err.slack_error = res.get("error")
+            raise err
         return res
 
     def team(self):
@@ -104,12 +108,86 @@ class Slack:
         if info.get("https://slack.com/team_id") != self.team():
             raise AccountError("That Slack account isn't in the Pinewood Robotics workspace", 403)
         uid = info["https://slack.com/user_id"]
-        profile = self._call("users.info", self.bot_token, user=uid)["user"].get("profile", {})
-        name = profile.get("display_name") or profile.get("real_name") or info.get("name") or uid
-        avatar = profile.get("image_192") or profile.get("image_72") or info.get("picture")
-        email = (info.get("email") or "").lower()
+        return self.session_user(uid, info.get("email"), info.get("name"), info.get("picture")), pending[0]
+
+    def session_user(self, uid, email=None, fallback_name=None, fallback_avatar=None, extra=None):
+        profile = (extra or self._call("users.info", self.bot_token, user=uid)["user"]).get("profile", {})
+        name = profile.get("display_name") or profile.get("real_name") or fallback_name or uid
+        avatar = profile.get("image_192") or profile.get("image_72") or fallback_avatar
+        email = (email or "").lower()
         admin = uid.lower() in self.admins or (email and email in self.admins)
-        return {"id": uid, "name": name, "avatar": avatar, "admin": bool(admin), "kind": "slack"}, pending[0]
+        return {"id": uid, "name": name, "avatar": avatar, "admin": bool(admin), "kind": "slack"}
+
+
+class Google:
+    """Sign in with Google (authorization code flow + PKCE), restricted to one Workspace domain. The Google
+    account is mapped to the Slack user with the same email so the session is identical to a Slack sign-in."""
+
+    AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
+    TOKEN_URL = "https://oauth2.googleapis.com/token"
+    USERINFO_URL = "https://openidconnect.googleapis.com/v1/userinfo"
+
+    def __init__(self, client_id, client_secret, redirect_uri, slack, domain="pinewood.edu"):
+        self.client_id, self.client_secret, self.redirect_uri = client_id, client_secret, redirect_uri
+        self.slack, self.domain = slack, (domain or "pinewood.edu").strip().lower()
+        self.pending = {}  # state -> (next path, created, code_verifier, nonce)
+        self.lock = threading.Lock()
+
+    @property
+    def configured(self):
+        return bool(self.client_id and self.client_secret and self.slack.bot_token)
+
+    def login_url(self, next_path="/"):
+        if not self.configured:
+            raise AccountError("Sign in with Google isn't configured on this server", 503)
+        state, verifier, nonce = secrets.token_urlsafe(24), secrets.token_urlsafe(48), secrets.token_urlsafe(16)
+        now = time.time()
+        with self.lock:
+            self.pending = {s: v for s, v in self.pending.items() if now - v[1] < 600}
+            self.pending[state] = (next_path if next_path.startswith("/") and not next_path.startswith("//") else "/",
+                                   now, verifier, nonce)
+        challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
+        return self.AUTH_URL + "?" + urllib.parse.urlencode({
+            "response_type": "code", "client_id": self.client_id, "redirect_uri": self.redirect_uri,
+            "scope": "openid email profile", "state": state, "nonce": nonce, "hd": self.domain,
+            "prompt": "select_account", "code_challenge": challenge, "code_challenge_method": "S256"})
+
+    def finish(self, code, state):
+        """Returns (user, next path) for the Slack user matching the Google account's email."""
+        with self.lock:
+            pending = self.pending.pop(state or "", None)
+        if not pending or not code or time.time() - pending[1] >= 600:
+            raise AccountError("Sign-in link expired or invalid; try again", 400)
+        tok = _http_json(self.TOKEN_URL, urllib.parse.urlencode({
+            "client_id": self.client_id, "client_secret": self.client_secret, "code": code,
+            "code_verifier": pending[2], "redirect_uri": self.redirect_uri, "grant_type": "authorization_code"}).encode())
+        if not tok.get("access_token"):
+            raise AccountError("Google sign-in failed; try again", 400)
+        info = _http_json(self.USERINFO_URL, headers={"Authorization": "Bearer " + tok["access_token"]})
+        email = (info.get("email") or "").lower()
+        wrong = AccountError(f"Use your @{self.domain} Google account", 403)
+        if info.get("email_verified") not in (True, "true") or not email.endswith("@" + self.domain) \
+                or (info.get("hd") or "").lower() != self.domain:
+            raise wrong
+        return self._slack_user(email, info), pending[0]
+
+    def _slack_user(self, email, info):
+        s = self.slack
+        try:
+            u = s._call("users.lookupByEmail", s.bot_token, email=email)["user"]
+        except AccountError as e:
+            code = getattr(e, "slack_error", None)
+            if code == "users_not_found":
+                raise AccountError("This Google account isn't in the Pinewood Robotics Slack", 403)
+            if code == "missing_scope":
+                sys.stderr.write("Google sign-in: the Slack bot token lacks the users:read.email scope; add it and reinstall the app\n")
+                raise AccountError("Google sign-in isn't fully set up yet. Ask an admin, or sign in with Slack instead.", 503)
+            raise
+        if u.get("deleted") or u.get("is_bot") or u.get("team_id") != s.team():
+            raise AccountError("This Google account isn't in the Pinewood Robotics Slack", 403)
+        user = s.session_user(u["id"], email, info.get("name"), info.get("picture"), extra=u)
+        user["via"] = "google"
+        return user
 
 
 class PersonalTokens:

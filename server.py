@@ -25,7 +25,7 @@ import activity as activity_log
 import extras
 import links
 import slack_bot
-from accounts import ADMIN, SESSION_COOKIE_AGE, AccountError, Credits, PersonalTokens, Playlists, Sessions, Slack
+from accounts import ADMIN, SESSION_COOKIE_AGE, AccountError, Credits, PersonalTokens, Google, Playlists, Sessions, Slack
 from extras import ExtrasError
 from library import Library
 from activity import Activity
@@ -37,7 +37,7 @@ from tokens import TokenError, Tokens
 HERE = os.path.dirname(os.path.abspath(__file__))
 SEARCH_TYPES = "track,album,artist,playlist,show,episode,audiobook"
 
-auth = api = player = soloist = tokens = slack = sessions = app_playlists = bot = personal = library = None
+auth = api = player = soloist = tokens = slack = google = sessions = app_playlists = bot = personal = library = None
 credits = activity = None
 _req = threading.local()  # per-request context: the token entry and the user that authenticated it
 WEB_DIST = os.path.join(HERE, "web", "dist")
@@ -1029,6 +1029,17 @@ class Handler(BaseHTTPRequestHandler):
                 personal.refresh(user)
                 return self._send(302, b"", "text/plain", [("Location", next_path),
                                                            self._set_cookie(sessions.create(user), SESSION_COOKIE_AGE)])
+            if path == "/auth/google/login" and method == "GET":
+                return self._result(("redirect", google.login_url(query.get("next") or "/")))
+            if path == "/auth/google/callback" and method == "GET":
+                if query.get("error"):
+                    return self._result(("redirect", "/"))
+                user, next_path = google.finish(query.get("code"), query.get("state"))
+                personal.refresh(user)
+                return self._send(302, b"", "text/plain", [("Location", next_path),
+                                                           self._set_cookie(sessions.create(user), SESSION_COOKIE_AGE)])
+            if path == "/auth/methods" and method == "GET":
+                return self._send(200, {"slack": slack.configured, "google": google.configured})
             if path == "/auth/slack/logout" and method == "POST":
                 sessions.delete(self._session_id())
                 return self._send(200, {"result": {"signed_out": True}}, headers=[self._set_cookie("", 0)])
@@ -1046,7 +1057,7 @@ class Handler(BaseHTTPRequestHandler):
                                  f"[{self.headers.get('User-Agent', '')[:80]}]\n")
             body = self._body()
         except AccountError as e:
-            if path.startswith("/auth/slack/") and method == "GET":
+            if path.startswith(("/auth/slack/", "/auth/google/")) and method == "GET":
                 return self._result(("html", _error_page(str(e))))
             return self._send(e.status, {"error": str(e)})
         except SpotifyError as e:
@@ -1063,6 +1074,9 @@ class Handler(BaseHTTPRequestHandler):
                 {"method": "POST", "path": "/auth/paste", "doc": "Body {url}: finish login with the redirected URL"},
                 {"method": "POST", "path": "/auth/logout", "doc": "Forget the Web API tokens"},
                 {"method": "GET", "path": "/auth/slack/login", "doc": "Sign in with Slack (?next=/path); sets a session cookie"},
+                {"method": "GET", "path": "/auth/google/login", "doc": "Sign in with Google (?next=/path); @pinewood.edu accounts that are in the Slack workspace; sets a session cookie"},
+                {"method": "GET", "path": "/auth/google/callback", "doc": "Google redirects here after sign-in"},
+                {"method": "GET", "path": "/auth/methods", "doc": "Which sign-in methods are configured: {slack, google}"},
                 {"method": "POST", "path": "/auth/slack/logout", "doc": "End the Slack session"},
                 {"method": "POST", "path": "/slack/commands", "doc": "Slack /music command (Slack signing secret instead of a token)"},
                 {"method": "POST", "path": "/slack/interactions", "doc": "Slack button clicks (signing secret)"},
@@ -1181,6 +1195,8 @@ def main():
     ap.add_argument("--soloist-data-dir", default=os.environ.get("SOLOIST_DATA_DIR") or soloist_data_dir())
     ap.add_argument("--slack-redirect-uri", default=os.environ.get("SLACK_REDIRECT_URI"),
                     help="Sign in with Slack callback; default http://127.0.0.1:<port>/auth/slack/callback")
+    ap.add_argument("--google-redirect-uri", default=os.environ.get("GOOGLE_REDIRECT_URI"),
+                    help="Sign in with Google callback; default <MUSIC_API_URL>/auth/google/callback, else http://127.0.0.1:<port>/auth/google/callback")
     ap.add_argument("--hidden-playlists", default=os.environ.get("MUSIC_API_HIDDEN_PLAYLISTS")
                     or os.path.expanduser("~/.config/music-api/hidden-playlists.json"),
                     help='JSON {"playlists": [id or {id, name}, ...]}: account playlists the web app never shows')
@@ -1190,7 +1206,7 @@ def main():
                     help="connect backend: Connect device name or id to control (default: whichever is active)")
     a = ap.parse_args()
 
-    global auth, api, player, soloist, tokens, slack, sessions, app_playlists, bot, personal, credits, activity, library
+    global auth, api, player, soloist, tokens, slack, google, sessions, app_playlists, bot, personal, credits, activity, library
     os.makedirs(a.data_dir, mode=0o700, exist_ok=True)
     auth = Auth(a.data_dir, a.client_id, a.redirect_uri or f"http://127.0.0.1:{a.port}/auth/callback")
     api = WebAPI(auth)
@@ -1210,6 +1226,10 @@ def main():
     slack = Slack(os.environ.get("SLACK_CLIENT_ID"), os.environ.get("SLACK_CLIENT_SECRET"), os.environ.get("SLACK_BOT_TOKEN"),
                   a.slack_redirect_uri or f"http://127.0.0.1:{a.port}/auth/slack/callback",
                   os.environ.get("SLACK_TEAM_ID"), filter(None, os.environ.get("SLACK_ADMINS", "").split(",")))
+    google_redirect = a.google_redirect_uri or (
+        a.canonical_url.rstrip("/") + "/auth/google/callback" if a.canonical_url else f"http://127.0.0.1:{a.port}/auth/google/callback")
+    google = Google(os.environ.get("GOOGLE_CLIENT_ID"), os.environ.get("GOOGLE_CLIENT_SECRET"), google_redirect, slack,
+                    os.environ.get("GOOGLE_ALLOWED_DOMAIN") or "pinewood.edu")
     require = a.public or a.host not in ("127.0.0.1", "localhost", "::1")
     boot = tokens.bootstrap(require)
     if boot == "imported":
