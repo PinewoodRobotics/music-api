@@ -1,76 +1,79 @@
-import { Check, Clock3, GripVertical, Loader2, MoreHorizontal, Play } from 'lucide-react'
-import { useRef, useState, type MouseEvent, type PointerEvent } from 'react'
+import { Check, Clock3, GripVertical, ListEnd, ListPlus, Loader2, MoreHorizontal, Play, Trash2 } from 'lucide-react'
+import { useMemo, useRef, useState, type MouseEvent, type PointerEvent } from 'react'
 import type { AppPlaylist, Track } from '../lib/api'
-import { isTouch } from '../lib/device'
 import { byline, formatTime, idFromUri } from '../lib/format'
+import { useSelection } from '../lib/selection'
 import { usePlayer } from '../state/player'
 import { Artwork } from './Artwork'
 import { Equalizer } from './Equalizer'
+import { PlaylistPicker } from './library/PlaylistTools'
 import { Link } from './Link'
 import { pointRect, type AnchorRect } from './Popover'
-import { TrackMenu } from './TrackMenu'
-
-export type SelectModifiers = { shiftKey: boolean; metaKey: boolean; ctrlKey: boolean; toggle?: boolean }
+import { SelectionBar } from './SelectionBar'
+import { TrackMenu, useTrackActions } from './TrackMenu'
 
 type Props = {
   tracks: Track[]
   onPlay: (index: number) => void
   context: string
   playlist?: AppPlaylist
-  onRemoved?: (uri: string) => void
-  onRemoveIndex?: (index: number) => void
+  onRemoveIndices?: (indices: number[]) => void
+  onReorder?: (indices: number[], to: number) => void
   showArt?: boolean
   showAlbum?: boolean
   numbered?: boolean
   header?: boolean
-  selection?: { selected: Set<number>; onSelect: (index: number, modifiers: SelectModifiers) => void }
   editMode?: boolean
-  onReorder?: (from: number, to: number) => void
+  onExitEdit?: () => void
 }
 
 type Drag = { from: number; to: number; dy: number; rowHeight: number; startY: number }
 
-const touch = isTouch
+export function trackKeys(tracks: Track[]) {
+  const seen = new Map<string, number>()
+  return tracks.map((t) => {
+    const n = seen.get(t.uri) ?? 0
+    seen.set(t.uri, n + 1)
+    return `${t.uri}:${n}`
+  })
+}
 
 export function TrackList(props: Props) {
-  const { tracks, onPlay, context, playlist, onRemoved, onRemoveIndex, showArt = true, showAlbum = true, numbered = true, header = true } = props
-  const { selection, editMode = false, onReorder } = props
+  const { tracks, onPlay, context, playlist, onRemoveIndices, onReorder, showArt = true, showAlbum = true, numbered = true, header = true } = props
+  const { editMode = false, onExitEdit } = props
   const { status, isPlaying, pending } = usePlayer()
-  const [focused, setFocused] = useState<number | null>(null)
-  const [menu, setMenu] = useState<{ index: number; anchor: AnchorRect; align: 'start' | 'end' } | null>(null)
+  const keys = useMemo(() => trackKeys(tracks), [tracks])
+  const sel = useSelection(keys, { forceTouchMode: editMode })
+  const { queue, addTo } = useTrackActions()
+  const [menu, setMenu] = useState<{ indices: number[]; anchor: AnchorRect; align: 'start' | 'end' } | null>(null)
+  const [picker, setPicker] = useState<AnchorRect | null>(null)
   const [drag, setDrag] = useState<Drag | null>(null)
   const dragRef = useRef<Drag | null>(null)
   const withHandle = !!onReorder
+  const touchMode = sel.touchMode
 
-  const cols = [
-    withHandle || editMode ? '1.75rem' : null,
-    numbered ? '2rem' : null,
-    'minmax(0,1.4fr)',
-    showAlbum ? 'minmax(0,1fr)' : null,
-    '3.5rem',
-    '2rem',
-  ]
+  const cols = [withHandle || touchMode ? '1.75rem' : null, numbered ? '2rem' : null, 'minmax(0,1.4fr)', showAlbum ? 'minmax(0,1fr)' : null, '3.5rem', '2rem']
     .filter(Boolean)
     .join(' ')
   const grid = { gridTemplateColumns: cols }
-  const mobileGrid = editMode
+  const mobileGrid = touchMode
     ? 'max-md:!grid-cols-[1.75rem_minmax(0,1fr)_2.75rem]'
     : withHandle
       ? 'max-md:!grid-cols-[0_minmax(0,1fr)_2.75rem_2.75rem]'
       : 'max-md:!grid-cols-[minmax(0,1fr)_2.75rem_2.75rem]'
 
-  const openMenu = (index: number, e: MouseEvent, fromButton: boolean) => {
+  const openMenu = (indices: number[], e: MouseEvent, fromButton: boolean) => {
     e.preventDefault()
     e.stopPropagation()
     const anchor = fromButton ? (e.currentTarget as HTMLElement).getBoundingClientRect() : pointRect(e.clientX, e.clientY)
-    setMenu({ index, anchor, align: fromButton ? 'end' : 'start' })
+    setMenu({ indices, anchor, align: fromButton ? 'end' : 'start' })
   }
 
   const startDrag = (index: number, e: PointerEvent<HTMLElement>) => {
     e.preventDefault()
     e.stopPropagation()
     e.currentTarget.setPointerCapture(e.pointerId)
-    const row = e.currentTarget.closest<HTMLElement>('[role="row"]')
+    const row = e.currentTarget.closest<HTMLElement>('[data-row-index]')
     const next = { from: index, to: index, dy: 0, rowHeight: row?.offsetHeight ?? 56, startY: e.clientY }
     dragRef.current = next
     setDrag(next)
@@ -80,15 +83,16 @@ export function TrackList(props: Props) {
     if (!d) return
     const dy = e.clientY - d.startY
     const to = Math.max(0, Math.min(tracks.length - 1, d.from + Math.round(dy / d.rowHeight)))
-    const next = { ...d, dy, to }
-    dragRef.current = next
-    setDrag(next)
+    dragRef.current = { ...d, dy, to }
+    setDrag(dragRef.current)
   }
   const endDrag = () => {
     const d = dragRef.current
     dragRef.current = null
     setDrag(null)
-    if (d && d.to !== d.from) onReorder?.(d.from, d.to)
+    if (!d || d.to === d.from) return
+    const block = sel.isSelected(d.from) && sel.indices.length > 1 ? sel.indices : [d.from]
+    onReorder?.(block, d.to)
   }
 
   const offsetFor = (i: number) => {
@@ -99,18 +103,28 @@ export function TrackList(props: Props) {
     return undefined
   }
 
-  const click = (i: number, e: MouseEvent) => {
-    if (selection && editMode) return selection.onSelect(i, { shiftKey: e.shiftKey, metaKey: false, ctrlKey: false, toggle: true })
-    if (touch()) return onPlay(i)
-    if (selection) selection.onSelect(i, e)
-    else setFocused(i)
-  }
+  const handle = (i: number, big: boolean) => (
+    <button
+      type="button"
+      aria-label={`Drag to reorder ${tracks[i].name}`}
+      onPointerDown={(e) => startDrag(i, e)}
+      onPointerMove={moveDrag}
+      onPointerUp={endDrag}
+      onPointerCancel={endDrag}
+      onClick={(e) => e.stopPropagation()}
+      className={`grid cursor-grab touch-none place-items-center rounded text-dim hover:text-fg active:cursor-grabbing ${big ? 'size-11 md:size-8' : 'size-7 md:invisible md:group-hover:visible'}`}
+    >
+      <GripVertical className={big ? 'size-5' : 'size-4'} />
+    </button>
+  )
+
+  const selectedTracks = sel.indices.map((i) => tracks[i])
 
   return (
-    <div role="table" className="select-none" onBlur={(e) => !selection && !e.currentTarget.contains(e.relatedTarget) && setFocused(null)}>
+    <div role="table" className="select-none" {...sel.rootProps({ primary: (ix) => onPlay(ix[0]), remove: onRemoveIndices })}>
       {header && (
         <div role="row" className="mb-2 grid items-center gap-4 border-b border-white/[0.07] px-4 pb-2 text-xs text-dim max-md:hidden" style={grid}>
-          {(withHandle || editMode) && <span />}
+          {(withHandle || touchMode) && <span />}
           {numbered && <span className="text-right">#</span>}
           <span>Title</span>
           {showAlbum && <span>Album</span>}
@@ -123,57 +137,38 @@ export function TrackList(props: Props) {
       {tracks.map((track, i) => {
         const current = status?.track?.uri === track.uri
         const starting = pending === `${context}#${i}`
-        const isSelected = selection ? selection.selected.has(i) : focused === i
-        const active = isSelected || menu?.index === i || drag?.from === i
+        const isSelected = sel.isSelected(i)
+        const active = isSelected || drag?.from === i
+        const row = sel.rowProps(i, { primary: () => onPlay(i), openMenu: (e, ix) => openMenu(ix, e, false) })
         return (
           <div
-            key={`${track.uri}-${i}`}
+            key={keys[i]}
             role="row"
-            aria-selected={selection ? isSelected : undefined}
             tabIndex={0}
-            onClick={(e) => click(i, e)}
-            onDoubleClick={() => !editMode && onPlay(i)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') onPlay(i)
-            }}
-            onContextMenu={(e) => openMenu(i, e, false)}
+            {...row}
             className={`group relative grid h-14 items-center gap-4 rounded-md px-4 outline-none transition-transform duration-150 max-md:h-16 max-md:gap-1 max-md:px-2 ${mobileGrid} ${
-              drag?.from === i ? 'bg-raised shadow-xl shadow-black/40' : active ? 'bg-white/[0.1]' : 'hover:bg-white/[0.05] focus-visible:bg-white/[0.07] active:bg-white/[0.08]'
+              drag?.from === i
+                ? 'bg-raised shadow-xl shadow-black/40'
+                : active
+                  ? 'bg-white/[0.12] hover:bg-white/[0.15]'
+                  : 'hover:bg-white/[0.05] focus-visible:bg-white/[0.07] active:bg-white/[0.08]'
             }`}
-            style={{ ...grid, ...offsetFor(i) }}
+            style={{ ...grid, ...row.style, ...offsetFor(i) }}
           >
-            {(withHandle || editMode) && (
-              <div className={`flex items-center justify-center ${editMode ? '' : 'max-md:invisible'}`}>
-                {editMode && selection ? (
-                  <span
-                    aria-hidden
-                    className={`grid size-5 place-items-center rounded-full border ${isSelected ? 'border-accent bg-accent text-ink' : 'border-white/40'}`}
-                  >
+            {(withHandle || touchMode) && (
+              <div className={`flex items-center justify-center ${touchMode ? '' : 'max-md:invisible'}`}>
+                {touchMode ? (
+                  <span aria-hidden className={`grid size-5 place-items-center rounded-full border ${isSelected ? 'border-accent bg-accent text-ink' : 'border-white/40'}`}>
                     {isSelected && <Check className="size-3.5" strokeWidth={3} />}
                   </span>
-                ) : withHandle ? (
-                  <button
-                    type="button"
-                    aria-label={`Drag to reorder ${track.name}`}
-                    onPointerDown={(e) => startDrag(i, e)}
-                    onPointerMove={moveDrag}
-                    onPointerUp={endDrag}
-                    onPointerCancel={endDrag}
-                    onClick={(e) => e.stopPropagation()}
-                    className="grid size-7 cursor-grab touch-none place-items-center rounded text-dim hover:text-fg active:cursor-grabbing md:invisible md:group-hover:visible"
-                  >
-                    <GripVertical className="size-4" />
-                  </button>
-                ) : null}
+                ) : (
+                  handle(i, false)
+                )}
               </div>
             )}
             {numbered && (
               <div className="relative flex justify-end text-sm text-dim tabular max-md:hidden">
-                {starting ? (
-                  <Loader2 className="size-4 animate-spin text-fg" />
-                ) : (
-                  <span className={`group-hover:invisible ${current ? 'hidden' : ''}`}>{i + 1}</span>
-                )}
+                {starting ? <Loader2 className="size-4 animate-spin text-fg" /> : <span className={`group-hover:invisible ${current ? 'hidden' : ''}`}>{i + 1}</span>}
                 {current && !starting && (
                   <span className="group-hover:invisible">
                     <Equalizer playing={isPlaying} />
@@ -206,9 +201,7 @@ export function TrackList(props: Props) {
               <div className="min-w-0">
                 <div className={`truncate text-[15px] leading-tight ${current ? 'text-accent' : 'text-fg'}`}>{track.name}</div>
                 <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[13px] text-dim">
-                  {track.explicit && (
-                    <span className="grid h-4 shrink-0 place-items-center rounded-[3px] bg-white/25 px-1 text-[9px] font-semibold text-canvas">E</span>
-                  )}
+                  {track.explicit && <span className="grid h-4 shrink-0 place-items-center rounded-[3px] bg-white/25 px-1 text-[9px] font-semibold text-canvas">E</span>}
                   <span className="truncate">
                     {track.artists?.length
                       ? track.artists.map((a, j) => (
@@ -241,25 +234,16 @@ export function TrackList(props: Props) {
                 )}
               </div>
             )}
-            <div className={`text-right text-sm text-dim tabular max-md:text-xs ${editMode ? 'max-md:hidden' : ''}`}>{formatTime(track.duration_ms)}</div>
-            {editMode && withHandle ? (
-              <button
-                type="button"
-                aria-label={`Drag to reorder ${track.name}`}
-                onPointerDown={(e) => startDrag(i, e)}
-                onPointerMove={moveDrag}
-                onPointerUp={endDrag}
-                onPointerCancel={endDrag}
-                onClick={(e) => e.stopPropagation()}
-                className="grid size-11 cursor-grab touch-none place-items-center text-dim active:cursor-grabbing md:size-8"
-              >
-                <GripVertical className="size-5" />
-              </button>
+            <div className={`text-right text-sm text-dim tabular max-md:text-xs ${touchMode ? 'max-md:hidden' : ''}`}>{formatTime(track.duration_ms)}</div>
+            {touchMode && withHandle ? (
+              handle(i, true)
+            ) : touchMode ? (
+              <span />
             ) : (
               <button
                 type="button"
                 aria-label={`More options for ${track.name}`}
-                onClick={(e) => openMenu(i, e, true)}
+                onClick={(e) => openMenu(sel.ensureSelected(i), e, true)}
                 onDoubleClick={(e) => e.stopPropagation()}
                 className={`grid size-8 place-items-center rounded-full text-dim hover:text-fg active:bg-white/10 [@media(hover:none)]:size-11 ${
                   active ? 'visible' : 'md:invisible md:group-hover:visible md:group-focus-within:visible [@media(hover:none)]:visible'
@@ -271,15 +255,37 @@ export function TrackList(props: Props) {
           </div>
         )
       })}
-      {menu && tracks[menu.index] && (
+      {menu && (
         <TrackMenu
-          track={tracks[menu.index]}
+          tracks={menu.indices.map((i) => tracks[i]).filter(Boolean)}
           anchor={menu.anchor}
           align={menu.align}
           onClose={() => setMenu(null)}
           playlist={playlist}
-          onRemoved={onRemoved}
-          onRemove={onRemoveIndex ? () => onRemoveIndex(menu.index) : undefined}
+          onRemove={onRemoveIndices ? () => onRemoveIndices(menu.indices) : undefined}
+        />
+      )}
+      {touchMode && (
+        <SelectionBar
+          count={selectedTracks.length}
+          noun="song"
+          onDone={() => {
+            sel.exitTouchMode()
+            onExitEdit?.()
+          }}
+          actions={[
+            { label: 'Add to queue', icon: <ListEnd />, onClick: () => void queue(selectedTracks.map((t) => t.uri)) },
+            { label: 'Add to playlist', icon: <ListPlus />, onClick: (e) => setPicker(e.currentTarget.getBoundingClientRect()) },
+            ...(onRemoveIndices ? [{ label: 'Remove', icon: <Trash2 />, danger: true, onClick: () => onRemoveIndices(sel.indices) }] : []),
+          ]}
+        />
+      )}
+      {picker && (
+        <PlaylistPicker
+          anchor={picker}
+          exclude={playlist?.id}
+          onPick={(p) => void addTo(p, selectedTracks.map((t) => t.uri))}
+          onClose={() => setPicker(null)}
         />
       )}
     </div>

@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from 'react'
-import type { AppPlaylist } from '../lib/api'
+import type { AppPlaylist, LibraryItem } from '../lib/api'
 
 export type Panel = 'queue' | 'lyrics'
 export type Dialog =
@@ -9,6 +9,7 @@ export type Dialog =
   | { kind: 'delete'; playlist: AppPlaylist }
   | { kind: 'api' }
   | { kind: 'activity' }
+  | { kind: 'remove-items'; items: LibraryItem[] }
 
 type UI = {
   expanded: boolean

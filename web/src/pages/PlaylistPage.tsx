@@ -8,10 +8,10 @@ import { useAsync } from '../lib/useAsync'
 import { Attribution } from '../components/Attribution'
 import { BigPlayButton, CollectionHeader, Dot, ShuffleButton } from '../components/CollectionHeader'
 import { IconButton } from '../components/IconButton'
-import { AddSongsPanel, SelectionBar } from '../components/library/PlaylistTools'
+import { AddSongsPanel } from '../components/library/PlaylistTools'
 import { Button } from '../components/Modal'
 import { HeaderSkeleton, RowsSkeleton } from '../components/Skeleton'
-import { TrackList, type SelectModifiers } from '../components/TrackList'
+import { TrackList, trackKeys } from '../components/TrackList'
 import { usePlayer } from '../state/player'
 import { useSession } from '../state/session'
 import { useToast } from '../state/toast'
@@ -49,13 +49,6 @@ export function offsetFor(tracks: Track[], index: number): number | string {
 }
 
 const songs = (n: number) => `${n} song${n === 1 ? '' : 's'}`
-
-function move<T>(list: T[], from: number, to: number) {
-  const next = [...list]
-  const [item] = next.splice(from, 1)
-  next.splice(to, 0, item)
-  return next
-}
 
 function usePlaylistEditing(playlist: AppPlaylist | undefined, items: Track[] | null, setItems: (t: Track[]) => void) {
   const { upsertPlaylist } = useSession()
@@ -115,20 +108,53 @@ function usePlaylistEditing(playlist: AppPlaylist | undefined, items: Track[] | 
     [playlist, setLocal, toast],
   )
 
+  const applyOrder = useCallback(
+    async (from: Track[], to: Track[]) => {
+      if (!playlist) return
+      const fromKeys = trackKeys(from)
+      const toKeys = trackKeys(to)
+      const work = [...fromKeys]
+      const moves: [number, number][] = []
+      toKeys.forEach((key, i) => {
+        const j = work.indexOf(key, i)
+        if (j === i || j < 0) return
+        work.splice(i, 0, work.splice(j, 1)[0])
+        moves.push([j, i])
+      })
+      for (const [j, i] of moves) await api.reorderPlaylist(playlist.id, j, i)
+    },
+    [playlist],
+  )
+
   const reorder = useCallback(
-    async (from: number, to: number, undoable = true) => {
+    async (indices: number[], to: number, undoable = true) => {
       const current = latest.current
-      if (!playlist || !current || from === to) return
-      setLocal(move(current, from, to))
+      if (!playlist || !current || !indices.length) return
+      const block = indices.map((i) => current[i])
+      const picked = new Set(indices)
+      const grabbed = indices.includes(to) ? to : indices[0]
+      const down = to > grabbed
+      const insertAt = current.filter((_, i) => !picked.has(i) && (down ? i <= to : i < to)).length
+      const rest = current.filter((_, i) => !picked.has(i))
+      const next = [...rest.slice(0, insertAt), ...block, ...rest.slice(insertAt)]
+      if (next.every((t, i) => t === current[i])) return
+      setLocal(next)
       try {
-        await api.reorderPlaylist(playlist.id, from, to > from ? to + 1 : to)
-        if (undoable) toast.show(`Moved ${current[from].name}`, { label: 'Undo', run: () => void reorder(to, from, false) })
+        await applyOrder(current, next)
+        if (undoable)
+          toast.show(block.length === 1 ? `Moved ${block[0].name}` : `Moved ${songs(block.length)}`, {
+            label: 'Undo',
+            run: async () => {
+              setLocal(current)
+              await applyOrder(next, current).catch(toast.error)
+            },
+          })
       } catch (err) {
         setLocal(current)
         toast.error(err)
       }
     },
-    [playlist, setLocal, toast],
+    [applyOrder, playlist, setLocal, toast],
   )
 
   const append = useCallback(
@@ -156,35 +182,6 @@ function usePlaylistEditing(playlist: AppPlaylist | undefined, items: Track[] | 
   return { rename, remove, reorder, append }
 }
 
-function useSelection(count: number) {
-  const [selected, setSelected] = useState<Set<number>>(new Set())
-  const anchor = useRef<number | null>(null)
-  const clear = useCallback(() => setSelected(new Set()), [])
-  useEffect(clear, [count, clear])
-  useEffect(() => {
-    const key = (e: KeyboardEvent) => e.key === 'Escape' && clear()
-    window.addEventListener('keydown', key)
-    return () => window.removeEventListener('keydown', key)
-  }, [clear])
-  const onSelect = useCallback((i: number, mods: SelectModifiers) => {
-    setSelected((prev) => {
-      if (mods.shiftKey && anchor.current !== null) {
-        const [a, b] = [Math.min(anchor.current, i), Math.max(anchor.current, i)]
-        return new Set([...prev, ...Array.from({ length: b - a + 1 }, (_, k) => a + k)])
-      }
-      anchor.current = i
-      if (mods.toggle || mods.metaKey || mods.ctrlKey) {
-        const next = new Set(prev)
-        if (next.has(i)) next.delete(i)
-        else next.add(i)
-        return next
-      }
-      return new Set([i])
-    })
-  }, [])
-  return { selected, onSelect, clear }
-}
-
 export function PlaylistPage({ id }: { id: string }) {
   const { playlists, upsertPlaylist } = useSession()
   const cached = playlists?.find((p) => p.id === id)
@@ -193,12 +190,10 @@ export function PlaylistPage({ id }: { id: string }) {
   const meta = useAsync(() => api.playlist(id), [id, attempt])
   const playlist: AppPlaylist | undefined = cached ?? meta.data
   const { items, setItems, error } = useAllItems(id, attempt)
-  const { status, isPlaying, togglePlay, start, pending, addToQueue } = usePlayer()
+  const { status, isPlaying, togglePlay, start, pending } = usePlayer()
   const { openDialog } = useUI()
-  const toast = useToast()
   const { duplicatePlaylist } = useLibraryActions()
   const editing = usePlaylistEditing(playlist, items, setItems)
-  const selection = useSelection(items?.length ?? 0)
   const [editMode, setEditMode] = useState(false)
   const [adding, setAdding] = useState(false)
   const existing = useMemo(() => new Set((items ?? []).map((t) => t.uri)), [items])
@@ -228,19 +223,6 @@ export function PlaylistPage({ id }: { id: string }) {
   const count = items?.length ?? playlist.total
   const creator = playlist.created_by
   const editable = playlist.can_edit
-  const selectedIndices = [...selection.selected].sort((a, b) => a - b)
-  const selectedUris = selectedIndices.map((i) => items?.[i]?.uri).filter((u): u is string => !!u)
-
-  const addSelectedTo = async (target: AppPlaylist) => {
-    try {
-      await api.addToPlaylist(target.id, selectedUris)
-      upsertPlaylist({ ...target, total: target.total + selectedUris.length })
-      toast.show(`Added ${songs(selectedUris.length)} to ${target.name}`)
-      selection.clear()
-    } catch (err) {
-      toast.error(err)
-    }
-  }
 
   return (
     <div>
@@ -288,10 +270,7 @@ export function PlaylistPage({ id }: { id: string }) {
         {items && items.length > 0 && (
           <button
             type="button"
-            onClick={() => {
-              setEditMode((v) => !v)
-              selection.clear()
-            }}
+            onClick={() => setEditMode((v) => !v)}
             className={`ml-auto inline-flex h-9 items-center gap-1.5 rounded-full px-4 text-sm font-semibold transition active:scale-95 ${
               editMode ? 'bg-fg text-canvas' : 'text-fg ring-1 ring-white/25 hover:bg-white/10'
             }`}
@@ -327,29 +306,12 @@ export function PlaylistPage({ id }: { id: string }) {
               tracks={items}
               playlist={playlist}
               context={playlist.uri}
-              selection={selection}
               editMode={editMode}
-              onReorder={editable ? (from, to) => void editing.reorder(from, to) : undefined}
-              onRemoveIndex={editable ? (i) => void editing.remove([i]) : undefined}
+              onExitEdit={() => setEditMode(false)}
+              onReorder={editable ? (indices, to) => void editing.reorder(indices, to) : undefined}
+              onRemoveIndices={editable ? (indices) => void editing.remove(indices) : undefined}
               onPlay={(i) => void start(`${playlist.uri}#${i}`, () => api.playPlaylist(playlist.id, { offset: offsetFor(items, i) }))}
             />
-            {selectedIndices.length > 0 && (
-              <SelectionBar
-                count={selectedIndices.length}
-                canRemove={editable}
-                currentPlaylist={playlist.id}
-                onQueue={() => {
-                  void addToQueue(selectedUris)
-                  selection.clear()
-                }}
-                onAddTo={(p) => void addSelectedTo(p)}
-                onRemove={() => {
-                  void editing.remove(selectedIndices)
-                  selection.clear()
-                }}
-                onClear={selection.clear}
-              />
-            )}
           </>
         )}
       </div>

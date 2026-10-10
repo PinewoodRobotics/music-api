@@ -1,7 +1,6 @@
-import { Clock3, Disc3, ListMusic, Loader2, MoreHorizontal, Music2, Play } from 'lucide-react'
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type MouseEvent, type RefObject } from 'react'
+import { Clock3, Disc3, ListEnd, ListMusic, ListPlus, Loader2, MoreHorizontal, Music2, Play } from 'lucide-react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent, type RefObject } from 'react'
 import { api, type LibrarySong, type SongSort, type Track } from '../../lib/api'
-import { isTouch } from '../../lib/device'
 import { byline, formatTime, idFromUri } from '../../lib/format'
 import { ErrorState, Message } from '../../pages/Message'
 import { usePlayer } from '../../state/player'
@@ -10,7 +9,10 @@ import { Equalizer } from '../Equalizer'
 import { Link } from '../Link'
 import { pointRect, type AnchorRect } from '../Popover'
 import { RowsSkeleton } from '../Skeleton'
-import { TrackMenu } from '../TrackMenu'
+import { TrackMenu, useTrackActions } from '../TrackMenu'
+import { useSelection } from '../../lib/selection'
+import { SelectionBar } from '../SelectionBar'
+import { PlaylistPicker } from './PlaylistTools'
 
 const ROW = 56
 const PAGE = 100
@@ -113,7 +115,11 @@ export function SongsView({ q, sort }: { q: string; sort: SongSort }) {
   const container = useRef<HTMLDivElement>(null)
   const count = total ?? 0
   const { start: first, end } = useWindow(container, count)
-  const [menu, setMenu] = useState<{ track: Track; anchor: AnchorRect; align: 'start' | 'end' } | null>(null)
+  const [menu, setMenu] = useState<{ tracks: Track[]; anchor: AnchorRect; align: 'start' | 'end' } | null>(null)
+  const [picker, setPicker] = useState<AnchorRect | null>(null)
+  const keys = useMemo(() => items.map((s) => s.uri), [items])
+  const sel = useSelection(keys)
+  const { queue, addTo } = useTrackActions()
 
   useEffect(() => ensure(end), [end, ensure])
 
@@ -137,12 +143,21 @@ export function SongsView({ q, sort }: { q: string; sort: SongSort }) {
     const song = items[index]
     if (song) void start(`songs#${index}`, () => api.playLibrarySongs({ uri: song.uri, sort, q: q || undefined }))
   }
-  const openMenu = (track: Track, e: MouseEvent, fromButton: boolean) => {
+  const openMenu = (indices: number[], e: MouseEvent, fromButton: boolean) => {
     e.preventDefault()
     e.stopPropagation()
     const anchor = fromButton ? (e.currentTarget as HTMLElement).getBoundingClientRect() : pointRect(e.clientX, e.clientY)
-    setMenu({ track, anchor, align: fromButton ? 'end' : 'start' })
+    setMenu({ tracks: indices.map((i) => items[i]).filter(Boolean), anchor, align: fromButton ? 'end' : 'start' })
   }
+  const scrollTo = (index: number) => {
+    const scroller = container.current?.closest('main')
+    const el = container.current
+    if (!scroller || !el) return
+    const top = el.getBoundingClientRect().top - scroller.getBoundingClientRect().top + scroller.scrollTop + index * ROW
+    if (top < scroller.scrollTop + 64) scroller.scrollTop = top - 64
+    else if (top + ROW > scroller.scrollTop + scroller.clientHeight) scroller.scrollTop = top + ROW - scroller.clientHeight
+  }
+  const selectedUris = sel.indices.map((i) => items[i]?.uri).filter((u): u is string => !!u)
 
   const rows = []
   for (let i = first; i < Math.min(end, count); i++) {
@@ -160,17 +175,18 @@ export function SongsView({ q, sort }: { q: string; sort: SongSort }) {
     const track = song
     const current = status?.track?.uri === track.uri
     const starting = pending === `songs#${i}`
+    const selected = sel.isSelected(i)
+    const row = sel.rowProps(i, { primary: () => play(i), openMenu: (e, ix) => openMenu(ix, e, false) })
     rows.push(
       <div
         key={`${track.uri}-${i}`}
         role="row"
         tabIndex={0}
-        onClick={() => isTouch() && play(i)}
-        onDoubleClick={() => play(i)}
-        onKeyDown={(e) => e.key === 'Enter' && play(i)}
-        onContextMenu={(e) => openMenu(track, e, false)}
-        style={{ transform: `translateY(${top}px)` }}
-        className={`group absolute inset-x-0 grid h-14 items-center gap-4 rounded-md px-4 outline-none hover:bg-white/[0.05] focus-visible:bg-white/[0.07] active:bg-white/[0.08] max-md:gap-1 max-md:px-2 ${GRID}`}
+        {...row}
+        style={{ transform: `translateY(${top}px)${row.style ? ' scale(0.97)' : ''}` }}
+        className={`group absolute inset-x-0 grid h-14 items-center gap-4 rounded-md px-4 outline-none max-md:gap-1 max-md:px-2 ${GRID} ${
+          selected ? 'bg-white/[0.12]' : 'hover:bg-white/[0.05] focus-visible:bg-white/[0.07] active:bg-white/[0.08]'
+        }`}
       >
         <div className="flex min-w-0 items-center gap-3">
           <div className="relative shrink-0">
@@ -204,7 +220,7 @@ export function SongsView({ q, sort }: { q: string; sort: SongSort }) {
         <button
           type="button"
           aria-label={`More options for ${track.name}`}
-          onClick={(e) => openMenu(track, e, true)}
+          onClick={(e) => openMenu(sel.ensureSelected(i), e, true)}
           onDoubleClick={(e) => e.stopPropagation()}
           className="grid size-9 place-items-center rounded-full text-dim hover:text-fg active:bg-white/10 md:invisible md:group-hover:visible [@media(hover:none)]:visible"
         >
@@ -225,10 +241,24 @@ export function SongsView({ q, sort }: { q: string; sort: SongSort }) {
         </span>
         <span />
       </div>
-      <div ref={container} role="table" aria-rowcount={count} className="relative select-none" style={{ height: count * ROW }}>
-        {rows}
+      <div {...sel.rootProps({ primary: (ix) => play(ix[0]), scrollTo })}>
+        <div ref={container} role="table" aria-rowcount={count} className="relative select-none" style={{ height: count * ROW }}>
+          {rows}
+        </div>
       </div>
-      {menu && <TrackMenu track={menu.track} anchor={menu.anchor} align={menu.align} onClose={() => setMenu(null)} />}
+      {menu && <TrackMenu tracks={menu.tracks} anchor={menu.anchor} align={menu.align} onClose={() => setMenu(null)} />}
+      {sel.touchMode && (
+        <SelectionBar
+          count={selectedUris.length}
+          noun="song"
+          onDone={sel.exitTouchMode}
+          actions={[
+            { label: 'Add to queue', icon: <ListEnd />, onClick: () => void queue(selectedUris) },
+            { label: 'Add to playlist', icon: <ListPlus />, onClick: (e) => setPicker(e.currentTarget.getBoundingClientRect()) },
+          ]}
+        />
+      )}
+      {picker && <PlaylistPicker anchor={picker} onPick={(p) => void addTo(p, selectedUris)} onClose={() => setPicker(null)} />}
     </div>
   )
 }

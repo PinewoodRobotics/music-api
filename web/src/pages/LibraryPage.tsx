@@ -1,11 +1,14 @@
-import { Download, Library, Plus } from 'lucide-react'
-import { useEffect, useMemo, useState, type ReactNode } from 'react'
-import type { LibrarySort, SongSort } from '../lib/api'
-import { filterLibrary, type LibraryView } from '../lib/library'
+import { Download, Library, ListEnd, Play, Plus, Trash2 } from 'lucide-react'
+import { useEffect, useMemo, useState, type MouseEvent, type ReactNode } from 'react'
+import type { LibraryItem, LibrarySort, SongSort } from '../lib/api'
+import { filterLibrary, itemHref, type LibraryView } from '../lib/library'
+import { useSelection } from '../lib/selection'
+import { pointRect, type AnchorRect } from '../components/Popover'
+import { SelectionBar } from '../components/SelectionBar'
 import { navigate, useLocation } from '../lib/router'
 import { useStoredState } from '../lib/useStoredState'
 import { EmptyPlaylists } from '../components/EmptyPlaylists'
-import { LibraryCard, LibraryListRow } from '../components/library/LibraryItems'
+import { LibraryCard, LibraryItemMenu, LibraryListRow, useLibraryBulk, type ItemSelection } from '../components/library/LibraryItems'
 import { LibraryToolbar } from '../components/library/LibraryToolbar'
 import { SongsView } from '../components/library/SongsView'
 import { CardGrid } from '../components/MediaCard'
@@ -70,6 +73,28 @@ export function LibraryPage() {
     [library, view, query, mine, sort, me?.id],
   )
 
+  const keys = useMemo(() => items.map((i) => `${i.kind}:${i.id}`), [items])
+  const sel = useSelection(keys)
+  const bulk = useLibraryBulk()
+  const [menu, setMenu] = useState<{ items: LibraryItem[]; anchor: AnchorRect } | null>(null)
+  const selectedItems = sel.indices.map((i) => items[i])
+  const selectionFor = (index: number): ItemSelection => {
+    const openMenu = (e: MouseEvent, indices = sel.ensureSelected(index)) =>
+      setMenu({
+        items: indices.map((i) => items[i]),
+        anchor: e.type === 'contextmenu' ? pointRect(e.clientX, e.clientY) : (e.currentTarget as HTMLElement).getBoundingClientRect(),
+      })
+    return {
+      props: sel.rowProps(index, { primary: () => navigate(itemHref(items[index])), openMenu: (e, ix) => openMenu(e, ix) }),
+      selected: sel.isSelected(index),
+      openMenu,
+    }
+  }
+  const rootProps = sel.rootProps({
+    primary: (ix) => navigate(itemHref(items[ix[0]])),
+    remove: (ix) => bulk.remove(ix.map((i) => items[i])),
+  })
+
   const setView = (next: LibraryView) => navigate(next === 'all' ? '/' : `/?view=${next}`, { replace: true })
   const songs = view === 'songs'
 
@@ -89,18 +114,20 @@ export function LibraryPage() {
       )
     if (layout === 'list')
       return (
-        <div className="px-1">
-          {items.map((item) => (
-            <LibraryListRow key={`${item.kind}:${item.id}`} item={item} />
+        <div className="px-1" {...rootProps}>
+          {items.map((item, i) => (
+            <LibraryListRow key={keys[i]} item={item} selection={selectionFor(i)} />
           ))}
         </div>
       )
     return (
-      <CardGrid>
-        {items.map((item) => (
-          <LibraryCard key={`${item.kind}:${item.id}`} item={item} />
-        ))}
-      </CardGrid>
+      <div {...rootProps}>
+        <CardGrid>
+          {items.map((item, i) => (
+            <LibraryCard key={keys[i]} item={item} selection={selectionFor(i)} />
+          ))}
+        </CardGrid>
+      </div>
     )
   }
 
@@ -134,6 +161,19 @@ export function LibraryPage() {
         )}
       </div>
       {content()}
+      {menu && <LibraryItemMenu items={menu.items} anchor={menu.anchor} onClose={() => setMenu(null)} />}
+      {sel.touchMode && !songs && (
+        <SelectionBar
+          count={selectedItems.length}
+          noun="item"
+          onDone={sel.exitTouchMode}
+          actions={[
+            { label: 'Play', icon: <Play />, onClick: () => bulk.play(selectedItems) },
+            { label: 'Add to queue', icon: <ListEnd />, onClick: () => void bulk.queue(selectedItems) },
+            ...(selectedItems.some((i) => i.can_edit) ? [{ label: 'Remove', icon: <Trash2 />, danger: true, onClick: () => bulk.remove(selectedItems) }] : []),
+          ]}
+        />
+      )}
     </div>
   )
 }

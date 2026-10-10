@@ -1,4 +1,4 @@
-import { Check, ListEnd, ListPlus, Loader2, Plus, Search, Trash2, X } from 'lucide-react'
+import { Check, Loader2, Plus, Search, X } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { api, type AppPlaylist, type Track } from '../../lib/api'
 import { byline, formatTime } from '../../lib/format'
@@ -31,44 +31,6 @@ export function PlaylistPicker({ anchor, exclude, onPick, onClose }: { anchor: A
         {options.length === 0 && <p className="px-3 py-2 text-xs text-dim">No other playlists.</p>}
       </div>
     </Popover>
-  )
-}
-
-type SelectionBarProps = {
-  count: number
-  canRemove: boolean
-  currentPlaylist: string
-  onQueue: () => void
-  onAddTo: (p: AppPlaylist) => void
-  onRemove: () => void
-  onClear: () => void
-}
-
-export function SelectionBar({ count, canRemove, currentPlaylist, onQueue, onAddTo, onRemove, onClear }: SelectionBarProps) {
-  const [picker, setPicker] = useState<AnchorRect | null>(null)
-  const button = 'inline-flex h-9 items-center gap-1.5 rounded-full px-3 text-sm font-medium hover:bg-white/10 active:bg-white/15 [&>svg]:size-4'
-  return (
-    <div className="animate-toast sticky bottom-4 z-20 mx-auto mt-4 flex w-fit max-w-full items-center gap-1 rounded-full border border-white/[0.08] bg-[#2a2a31]/95 p-1.5 pl-4 shadow-2xl shadow-black/60 backdrop-blur">
-      <span className="mr-2 whitespace-nowrap text-sm font-semibold">{count} selected</span>
-      <button type="button" className={button} onClick={onQueue}>
-        <ListEnd />
-        <span className="max-sm:hidden">Add to queue</span>
-      </button>
-      <button type="button" className={button} onClick={(e) => setPicker(e.currentTarget.getBoundingClientRect())}>
-        <ListPlus />
-        <span className="max-sm:hidden">Add to playlist</span>
-      </button>
-      {canRemove && (
-        <button type="button" className={`${button} text-danger`} onClick={onRemove}>
-          <Trash2 />
-          <span className="max-sm:hidden">Remove</span>
-        </button>
-      )}
-      <button type="button" aria-label="Clear selection" onClick={onClear} className="grid size-9 place-items-center rounded-full text-dim hover:bg-white/10 hover:text-fg">
-        <X className="size-4" />
-      </button>
-      {picker && <PlaylistPicker anchor={picker} exclude={currentPlaylist} onPick={onAddTo} onClose={() => setPicker(null)} />}
-    </div>
   )
 }
 

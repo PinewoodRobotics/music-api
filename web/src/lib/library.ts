@@ -2,7 +2,7 @@ import { useCallback } from 'react'
 import { useSession } from '../state/session'
 import { useToast } from '../state/toast'
 import { useUI } from '../state/ui'
-import { api, ApiError, type LibraryAlbum, type LibraryItem, type LibrarySort } from './api'
+import { api, ApiError, type LibraryAlbum, type LibraryItem, type LibrarySort, type Track } from './api'
 import { idFromUri } from './format'
 import { navigate } from './router'
 
@@ -107,4 +107,42 @@ export function useLibraryActions() {
   )
 
   return { albumInLibrary, addAlbum, removeAlbum, duplicatePlaylist }
+}
+
+export const QUEUE_CAP = 100
+
+async function tracksOfItem(item: LibraryItem, limit: number): Promise<Track[]> {
+  const out: Track[] = []
+  if (item.kind === 'playlist') {
+    for (let offset = 0; out.length < limit; ) {
+      const page = await api.playlistItems(item.id, offset)
+      out.push(...page.items)
+      if (!page.next) break
+      offset = page.offset + page.limit
+    }
+    return out.slice(0, limit)
+  }
+  const album = await api.album(idFromUri(item.uri))
+  out.push(...(album.tracks?.items ?? []))
+  for (let page = album.tracks; page?.next && out.length < limit; ) {
+    page = await api.albumTracks(idFromUri(item.uri), page.offset + page.limit)
+    out.push(...page.items)
+  }
+  return out.slice(0, limit)
+}
+
+export async function tracksOf(items: LibraryItem[], cap = QUEUE_CAP) {
+  const out: Track[] = []
+  let capped = false
+  for (const item of items) {
+    const remaining = cap - out.length
+    if (remaining <= 0) {
+      capped = true
+      break
+    }
+    const tracks = await tracksOfItem(item, remaining + 1)
+    if (tracks.length > remaining) capped = true
+    out.push(...tracks.slice(0, remaining))
+  }
+  return { tracks: out, capped }
 }

@@ -1,5 +1,5 @@
 import { ChevronLeft, ChevronRight, Disc3, LibraryBig, ListEnd, ListPlus, MicVocal, Plus, Trash2 } from 'lucide-react'
-import { useState } from 'react'
+import { useCallback, useState, type ReactNode } from 'react'
 import { api, type AppPlaylist, type Track } from '../lib/api'
 import { idFromUri } from '../lib/format'
 import { useLibraryActions } from '../lib/library'
@@ -11,8 +11,11 @@ import { useUI } from '../state/ui'
 import { Artwork } from './Artwork'
 import { MenuDivider, MenuItem, Popover, type AnchorRect } from './Popover'
 
+export type ExtraAction = { label: string; icon: ReactNode; run: () => void }
+
 type Props = {
-  track: Track
+  track?: Track
+  tracks?: Track[]
   anchor: AnchorRect
   onClose: () => void
   playlist?: AppPlaylist
@@ -20,87 +23,97 @@ type Props = {
   onRemove?: () => void
   align?: 'start' | 'end'
   initialView?: 'main' | 'playlists'
+  extraActions?: ExtraAction[]
 }
 
-export function TrackMenu({ track, anchor, onClose, playlist, onRemoved, onRemove, align, initialView = 'main' }: Props) {
-  const [view, setView] = useState<'main' | 'playlists'>(initialView)
+const songs = (n: number) => `${n} song${n === 1 ? '' : 's'}`
+
+export function useTrackActions() {
   const { addToQueue } = usePlayer()
-  const { playlists, upsertPlaylist } = useSession()
+  const { upsertPlaylist } = useSession()
+  const toast = useToast()
+  const addTo = useCallback(
+    async (target: AppPlaylist, uris: string[]) => {
+      try {
+        await api.addToPlaylist(target.id, uris)
+        upsertPlaylist({ ...target, total: target.total + uris.length })
+        toast.show(uris.length === 1 ? `Added to ${target.name}` : `Added ${songs(uris.length)} to ${target.name}`)
+      } catch (err) {
+        toast.error(err)
+      }
+    },
+    [toast, upsertPlaylist],
+  )
+  return { queue: (uris: string[]) => addToQueue(uris), addTo }
+}
+
+export function TrackMenu(props: Props) {
+  const { anchor, onClose, playlist, onRemoved, onRemove, align, initialView = 'main', extraActions = [] } = props
+  const list = props.tracks ?? (props.track ? [props.track] : [])
+  const single = list.length === 1 ? list[0] : null
+  const uris = list.map((t) => t.uri)
+  const [view, setView] = useState<'main' | 'playlists'>(initialView)
+  const { playlists } = useSession()
   const { openDialog } = useUI()
   const { albumInLibrary, addAlbum } = useLibraryActions()
+  const { queue, addTo } = useTrackActions()
   const toast = useToast()
 
-  const addTo = async (target: AppPlaylist) => {
+  const close = (fn: () => void) => () => {
     onClose()
-    try {
-      await api.addToPlaylist(target.id, [track.uri])
-      upsertPlaylist({ ...target, total: target.total + 1 })
-      toast.show(`Added to ${target.name}`)
-    } catch (err) {
-      toast.error(err)
-    }
+    fn()
   }
 
   const remove = async () => {
-    if (onRemove) {
-      onClose()
-      return onRemove()
-    }
-    if (!playlist) return
     onClose()
+    if (onRemove) return onRemove()
+    if (!playlist) return
     try {
-      await api.removeFromPlaylist(playlist.id, [track.uri])
-      onRemoved?.(track.uri)
+      await api.removeFromPlaylist(playlist.id, uris)
+      uris.forEach((u) => onRemoved?.(u))
       toast.show(`Removed from ${playlist.name}`)
     } catch (err) {
       toast.error(err)
     }
   }
 
-  const go = (path: string) => {
-    onClose()
-    navigate(path)
-  }
-
-  const artist = track.artists?.find((a) => a.uri)
+  const artist = single?.artists?.find((a) => a.uri)
+  const album = single?.album?.uri ? single.album : null
 
   return (
     <Popover anchor={anchor} onClose={onClose} align={align} className="w-64">
       {view === 'main' ? (
         <>
-          <MenuItem icon={<ListEnd />} onSelect={() => {
-              onClose()
-              void addToQueue([track.uri])
-            }}>
+          {list.length > 1 && <div className="px-3 pb-1.5 pt-2 text-xs font-semibold text-dim">{songs(list.length)}</div>}
+          {extraActions.map((a) => (
+            <MenuItem key={a.label} icon={a.icon} onSelect={close(a.run)}>
+              {a.label}
+            </MenuItem>
+          ))}
+          <MenuItem icon={<ListEnd />} onSelect={close(() => void queue(uris))}>
             Add to queue
           </MenuItem>
           <MenuItem icon={<ListPlus />} trailing={<ChevronRight />} onSelect={() => setView('playlists')}>
             Add to playlist
           </MenuItem>
-          {playlist && (
-            <MenuItem icon={<Trash2 />} onSelect={remove}>
-              Remove from this playlist
+          {(onRemove || playlist?.can_edit) && (
+            <MenuItem icon={<Trash2 />} onSelect={() => void remove()}>
+              {list.length > 1 ? `Remove ${songs(list.length)} from this playlist` : 'Remove from this playlist'}
             </MenuItem>
           )}
-          {(track.album?.uri || artist) && <MenuDivider />}
-          {track.album?.uri && !albumInLibrary(track.album.uri) && (
-            <MenuItem
-              icon={<LibraryBig />}
-              onSelect={() => {
-                onClose()
-                void addAlbum({ uri: track.album!.uri }, track.album!.name)
-              }}
-            >
+          {(album || artist) && <MenuDivider />}
+          {album && !albumInLibrary(album.uri) && (
+            <MenuItem icon={<LibraryBig />} onSelect={close(() => void addAlbum({ uri: album.uri }, album.name))}>
               Add album to Library
             </MenuItem>
           )}
-          {track.album?.uri && (
-            <MenuItem icon={<Disc3 />} onSelect={() => go(`/album/${idFromUri(track.album!.uri)}`)}>
+          {album && (
+            <MenuItem icon={<Disc3 />} onSelect={close(() => navigate(`/album/${idFromUri(album.uri)}`))}>
               Go to album
             </MenuItem>
           )}
           {artist && (
-            <MenuItem icon={<MicVocal />} onSelect={() => go(`/artist/${idFromUri(artist.uri)}`)}>
+            <MenuItem icon={<MicVocal />} onSelect={close(() => navigate(`/artist/${idFromUri(artist.uri)}`))}>
               Go to artist
             </MenuItem>
           )}
@@ -108,13 +121,10 @@ export function TrackMenu({ track, anchor, onClose, playlist, onRemoved, onRemov
       ) : (
         <>
           <MenuItem icon={<ChevronLeft />} onSelect={() => setView('main')}>
-            <span className="text-dim">Add to playlist</span>
+            <span className="text-dim">Add {list.length > 1 ? songs(list.length) : ''} to playlist</span>
           </MenuItem>
           <MenuDivider />
-          <MenuItem icon={<Plus />} onSelect={() => {
-              onClose()
-              openDialog({ kind: 'new' })
-            }}>
+          <MenuItem icon={<Plus />} onSelect={close(() => openDialog({ kind: 'new' }))}>
             New playlist
           </MenuItem>
           <div className="scroll-thin max-h-72 overflow-y-auto">
@@ -123,7 +133,7 @@ export function TrackMenu({ track, anchor, onClose, playlist, onRemoved, onRemov
                 key={p.id}
                 type="button"
                 role="menuitem"
-                onClick={() => addTo(p)}
+                onClick={close(() => void addTo(p, uris))}
                 className="flex w-full items-center gap-3 rounded-[5px] px-2 py-1.5 text-left text-sm hover:bg-white/[0.08]"
               >
                 <Artwork src={p.artwork} className="size-8 shrink-0" />

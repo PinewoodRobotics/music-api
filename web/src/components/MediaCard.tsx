@@ -1,5 +1,5 @@
 import { Loader2, Pause, Play } from 'lucide-react'
-import type { MouseEvent, ReactNode } from 'react'
+import type { HTMLAttributes, MouseEvent, ReactNode } from 'react'
 import { navigate } from '../lib/router'
 import { Artwork } from './Artwork'
 
@@ -13,9 +13,10 @@ type Props = {
   playing?: boolean
   pending?: boolean
   corner?: ReactNode
+  selectable?: { props: HTMLAttributes<HTMLDivElement> & { 'data-row-index': number }; selected: boolean }
 }
 
-export function MediaCard({ title, subtitle, artwork, round, href, onPlay, playing, pending, corner }: Props) {
+export function MediaCard({ title, subtitle, artwork, round, href, onPlay, playing, pending, corner, selectable }: Props) {
   const open = () => (href ? navigate(href) : onPlay?.())
   const play = (e: MouseEvent) => {
     e.stopPropagation()
@@ -26,8 +27,13 @@ export function MediaCard({ title, subtitle, artwork, round, href, onPlay, playi
       role="link"
       tabIndex={0}
       onClick={open}
-      onKeyDown={(e) => e.key === 'Enter' && open()}
-      className="group cursor-pointer rounded-lg p-3 transition hover:bg-white/[0.06] focus-visible:bg-white/[0.06] active:scale-[0.98] active:bg-white/[0.06] max-sm:p-2"
+      onKeyDown={(e) => !selectable && e.key === 'Enter' && open()}
+      {...selectable?.props}
+      className={`group cursor-pointer rounded-lg p-3 transition max-sm:p-2 ${
+        selectable?.selected
+          ? 'bg-white/[0.12] ring-1 ring-white/20'
+          : 'hover:bg-white/[0.06] focus-visible:bg-white/[0.06] active:scale-[0.98] active:bg-white/[0.06]'
+      }`}
     >
       <div className="relative mb-3">
         {corner && (

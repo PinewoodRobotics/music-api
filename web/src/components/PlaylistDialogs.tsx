@@ -1,6 +1,6 @@
 import { Loader2 } from 'lucide-react'
 import { useState, type FormEvent } from 'react'
-import { api, type AppPlaylist } from '../lib/api'
+import { api, type AppPlaylist, type LibraryItem } from '../lib/api'
 import { decodeEntities } from '../lib/format'
 import { navigate } from '../lib/router'
 import { useSession } from '../state/session'
@@ -25,6 +25,8 @@ export function Dialogs() {
       return <ActivityPanel onClose={closeDialog} />
     case 'api':
       return <ApiTokenDialog onClose={closeDialog} />
+    case 'remove-items':
+      return <RemoveItemsDialog onClose={closeDialog} items={dialog.items} />
     case 'delete':
       return <DeleteDialog onClose={closeDialog} playlist={dialog.playlist} />
   }
@@ -118,6 +120,59 @@ function DeleteDialog({ onClose, playlist }: { onClose: () => void; playlist: Ap
         <Button variant="danger" onClick={confirm} disabled={busy}>
           {busy && <Loader2 className="size-4 animate-spin" />}
           Delete
+        </Button>
+      </div>
+    </Modal>
+  )
+}
+
+function RemoveItemsDialog({ onClose, items }: { onClose: () => void; items: LibraryItem[] }) {
+  const [busy, setBusy] = useState(false)
+  const { dropPlaylist, dropAlbum } = useSession()
+  const toast = useToast()
+  const removable = items.filter((i) => i.can_edit)
+  const playlists = removable.filter((i) => i.kind === 'playlist')
+  const albums = removable.filter((i) => i.kind === 'album')
+  const blocked = items.length - removable.length
+  const parts = [
+    playlists.length && `delete ${playlists.length === 1 ? 'a playlist' : `${playlists.length} playlists`}`,
+    albums.length && `remove ${albums.length === 1 ? 'an album' : `${albums.length} albums`} from the Library`,
+  ].filter(Boolean)
+
+  const confirm = async () => {
+    setBusy(true)
+    const failed: string[] = []
+    for (const item of removable) {
+      try {
+        if (item.kind === 'playlist') {
+          await api.deletePlaylist(item.id)
+          dropPlaylist(item.id)
+        } else {
+          await api.removeAlbum(item.id)
+          dropAlbum(item.id)
+        }
+      } catch {
+        failed.push(item.name)
+      }
+    }
+    onClose()
+    if (failed.length) toast.show(`Couldn't remove ${failed.join(', ')}`)
+    else toast.show(`Removed ${removable.length} item${removable.length === 1 ? '' : 's'}`)
+  }
+
+  return (
+    <Modal title="Remove from Library?" onClose={onClose} dismissable={!busy}>
+      <p className="text-sm leading-relaxed text-dim">
+        This will {parts.join(' and ')} for everyone in the lab.
+        {blocked > 0 && ` ${blocked} of ${items.length} can't be removed because someone else added ${blocked === 1 ? 'it' : 'them'}.`}
+      </p>
+      <div className="mt-6 flex justify-end gap-2">
+        <Button variant="ghost" onClick={onClose} disabled={busy}>
+          Cancel
+        </Button>
+        <Button variant="danger" onClick={() => void confirm()} disabled={busy || !removable.length}>
+          {busy && <Loader2 className="size-4 animate-spin" />}
+          Remove
         </Button>
       </div>
     </Modal>
