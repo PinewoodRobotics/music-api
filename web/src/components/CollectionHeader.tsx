@@ -1,5 +1,5 @@
 import { Loader2, Shuffle } from 'lucide-react'
-import type { ReactNode } from 'react'
+import { useState, type KeyboardEvent, type ReactNode } from 'react'
 import { usePalette } from '../lib/color'
 import { fitTitle } from '../lib/fitTitle'
 import { decodeEntities } from '../lib/format'
@@ -13,9 +13,11 @@ type Props = {
   meta?: ReactNode
   round?: boolean
   children?: ReactNode
+  onRename?: (name: string) => void
+  onDescribe?: (description: string) => void
 }
 
-export function CollectionHeader({ artwork, kind, title, description, meta, round, children }: Props) {
+export function CollectionHeader({ artwork, kind, title, description, meta, round, children, onRename, onDescribe }: Props) {
   const palette = usePalette(artwork)
   return (
     <div className="relative" style={{ ['--page-glow' as string]: palette.glow }}>
@@ -28,14 +30,52 @@ export function CollectionHeader({ artwork, kind, title, description, meta, roun
         />
         <div className="@container min-w-0 flex-1 max-sm:w-full">
           <div className="text-sm font-medium text-white/80 max-sm:hidden">{kind}</div>
-          <h1 style={fitTitle(title)} className="mt-1 line-clamp-2 break-words pb-[0.08em] font-display font-extrabold leading-[0.98] tracking-[-0.04em]">
-            {title}
-          </h1>
-          {description && <p className="mt-3 line-clamp-2 max-w-2xl text-sm text-white/70">{decodeEntities(description)}</p>}
+          {onRename ? (
+            <InlineEdit
+              value={title}
+              label="Playlist name"
+              onSave={(v) => v.trim() && v.trim() !== title && onRename(v.trim())}
+              display={(edit) => (
+                <h1
+                  style={fitTitle(title)}
+                  onClick={edit}
+                  title="Click to rename"
+                  className="mt-1 line-clamp-2 cursor-text break-words rounded-md pb-[0.08em] font-display font-extrabold leading-[0.98] tracking-[-0.04em] hover:bg-white/[0.06]"
+                >
+                  {title}
+                </h1>
+              )}
+              inputClass="mt-1 w-full rounded-md bg-white/10 px-2 font-display text-[clamp(1.6rem,4cqw,3.5rem)] font-extrabold tracking-[-0.03em] outline-none ring-2 ring-white/30"
+            />
+          ) : (
+            <h1 style={fitTitle(title)} className="mt-1 line-clamp-2 break-words pb-[0.08em] font-display font-extrabold leading-[0.98] tracking-[-0.04em]">
+              {title}
+            </h1>
+          )}
+          {onDescribe ? (
+            <InlineEdit
+              value={decodeEntities(description ?? '')}
+              label="Description"
+              multiline
+              onSave={(v) => v.trim() !== decodeEntities(description ?? '').trim() && onDescribe(v.trim())}
+              display={(edit) => (
+                <p
+                  onClick={edit}
+                  title="Click to edit the description"
+                  className={`mt-3 line-clamp-2 max-w-2xl cursor-text rounded-md text-sm hover:bg-white/[0.06] ${description ? 'text-white/70' : 'text-white/40'}`}
+                >
+                  {description ? decodeEntities(description) : 'Add a description'}
+                </p>
+              )}
+              inputClass="mt-3 w-full max-w-2xl resize-none rounded-md bg-white/10 px-2 py-1.5 text-base text-white outline-none ring-2 ring-white/30 md:text-sm"
+            />
+          ) : (
+            description && <p className="mt-3 line-clamp-2 max-w-2xl text-sm text-white/70">{decodeEntities(description)}</p>
+          )}
           {meta && <div className="mt-3 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-sm text-white/85">{meta}</div>}
         </div>
       </div>
-      {children && <div className="relative flex items-center gap-5 px-6 pb-4 max-sm:px-4">{children}</div>}
+      {children && <div className="relative flex items-center gap-5 px-6 pb-4 max-sm:gap-1 max-sm:px-4">{children}</div>}
     </div>
   )
 }
@@ -49,7 +89,7 @@ export function BigPlayButton({ playing, onClick, label, pending }: { playing: b
       title={label}
       aria-busy={pending}
       disabled={pending}
-      className="grid size-14 place-items-center rounded-full bg-accent text-ink shadow-lg shadow-black/30 transition-transform hover:scale-105 active:scale-95"
+      className="grid size-14 shrink-0 place-items-center rounded-full bg-accent text-ink shadow-lg shadow-black/30 transition-transform hover:scale-105 active:scale-95"
     >
       {pending ? (
         <Loader2 className="size-6 animate-spin" />
@@ -81,5 +121,57 @@ export function ShuffleButton({ onClick, pending }: { onClick: () => void; pendi
     >
       {pending ? <Loader2 className="size-6 animate-spin" /> : <Shuffle className="size-6" />}
     </button>
+  )
+}
+
+type InlineEditProps = {
+  value: string
+  label: string
+  onSave: (value: string) => void
+  display: (edit: () => void) => ReactNode
+  inputClass: string
+  multiline?: boolean
+}
+
+function InlineEdit({ value, label, onSave, display, inputClass, multiline }: InlineEditProps) {
+  const [draft, setDraft] = useState<string | null>(null)
+  if (draft === null) return <>{display(() => setDraft(value))}</>
+  const commit = () => {
+    onSave(draft)
+    setDraft(null)
+  }
+  const keys = (e: KeyboardEvent) => {
+    if (e.key === 'Escape') {
+      e.stopPropagation()
+      setDraft(null)
+    }
+    if (e.key === 'Enter' && (!multiline || !e.shiftKey)) {
+      e.preventDefault()
+      commit()
+    }
+  }
+  return multiline ? (
+    <textarea
+      autoFocus
+      rows={2}
+      maxLength={300}
+      aria-label={label}
+      value={draft}
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={commit}
+      onKeyDown={keys}
+      className={inputClass}
+    />
+  ) : (
+    <input
+      autoFocus
+      maxLength={100}
+      aria-label={label}
+      value={draft}
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={commit}
+      onKeyDown={keys}
+      className={inputClass}
+    />
   )
 }

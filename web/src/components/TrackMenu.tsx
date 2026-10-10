@@ -1,7 +1,8 @@
-import { ChevronLeft, ChevronRight, Disc3, ListEnd, ListPlus, MicVocal, Plus, Trash2 } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Disc3, LibraryBig, ListEnd, ListPlus, MicVocal, Plus, Trash2 } from 'lucide-react'
 import { useState } from 'react'
 import { api, type AppPlaylist, type Track } from '../lib/api'
 import { idFromUri } from '../lib/format'
+import { useLibraryActions } from '../lib/library'
 import { navigate } from '../lib/router'
 import { usePlayer } from '../state/player'
 import { useSession } from '../state/session'
@@ -16,15 +17,17 @@ type Props = {
   onClose: () => void
   playlist?: AppPlaylist
   onRemoved?: (uri: string) => void
+  onRemove?: () => void
   align?: 'start' | 'end'
   initialView?: 'main' | 'playlists'
 }
 
-export function TrackMenu({ track, anchor, onClose, playlist, onRemoved, align, initialView = 'main' }: Props) {
+export function TrackMenu({ track, anchor, onClose, playlist, onRemoved, onRemove, align, initialView = 'main' }: Props) {
   const [view, setView] = useState<'main' | 'playlists'>(initialView)
   const { addToQueue } = usePlayer()
   const { playlists, upsertPlaylist } = useSession()
   const { openDialog } = useUI()
+  const { albumInLibrary, addAlbum } = useLibraryActions()
   const toast = useToast()
 
   const addTo = async (target: AppPlaylist) => {
@@ -39,6 +42,10 @@ export function TrackMenu({ track, anchor, onClose, playlist, onRemoved, align, 
   }
 
   const remove = async () => {
+    if (onRemove) {
+      onClose()
+      return onRemove()
+    }
     if (!playlist) return
     onClose()
     try {
@@ -76,6 +83,17 @@ export function TrackMenu({ track, anchor, onClose, playlist, onRemoved, align, 
             </MenuItem>
           )}
           {(track.album?.uri || artist) && <MenuDivider />}
+          {track.album?.uri && !albumInLibrary(track.album.uri) && (
+            <MenuItem
+              icon={<LibraryBig />}
+              onSelect={() => {
+                onClose()
+                void addAlbum({ uri: track.album!.uri }, track.album!.name)
+              }}
+            >
+              Add album to Library
+            </MenuItem>
+          )}
           {track.album?.uri && (
             <MenuItem icon={<Disc3 />} onSelect={() => go(`/album/${idFromUri(track.album!.uri)}`)}>
               Go to album

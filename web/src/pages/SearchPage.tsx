@@ -9,6 +9,7 @@ import { MediaCard, Section } from '../components/MediaCard'
 import { CardsSkeleton, RowsSkeleton } from '../components/Skeleton'
 import { SourceIcon } from '../components/SourceIcon'
 import { TrackList } from '../components/TrackList'
+import { AlbumLibraryButton } from '../components/library/AlbumLibraryButton'
 import { usePlayer } from '../state/player'
 import { ErrorState, Message } from './Message'
 import { CardSection, ShowAll } from './search/CardSection'
@@ -107,6 +108,7 @@ function Results({ q, data }: { q: string; data: SearchResults }) {
               subtitle={[year(a.release_date), byline(a)].filter(Boolean).join(', ')}
               artwork={a.artwork}
               href={`/album/${a.id}`}
+              corner={<AlbumLibraryButton compact uri={a.uri} name={a.name} />}
               playing={playing(a.uri)}
               pending={pending === a.uri}
               onPlay={() => playUri(a.uri)}

@@ -10,6 +10,7 @@ import { Button } from '../../components/Modal'
 import { pointRect, type AnchorRect } from '../../components/Popover'
 import { RowsSkeleton } from '../../components/Skeleton'
 import { SourceIcon } from '../../components/SourceIcon'
+import { AlbumLibraryButton } from '../../components/library/AlbumLibraryButton'
 import { TrackMenu } from '../../components/TrackMenu'
 import { usePlayer } from '../../state/player'
 import { useUI } from '../../state/ui'
@@ -150,7 +151,14 @@ function Header({ data }: { data: Resolved }) {
               </Button>
             </>
           )}
-          {data.kind !== 'track' && (
+          {data.kind === 'album' && data.spotify_uri && <AlbumLibraryButton uri={data.spotify_uri} name={data.name} />}
+          {data.kind === 'album' && !data.spotify_uri && (
+            <Button onClick={() => openDialog({ kind: 'import', url: data.url })}>
+              <Download className="size-4" />
+              Add album to Library
+            </Button>
+          )}
+          {data.kind === 'playlist' && (
             <Button variant={playUri ? 'ghost' : 'primary'} className={playUri ? 'ring-1 ring-white/20' : ''} onClick={() => openDialog({ kind: 'import', url: data.url })}>
               <Download className="size-4" />
               Import as playlist

@@ -4,8 +4,8 @@ import { focusSearch } from '../lib/searchFocus'
 import { Link } from './Link'
 
 const tabs = [
-  { href: '/', label: 'Playlists', icon: Library, match: (p: string) => p === '/' || p === '/library' || p.startsWith('/playlist/') },
-  { href: '/search', label: 'Search', icon: Search, match: (p: string) => !(p === '/' || p === '/library' || p.startsWith('/playlist/')) },
+  { href: '/', label: 'Library', icon: Library, match: (p: string) => p === '/' || p === '/library' || p.startsWith('/playlist/') },
+  { href: '/search', label: 'Search', icon: Search, match: (p: string) => !(p === '/' || p === '/library' || p.startsWith('/playlist/') || p.startsWith('/album/')) },
 ]
 
 export function MobileNav() {

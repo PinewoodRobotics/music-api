@@ -18,7 +18,7 @@ import { focusSearch } from './lib/searchFocus'
 import { useSkipWatcher } from './lib/skipNote'
 import { AlbumPage } from './pages/AlbumPage'
 import { ArtistPage } from './pages/ArtistPage'
-import { PlaylistsPage } from './pages/PlaylistsPage'
+import { LibraryPage } from './pages/LibraryPage'
 import { OpenLinkPage } from './pages/OpenLinkPage'
 import { Message } from './pages/Message'
 import { PlaylistPage } from './pages/PlaylistPage'
@@ -124,8 +124,8 @@ function useShortcuts() {
 
 function Page({ route }: { route: Route }) {
   switch (route.name) {
-    case 'playlists':
-      return <PlaylistsPage />
+    case 'library':
+      return <LibraryPage />
     case 'search':
       return <SearchPage />
     case 'playlist':

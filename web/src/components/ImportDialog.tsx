@@ -1,12 +1,13 @@
 import { Check, ChevronDown, Link2, Loader2 } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
-import { api, type ImportResult } from '../lib/api'
-import { plural } from '../lib/format'
+import { api, type AlbumImportResult, type ImportResult, type PlaylistImportResult } from '../lib/api'
+import { idFromUri, plural } from '../lib/format'
 import { detectLink, type DetectedLink } from '../lib/links'
 import { navigate } from '../lib/router'
 import { useElapsed } from '../lib/useElapsed'
 import { useSession } from '../state/session'
 import { Button, Field, fieldClass, Modal } from './Modal'
+import { Artwork } from './Artwork'
 import { SourceIcon } from './SourceIcon'
 
 function LinkBadge({ link, text }: { link: DetectedLink | null; text: string }) {
@@ -27,7 +28,26 @@ function LinkBadge({ link, text }: { link: DetectedLink | null; text: string }) 
 }
 
 function workingMessage(link: DetectedLink | null) {
-  return link?.source === 'apple' ? 'Matching songs from Apple Music…' : 'Copying songs from Spotify…'
+  if (link?.source === 'apple') return 'Matching songs from Apple Music…'
+  return link?.kind === 'album' ? 'Adding the album…' : 'Copying songs from Spotify…'
+}
+
+const isAlbumResult = (result: ImportResult): result is AlbumImportResult => result.kind === 'album'
+
+function AlbumSummary({ result }: { result: AlbumImportResult }) {
+  const { album } = result
+  return (
+    <div className="flex items-center gap-4">
+      <Artwork src={album.artwork} className="size-16 shrink-0" />
+      <div className="min-w-0">
+        <p className="font-semibold">{album.already ? 'Already in the Library' : 'Added to the Library'}</p>
+        <p className="truncate text-sm text-dim">
+          {album.name}
+          {album.artists.length > 0 && ` · ${album.artists.map((a) => a.name).join(', ')}`}
+        </p>
+      </div>
+    </div>
+  )
 }
 
 function ProgressNote({ message, seconds, hint }: { message: string; seconds: number; hint: string }) {
@@ -46,7 +66,7 @@ function ProgressNote({ message, seconds, hint }: { message: string; seconds: nu
   )
 }
 
-function Summary({ result }: { result: ImportResult }) {
+function Summary({ result }: { result: PlaylistImportResult }) {
   const unmatched = result.unmatched ?? []
   const headline =
     result.total != null && result.total !== result.imported
@@ -89,7 +109,7 @@ export function ImportDialog({ onClose, initialUrl }: { onClose: () => void; ini
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [result, setResult] = useState<ImportResult | null>(null)
-  const { upsertPlaylist } = useSession()
+  const { upsertPlaylist, upsertAlbum } = useSession()
   const link = detectLink(url)
   const seconds = useElapsed(busy)
   const started = useRef(false)
@@ -100,7 +120,8 @@ export function ImportDialog({ onClose, initialUrl }: { onClose: () => void; ini
       setError(null)
       try {
         const res = await api.importPlaylist(target.trim())
-        upsertPlaylist(res.playlist)
+        if (isAlbumResult(res)) upsertAlbum(res.album)
+        else upsertPlaylist(res.playlist)
         setResult(res)
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err))
@@ -108,7 +129,7 @@ export function ImportDialog({ onClose, initialUrl }: { onClose: () => void; ini
         setBusy(false)
       }
     },
-    [upsertPlaylist],
+    [upsertPlaylist, upsertAlbum],
   )
 
   useEffect(() => {
@@ -126,18 +147,18 @@ export function ImportDialog({ onClose, initialUrl }: { onClose: () => void; ini
   const open = () => {
     if (!result) return
     onClose()
-    navigate(`/playlist/${result.playlist.id}`)
+    navigate(isAlbumResult(result) ? `/album/${idFromUri(result.album.uri)}` : `/playlist/${result.playlist.id}`)
   }
 
   if (result)
     return (
       <Modal title="Import" onClose={onClose}>
-        <Summary result={result} />
+        {isAlbumResult(result) ? <AlbumSummary result={result} /> : <Summary result={result} />}
         <div className="mt-6 flex justify-end gap-2">
           <Button variant="ghost" onClick={onClose}>
             Done
           </Button>
-          <Button onClick={open}>Open playlist</Button>
+          <Button onClick={open}>{isAlbumResult(result) ? 'Open album' : 'Open playlist'}</Button>
         </div>
       </Modal>
     )
@@ -147,8 +168,8 @@ export function ImportDialog({ onClose, initialUrl }: { onClose: () => void; ini
       <form onSubmit={submit} className="space-y-4">
         <div className="space-y-2 text-sm leading-relaxed text-dim">
           <p>
-            Paste a public playlist or album link from Spotify or Apple Music. The songs are copied into a new shared playlist
-            credited to you.
+            Paste a public playlist or album link from Spotify or Apple Music. Playlists are copied into a new shared playlist
+            credited to you; albums are added to the Library as albums.
           </p>
           <ul className="space-y-1 text-[13px]">
             <li className="flex gap-2">
@@ -190,7 +211,7 @@ export function ImportDialog({ onClose, initialUrl }: { onClose: () => void; ini
           </Button>
           <Button type="submit" disabled={busy || !link?.importable}>
             {busy && <Loader2 className="size-4 animate-spin" />}
-            {busy ? 'Importing…' : 'Import'}
+            {link?.kind === 'album' ? (busy ? 'Adding…' : 'Add album to Library') : busy ? 'Importing…' : 'Import'}
           </Button>
         </div>
       </form>

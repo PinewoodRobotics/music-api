@@ -3,6 +3,7 @@ import { byline, idFromUri } from '../../lib/format'
 import { navigate } from '../../lib/router'
 import { Artwork } from '../../components/Artwork'
 import { usePlayer } from '../../state/player'
+import { AlbumLibraryButton } from '../../components/library/AlbumLibraryButton'
 import { PlayFab } from './PlayFab'
 import type { TopResult } from './topResult'
 
@@ -37,6 +38,11 @@ export function TopResultCard({ top }: { top: TopResult }) {
       className="group relative min-h-[236px] flex-1 cursor-pointer rounded-lg bg-white/[0.04] p-5 transition-colors hover:bg-white/[0.08]"
     >
       <Artwork src={artwork} round={top.kind === 'artist'} className="size-24 shadow-[0_8px_24px_rgba(0,0,0,0.5)]" />
+      {top.kind === 'album' && (
+        <div className="absolute right-5 top-5">
+          <AlbumLibraryButton compact uri={uri} name={name} />
+        </div>
+      )}
       <h3 className="mt-5 line-clamp-2 pr-14 font-display text-[2rem] font-bold leading-tight tracking-tight">{name}</h3>
       <p className="mt-2 flex min-w-0 items-center gap-2 pr-14 text-sm text-dim">
         <span className="shrink-0 rounded-full bg-black/40 px-2.5 py-0.5 text-xs font-semibold text-fg">{LABELS[top.kind]}</span>

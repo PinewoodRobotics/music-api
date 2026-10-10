@@ -1,7 +1,7 @@
-import type { ActivityEntry, AppPlaylist, Lyrics, Queue, Status, Track } from '../lib/api'
+import type { ActivityEntry, AppPlaylist, LibraryAlbum, Lyrics, Queue, Status, Track } from '../lib/api'
 import fixtures from './fixtures.json'
 
-type Mode = 'full' | 'signedout' | 'writes' | 'down'
+type Mode = 'full' | 'signedout' | 'signedout-slack' | 'signedout-google' | 'writes' | 'down'
 type Call = { method: string; path: string; body: unknown; origin: string | null }
 
 declare global {
@@ -181,6 +181,143 @@ function resolve(link: string): readonly [number, unknown] {
 
 const byArtists = (t: Track) => t.artists?.map((a) => a.name).join(', ') ?? ''
 
+const synthetic: Track[] = Array.from({ length: 600 }, (_, n) => {
+  const base = tracks[n % tracks.length]
+  return { ...base, uri: `spotify:track:gen${n}`, id: `gen${n}`, name: `${base.name} (Take ${Math.floor(n / tracks.length) + 1})` }
+})
+items.big = synthetic
+playlists.push({
+  id: 'big',
+  uri: 'spotify:playlist:big',
+  name: 'Everything Mix',
+  description: 'A very long playlist for testing.',
+  artwork: tracks[10].artwork,
+  total: synthetic.length,
+  created_by: maya,
+  source_url: null,
+  created: '2026-09-20T19:00:00Z',
+  can_edit: false,
+})
+
+const albumOf = (t: Track, by: LibraryAlbum['added_by'], added: string, canEdit: boolean): LibraryAlbum => ({
+  kind: 'album',
+  id: (t.album?.uri ?? '').split(':').pop() ?? '',
+  uri: t.album?.uri ?? '',
+  name: t.album?.name ?? '',
+  artists: t.artists ?? [],
+  artwork: t.artwork,
+  total: tracks.filter((x) => x.album?.uri === t.album?.uri).length,
+  year: '1977',
+  duration_ms: null as unknown as number,
+  added_by: by,
+  added,
+  source_url: `https://open.spotify.com/album/${(t.album?.uri ?? '').split(':').pop()}`,
+  can_edit: canEdit,
+})
+
+const libraryAlbums: LibraryAlbum[] = [
+  { ...albumOf(tracks[0], maya, '2026-10-08T21:00:00Z', false), year: '2001' },
+  albumOf(tracks[2], { id: 'U01', name: 'Adam Xu', avatar: null }, '2026-10-09T18:00:00Z', true),
+]
+
+function trackByUri(uri: string) {
+  return tracks.find((t) => t.uri === uri) ?? synthetic.find((t) => t.uri === uri)
+}
+
+function addAlbum(link: string, viaImport = false): readonly [number, unknown] {
+  if (/music\.apple\.com/.test(link) && /nomatch/.test(link)) return fail(422, "that album isn't on Spotify as a whole album; use Import as playlist to copy its songs")
+  const id = link.match(/album[:/]([A-Za-z0-9]+)/)?.[1]
+  if (!id) return fail(400, 'paste a Spotify or Apple Music album link (use Import as playlist for playlists and songs)')
+  const existing = libraryAlbums.find((a) => a.id === id)
+  const source = tracks.find((t) => t.album?.uri.endsWith(id)) ?? tracks[5]
+  const album = existing ? { ...existing, already: true } : albumOf(source, { id: 'U01', name: 'Adam Xu', avatar: null }, new Date().toISOString(), true)
+  if (!existing) libraryAlbums.unshift({ ...album, id, uri: `spotify:album:${id}` })
+  const out = existing ? album : libraryAlbums[0]
+  return ok(viaImport ? { kind: 'album', album: out } : out)
+}
+
+function librarySongs() {
+  const byUri = new Map<string, { track: Track; sources: { kind: string; id: string; name: string }[]; added: string }>()
+  const add = (t: Track, kind: string, id: string, name: string, added: string) => {
+    const row = byUri.get(t.uri) ?? { track: t, sources: [], added }
+    row.sources.push({ kind, id, name })
+    if (added < row.added) row.added = added
+    byUri.set(t.uri, row)
+  }
+  for (const pl of playlists) for (const t of items[pl.id] ?? []) add(t, 'playlist', pl.id, pl.name, pl.created ?? '2026-01-01')
+  for (const a of libraryAlbums) for (const t of tracks.filter((x) => x.album?.uri === a.uri)) add(t, 'album', a.id, a.name, a.added ?? '')
+  return [...byUri.values()].map((r) => ({ ...r.track, sources: r.sources, added: r.added }))
+}
+
+function libraryRoute(method: string, p: string, url: URL, body: Record<string, unknown>): readonly [number, unknown] | null {
+  const catalog = p.match(/^\/api\/albums\/([^/]+)$/)
+  if (method === 'GET' && catalog && catalog[1] !== fixtures.album.id) {
+    const t = tracks.find((x) => x.album?.uri.endsWith(catalog[1]))
+    if (!t?.album) return fail(404, 'not found')
+    const albumTracks = tracks.filter((x) => x.album?.uri === t.album?.uri)
+    return ok({
+      uri: t.album.uri, id: catalog[1], type: 'album', name: t.album.name, artists: t.artists, album_type: 'album', release_date: '1977-10-03',
+      total_tracks: albumTracks.length, artwork: t.artwork, tracks: { items: albumTracks, total: albumTracks.length, offset: 0, limit: 50, next: false },
+    })
+  }
+  if (method === 'GET' && p === '/api/app/library') {
+    const kind = url.searchParams.get('kind') ?? 'all'
+    const list = [
+      ...(kind !== 'albums' ? playlists.map((x) => ({ ...x, kind: 'playlist' })) : []),
+      ...(kind !== 'playlists' ? libraryAlbums : []),
+    ]
+    return ok({ items: list })
+  }
+  if (method === 'POST' && p === '/api/app/library/albums') return addAlbum(String(body.url ?? body.uri ?? ''))
+  const album = p.match(/^\/api\/app\/library\/albums\/([^/]+)$/)
+  if (album) {
+    const found = libraryAlbums.find((a) => a.id === album[1])
+    if (!found) return fail(404, 'not in the Library')
+    if (method === 'DELETE') {
+      if (!found.can_edit) return fail(403, 'only the person who added it can remove it')
+      libraryAlbums.splice(libraryAlbums.indexOf(found), 1)
+      return ok({ removed: found.uri })
+    }
+    return ok({ ...found, tracks: tracks.filter((t) => t.album?.uri === found.uri) })
+  }
+  if (method === 'GET' && p === '/api/app/library/songs') {
+    const q = (url.searchParams.get('q') ?? '').toLowerCase()
+    const sort = url.searchParams.get('sort') ?? 'recent'
+    const offset = Number(url.searchParams.get('offset') ?? 0)
+    const limit = Number(url.searchParams.get('limit') ?? 100)
+    let list = librarySongs().filter((t) => !q || `${t.name} ${t.artists?.map((a) => a.name).join(' ')} ${t.album?.name}`.toLowerCase().includes(q))
+    const key = { title: (t: Track) => t.name, artist: (t: Track) => t.artists?.[0]?.name ?? '', album: (t: Track) => t.album?.name ?? '' }[sort]
+    list = key ? list.sort((a, b) => key(a).localeCompare(key(b))) : list.sort((a, b) => b.added.localeCompare(a.added))
+    return ok({ items: list.slice(offset, offset + limit), total: list.length })
+  }
+  if (method === 'POST' && p === '/api/app/library/songs/play') {
+    const t = trackByUri(String(body.uri))
+    if (!t) return fail(404, 'not in the list')
+    playTrack(t, null)
+    return ok(snapshot())
+  }
+  const dup = p.match(/^\/api\/app\/playlists\/([^/]+)\/duplicate$/)
+  if (method === 'POST' && dup) {
+    const src = playlists.find((x) => x.id === dup[1])
+    if (!src) return fail(404, 'playlist not found')
+    const copy: AppPlaylist = {
+      ...src,
+      id: `dup${Date.now()}`,
+      uri: `spotify:playlist:dup${Date.now()}`,
+      name: String(body.name ?? `${src.name} (copy)`),
+      created_by: { id: 'U01', name: 'Adam Xu', avatar: null },
+      source_url: null,
+      created: new Date().toISOString(),
+      can_edit: true,
+    }
+    playlists.unshift(copy)
+    items[copy.id] = [...(items[src.id] ?? [])]
+    copy.total = items[copy.id].length
+    return ok(copy)
+  }
+  return null
+}
+
 function mutate(patch: Partial<Status>) {
   setStatus(patch)
   return ok(snapshot())
@@ -282,6 +419,7 @@ function handle(method: string, url: URL, body: Record<string, unknown>): readon
     items[created.id] = []
     return ok(created)
   }
+  if (route === 'POST /api/app/playlists/import' && /album\//.test(String(body.url))) return addAlbum(String(body.url), true)
   if (route === 'POST /api/app/playlists/import') {
     if (String(body.url).includes('private')) return fail(403, 'That playlist is private. Make it public on Spotify and try again.')
     const created: AppPlaylist = {
@@ -318,6 +456,8 @@ function handle(method: string, url: URL, body: Record<string, unknown>): readon
       return ok({ removed: pl.uri })
     }
   }
+  const library = libraryRoute(method, p, url, body)
+  if (library) return library
   const its = p.match(/^\/api\/playlists\/([^/]+)\/items$/)
   if (its) {
     const list = items[its[1]] ?? []
@@ -325,9 +465,25 @@ function handle(method: string, url: URL, body: Record<string, unknown>): readon
       const offset = Number(url.searchParams.get('offset') ?? 0)
       return ok({ items: list.slice(offset, offset + 50), total: list.length, offset, limit: 50, next: offset + 50 < list.length })
     }
+    if (method === 'PUT') {
+      const from = Number(body.range_start)
+      const before = Number(body.insert_before)
+      const next = [...list]
+      const [moved] = next.splice(from, 1)
+      next.splice(before > from ? before - 1 : before, 0, moved)
+      items[its[1]] = next
+      return ok({ snapshot_id: 'x' })
+    }
     const uris = body.uris as string[]
-    if (method === 'POST') items[its[1]] = [...list, ...tracks.filter((t) => uris.includes(t.uri))]
+    if (method === 'POST') {
+      const added = uris.map((u) => trackByUri(u)).filter((t): t is Track => !!t)
+      const next = [...list]
+      next.splice(typeof body.position === 'number' ? body.position : next.length, 0, ...added)
+      items[its[1]] = next
+    }
     if (method === 'DELETE') items[its[1]] = list.filter((t) => !uris.includes(t.uri))
+    const pl = playlists.find((x) => x.id === its[1])
+    if (pl) pl.total = items[its[1]].length
     return ok({ snapshot_id: 'x' })
   }
   const play = p.match(/^\/api\/playlists\/([^/]+)\/play$/)
@@ -377,7 +533,7 @@ class MockEventSource extends EventTarget {
 
 export function installMock(param: string | null) {
   const stored = sessionStorage.getItem('mock')
-  const mode: Mode = param === 'signedout' || param === 'writes' || param === 'down' ? param : param !== null ? 'full' : ((stored as Mode) ?? 'full')
+  const mode: Mode = param && ['signedout', 'signedout-slack', 'signedout-google', 'writes', 'down'].includes(param) ? (param as Mode) : param !== null ? 'full' : ((stored as Mode) ?? 'full')
   sessionStorage.setItem('mock', mode)
   window.__mockCalls = []
   window.__mockActivity = (action, detail = {}, who = 'howard', origin = 'web') => {
@@ -416,9 +572,11 @@ export function installMock(param: string | null) {
     const slow = url.pathname.endsWith('/import') || url.pathname === '/api/resolve'
     await new Promise((r) => setTimeout(r, slow ? (String(body.url ?? '').includes('apple') ? 3500 : 1500) : 120))
     const down = mode === 'down' && method === 'GET' && /^\/api\/(search|app\/playlists|albums|artists|playlists)/.test(url.pathname)
+    if (url.pathname === '/auth/methods')
+      return new Response(JSON.stringify({ slack: mode !== 'signedout-google', google: mode !== 'signedout-slack' }), { status: 200, headers: { 'Content-Type': 'application/json' } })
     const [status, json] = down
       ? fail(502, 'Bad gateway')
-      : mode === 'signedout'
+      : mode.startsWith('signedout')
         ? fail(401, 'unauthorized')
         : mode === 'writes' && !url.pathname.startsWith('/api/app/')
           ? ok({ mocked: true })

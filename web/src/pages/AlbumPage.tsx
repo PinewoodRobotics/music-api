@@ -5,6 +5,9 @@ import { useAsync } from '../lib/useAsync'
 import { BigPlayButton, CollectionHeader, Dot, ShuffleButton } from '../components/CollectionHeader'
 import { Link } from '../components/Link'
 import { TrackList } from '../components/TrackList'
+import { Avatar } from '../components/Avatar'
+import { AlbumLibraryButton } from '../components/library/AlbumLibraryButton'
+import { useLibraryActions } from '../lib/library'
 import { usePlayer } from '../state/player'
 import { HeaderSkeleton, RowsSkeleton } from '../components/Skeleton'
 import { ErrorState } from './Message'
@@ -14,6 +17,7 @@ export function AlbumPage({ id }: { id: string }) {
   const album = useAsync(() => api.album(id), [id, attempt])
   const [tracks, setTracks] = useState<Track[]>([])
   const { status, isPlaying, togglePlay, start, pending } = usePlayer()
+  const { albumInLibrary } = useLibraryActions()
 
   useEffect(() => {
     const first = album.data?.tracks
@@ -48,6 +52,7 @@ export function AlbumPage({ id }: { id: string }) {
   if (!album.data) return <ErrorState title="Couldn't load this album" error={album.error} onRetry={() => setAttempt((n) => n + 1)} />
   const a = album.data
   const isCurrent = status?.context?.uri === a.uri
+  const saved = albumInLibrary(a.uri)
 
   return (
     <div>
@@ -72,6 +77,15 @@ export function AlbumPage({ id }: { id: string }) {
               {plural(a.total_tracks, 'song')}
               <span className="text-white/65">, {formatLength(duration)}</span>
             </span>
+            {saved?.added_by && (
+              <>
+                <Dot />
+                <span className="inline-flex items-center gap-1.5 text-white/75" title="Added to the Library by">
+                  <Avatar person={saved.added_by} className="size-5 text-[10px]" />
+                  {saved.added_by.name}
+                </span>
+              </>
+            )}
           </>
         }
       >
@@ -82,6 +96,7 @@ export function AlbumPage({ id }: { id: string }) {
           onClick={() => (isCurrent ? togglePlay() : void start(a.uri, () => api.play({ uri: a.uri, shuffle: false }), false))}
         />
         <ShuffleButton pending={pending === `${a.uri}:shuffle`} onClick={() => void start(`${a.uri}:shuffle`, () => api.play({ uri: a.uri, shuffle: true }), true)} />
+        <AlbumLibraryButton uri={a.uri} name={a.name} />
       </CollectionHeader>
       <div className="relative px-4 pb-10 max-sm:px-2">
         <TrackList

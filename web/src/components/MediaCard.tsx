@@ -12,9 +12,10 @@ type Props = {
   onPlay?: () => void
   playing?: boolean
   pending?: boolean
+  corner?: ReactNode
 }
 
-export function MediaCard({ title, subtitle, artwork, round, href, onPlay, playing, pending }: Props) {
+export function MediaCard({ title, subtitle, artwork, round, href, onPlay, playing, pending, corner }: Props) {
   const open = () => (href ? navigate(href) : onPlay?.())
   const play = (e: MouseEvent) => {
     e.stopPropagation()
@@ -29,6 +30,11 @@ export function MediaCard({ title, subtitle, artwork, round, href, onPlay, playi
       className="group cursor-pointer rounded-lg p-3 transition hover:bg-white/[0.06] focus-visible:bg-white/[0.06] active:scale-[0.98] active:bg-white/[0.06] max-sm:p-2"
     >
       <div className="relative mb-3">
+        {corner && (
+          <div className="absolute right-2 top-2 z-10 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 [@media(hover:none)]:opacity-100">
+            {corner}
+          </div>
+        )}
         <Artwork src={artwork} round={round} className="aspect-square w-full shadow-[0_8px_24px_rgba(0,0,0,0.5)]" />
         {onPlay && (
           <button

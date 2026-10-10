@@ -1,8 +1,10 @@
 import { Volume2 } from 'lucide-react'
-import type { AppPlaylist } from '../lib/api'
+import type { AppPlaylist, LibraryItem } from '../lib/api'
+import { itemHref } from '../lib/library'
 import { usePlayer } from '../state/player'
 import { Artwork } from './Artwork'
 import { Attribution } from './Attribution'
+import { ItemSubtitle, KindBadge } from './library/LibraryItems'
 import { Link } from './Link'
 
 export function PlaylistByline({ playlist, className = '' }: { playlist: AppPlaylist; className?: string }) {
@@ -22,6 +24,27 @@ export function PlaylistRow({ playlist, active }: { playlist: AppPlaylist; activ
       <div className="min-w-0 flex-1">
         <div className={`truncate text-[15px] ${playing ? 'text-accent' : 'text-fg'}`}>{playlist.name}</div>
         <PlaylistByline playlist={playlist} className="text-[13px] text-dim" />
+      </div>
+      {playing && isPlaying && <Volume2 className="mr-1 size-4 shrink-0 text-accent" aria-label="Playing" />}
+    </Link>
+  )
+}
+
+export function LibrarySidebarRow({ item, active }: { item: LibraryItem; active: boolean }) {
+  const { status, isPlaying } = usePlayer()
+  const playing = status?.context?.uri === item.uri
+  return (
+    <Link
+      href={itemHref(item)}
+      className={`flex items-center gap-3 rounded-md p-1.5 transition-colors ${active ? 'bg-white/[0.09]' : 'hover:bg-white/[0.05]'}`}
+    >
+      <Artwork src={item.artwork} className="size-11 shrink-0" />
+      <div className="min-w-0 flex-1">
+        <div className={`truncate text-[15px] ${playing ? 'text-accent' : 'text-fg'}`}>{item.name}</div>
+        <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[13px] text-dim">
+          {item.kind === 'album' && <KindBadge kind="album" />}
+          <ItemSubtitle item={item} className="min-w-0" />
+        </div>
       </div>
       {playing && isPlaying && <Volume2 className="mr-1 size-4 shrink-0 text-accent" aria-label="Playing" />}
     </Link>

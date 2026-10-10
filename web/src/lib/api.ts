@@ -134,13 +134,43 @@ export type AppPlaylist = {
   can_edit: boolean
 }
 
-export type ImportResult = {
+export type PlaylistImportResult = {
+  kind?: 'playlist'
   playlist: AppPlaylist
   imported: number
   total: number | null
   truncated: boolean
   unmatched?: { name: string; artists: string[] }[]
 }
+
+export type AlbumImportResult = { kind: 'album'; album: LibraryAlbum }
+
+export type ImportResult = PlaylistImportResult | AlbumImportResult
+
+export type LibraryAlbum = {
+  kind: 'album'
+  id: string
+  uri: string
+  name: string
+  artists: ArtistRef[]
+  artwork: string | null
+  total: number
+  year: string | number | null
+  duration_ms?: number
+  added_by: Person | null
+  added: string | null
+  source_url: string | null
+  can_edit: boolean
+  already?: boolean
+}
+
+export type LibraryPlaylist = AppPlaylist & { kind: 'playlist' }
+export type LibraryItem = LibraryPlaylist | LibraryAlbum
+export type LibraryKind = 'all' | 'playlists' | 'albums'
+export type LibrarySort = 'recent' | 'name' | 'creator'
+export type SongSort = 'recent' | 'title' | 'artist' | 'album'
+export type SongSource = { kind: 'playlist' | 'album'; id: string; name: string }
+export type LibrarySong = Track & { sources: SongSource[]; added: string | null }
 
 export type PersonalToken = { token: string; created: number; docs: string }
 
@@ -288,6 +318,19 @@ export const api = {
     get<Page<Album>>(`/api/artists/${id}/albums?${qs({ include_groups: 'album,single', limit: 10, offset })}`),
 
   playlists: () => get<AppPlaylist[]>('/api/app/playlists'),
+  library: (kind: LibraryKind = 'all', sort: LibrarySort = 'recent') =>
+    get<{ items: LibraryItem[] }>(`/api/app/library?${qs({ kind, sort })}`),
+  addAlbum: (body: { url?: string; uri?: string }) => post<LibraryAlbum>('/api/app/library/albums', body),
+  removeAlbum: (id: string) => request<unknown>('DELETE', `/api/app/library/albums/${id}`),
+  librarySongs: (params: { q?: string; sort?: SongSort; offset?: number; limit?: number }) =>
+    get<{ items: LibrarySong[]; total: number }>(
+      `/api/app/library/songs?${qs(Object.fromEntries(Object.entries(params).filter(([, v]) => v !== undefined && v !== '')) as Record<string, string | number>)}`,
+    ),
+  playLibrarySongs: (body: { uri: string; sort?: SongSort; q?: string }) => post<Status>('/api/app/library/songs/play', body),
+  duplicatePlaylist: (id: string, name?: string) => post<AppPlaylist>(`/api/app/playlists/${id}/duplicate`, name ? { name } : {}),
+  reorderPlaylist: (id: string, range_start: number, insert_before: number, range_length = 1) =>
+    request<unknown>('PUT', `/api/playlists/${id}/items`, { range_start, insert_before, range_length }),
+  addToPlaylistAt: (id: string, uris: string[], position: number) => post<unknown>(`/api/playlists/${id}/items`, { uris, position }),
   playlist: (id: string) => get<AppPlaylist>(`/api/app/playlists/${id}`),
   createPlaylist: (body: { name: string; description?: string }) => post<AppPlaylist>('/api/app/playlists', body),
   importPlaylist: (url: string) => post<ImportResult>('/api/app/playlists/import', { url }),

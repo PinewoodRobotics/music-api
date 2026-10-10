@@ -27,7 +27,7 @@ export function useLocation() {
 }
 
 export type Route =
-  | { name: 'playlists' }
+  | { name: 'library' }
   | { name: 'search' }
   | { name: 'open'; url: string }
   | { name: 'playlist'; id: string }
@@ -37,7 +37,7 @@ export type Route =
 
 export function matchRoute(path: string, query: URLSearchParams): Route {
   const parts = path.split('/').filter(Boolean)
-  if (parts.length === 0 || (parts.length === 1 && parts[0] === 'library')) return { name: 'playlists' }
+  if (parts.length === 0 || (parts.length === 1 && parts[0] === 'library')) return { name: 'library' }
   if (parts.length === 1 && parts[0] === 'search') return { name: 'search' }
   if (parts.length === 1 && parts[0] === 'open') return { name: 'open', url: query.get('url') ?? '' }
   if (parts.length === 2 && (parts[0] === 'playlist' || parts[0] === 'album' || parts[0] === 'artist'))

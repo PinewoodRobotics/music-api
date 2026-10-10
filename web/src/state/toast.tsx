@@ -1,9 +1,10 @@
 import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from 'react'
 import { errorMessage } from '../lib/api'
 
-export type Toast = { id: number; message: string; tone: 'info' | 'error' }
+export type ToastAction = { label: string; run: () => void }
+export type Toast = { id: number; message: string; tone: 'info' | 'error'; action?: ToastAction }
 
-type ToastApi = { show: (message: string) => void; error: (err: unknown) => void }
+type ToastApi = { show: (message: string, action?: ToastAction) => void; error: (err: unknown) => void }
 
 const ToastContext = createContext<ToastApi | null>(null)
 const ToastListContext = createContext<{ toasts: Toast[]; dismiss: (id: number) => void }>({ toasts: [], dismiss: () => {} })
@@ -14,15 +15,15 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   const [toasts, setToasts] = useState<Toast[]>([])
   const dismiss = useCallback((id: number) => setToasts((t) => t.filter((x) => x.id !== id)), [])
   const push = useCallback(
-    (message: string, tone: Toast['tone']) => {
+    (message: string, tone: Toast['tone'], action?: ToastAction) => {
       const id = nextId++
-      setToasts((t) => [...t.filter((x) => x.message !== message), { id, message, tone }].slice(-3))
-      setTimeout(() => dismiss(id), tone === 'error' ? 6000 : 3500)
+      setToasts((t) => [...t.filter((x) => x.message !== message), { id, message, tone, action }].slice(-3))
+      setTimeout(() => dismiss(id), tone === 'error' ? 6000 : action ? 7000 : 3500)
     },
     [dismiss],
   )
   const api = useMemo<ToastApi>(
-    () => ({ show: (m) => push(m, 'info'), error: (e) => push(errorMessage(e), 'error') }),
+    () => ({ show: (m, action) => push(m, 'info', action), error: (e) => push(errorMessage(e), 'error') }),
     [push],
   )
   const list = useMemo(() => ({ toasts, dismiss }), [toasts, dismiss])
