@@ -333,7 +333,8 @@ export const api = {
   addToPlaylistAt: (id: string, uris: string[], position: number) => post<unknown>(`/api/playlists/${id}/items`, { uris, position }),
   playlist: (id: string) => get<AppPlaylist>(`/api/app/playlists/${id}`),
   createPlaylist: (body: { name: string; description?: string }) => post<AppPlaylist>('/api/app/playlists', body),
-  importPlaylist: (url: string) => post<ImportResult>('/api/app/playlists/import', { url }),
+  importPlaylist: (url: string, asPlaylist = false) =>
+    post<ImportResult>('/api/app/playlists/import', asPlaylist ? { url, as: 'playlist' } : { url }),
   updatePlaylist: (id: string, body: { name?: string; description?: string }) =>
     request<AppPlaylist>('PATCH', `/api/app/playlists/${id}`, body),
   deletePlaylist: (id: string) => request<unknown>('DELETE', `/api/app/playlists/${id}`),

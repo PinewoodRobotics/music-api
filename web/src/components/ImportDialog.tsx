@@ -1,6 +1,6 @@
-import { Check, ChevronDown, Link2, Loader2 } from 'lucide-react'
+import { Check, ChevronDown, Link2, ListMusic, Loader2 } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
-import { api, type AlbumImportResult, type ImportResult, type PlaylistImportResult } from '../lib/api'
+import { api, ApiError, type AlbumImportResult, type ImportResult, type PlaylistImportResult } from '../lib/api'
 import { idFromUri, plural } from '../lib/format'
 import { detectLink, type DetectedLink } from '../lib/links'
 import { navigate } from '../lib/router'
@@ -104,10 +104,11 @@ function Summary({ result }: { result: PlaylistImportResult }) {
   )
 }
 
-export function ImportDialog({ onClose, initialUrl }: { onClose: () => void; initialUrl?: string }) {
+export function ImportDialog({ onClose, initialUrl, asPlaylist = false }: { onClose: () => void; initialUrl?: string; asPlaylist?: boolean }) {
   const [url, setUrl] = useState(initialUrl ?? '')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [noAlbumMatch, setNoAlbumMatch] = useState(false)
   const [result, setResult] = useState<ImportResult | null>(null)
   const { upsertPlaylist, upsertAlbum } = useSession()
   const link = detectLink(url)
@@ -115,16 +116,18 @@ export function ImportDialog({ onClose, initialUrl }: { onClose: () => void; ini
   const started = useRef(false)
 
   const run = useCallback(
-    async (target: string) => {
+    async (target: string, copyAsPlaylist = false) => {
       setBusy(true)
       setError(null)
+      setNoAlbumMatch(false)
       try {
-        const res = await api.importPlaylist(target.trim())
+        const res = await api.importPlaylist(target.trim(), copyAsPlaylist)
         if (isAlbumResult(res)) upsertAlbum(res.album)
         else upsertPlaylist(res.playlist)
         setResult(res)
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err))
+        setNoAlbumMatch(err instanceof ApiError && err.status === 422 && detectLink(target)?.kind === 'album')
       } finally {
         setBusy(false)
       }
@@ -135,8 +138,8 @@ export function ImportDialog({ onClose, initialUrl }: { onClose: () => void; ini
   useEffect(() => {
     if (!initialUrl || started.current || !detectLink(initialUrl)?.importable) return
     started.current = true
-    void run(initialUrl)
-  }, [initialUrl, run])
+    void run(initialUrl, asPlaylist)
+  }, [initialUrl, asPlaylist, run])
 
   const submit = (e: FormEvent) => {
     e.preventDefault()
@@ -205,6 +208,12 @@ export function ImportDialog({ onClose, initialUrl }: { onClose: () => void; ini
           />
         )}
         {error && <p className="text-sm text-danger">{error}</p>}
+        {noAlbumMatch && !busy && (
+          <Button variant="ghost" className="w-full ring-1 ring-white/20" onClick={() => void run(url, true)}>
+            <ListMusic className="size-4" />
+            Import as playlist
+          </Button>
+        )}
         <div className="flex justify-end gap-2 pt-2">
           <Button variant="ghost" onClick={onClose} disabled={busy}>
             Cancel

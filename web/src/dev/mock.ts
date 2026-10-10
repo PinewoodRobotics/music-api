@@ -419,7 +419,7 @@ function handle(method: string, url: URL, body: Record<string, unknown>): readon
     items[created.id] = []
     return ok(created)
   }
-  if (route === 'POST /api/app/playlists/import' && /album\//.test(String(body.url))) return addAlbum(String(body.url), true)
+  if (route === 'POST /api/app/playlists/import' && body.as !== 'playlist' && /album\//.test(String(body.url))) return addAlbum(String(body.url), true)
   if (route === 'POST /api/app/playlists/import') {
     if (String(body.url).includes('private')) return fail(403, 'That playlist is private. Make it public on Spotify and try again.')
     const created: AppPlaylist = {

@@ -20,7 +20,7 @@ export function Dialogs() {
     case 'edit':
       return <PlaylistForm onClose={closeDialog} playlist={dialog.playlist} />
     case 'import':
-      return <ImportDialog onClose={closeDialog} initialUrl={dialog.url} />
+      return <ImportDialog onClose={closeDialog} initialUrl={dialog.url} asPlaylist={dialog.asPlaylist} />
     case 'activity':
       return <ActivityPanel onClose={closeDialog} />
     case 'api':

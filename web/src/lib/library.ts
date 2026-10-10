@@ -1,6 +1,7 @@
 import { useCallback } from 'react'
 import { useSession } from '../state/session'
 import { useToast } from '../state/toast'
+import { useUI } from '../state/ui'
 import { api, ApiError, type LibraryAlbum, type LibraryItem, type LibrarySort } from './api'
 import { idFromUri } from './format'
 import { navigate } from './router'
@@ -42,6 +43,7 @@ export function filterLibrary(
 export function useLibraryActions() {
   const { library, upsertAlbum, dropAlbum, upsertPlaylist } = useSession()
   const toast = useToast()
+  const { openDialog } = useUI()
 
   const albumInLibrary = useCallback(
     (uri: string | undefined) => (uri ? (library?.find((x) => x.kind === 'album' && x.uri === uri) as LibraryAlbum | undefined) : undefined),
@@ -56,12 +58,15 @@ export function useLibraryActions() {
         toast.show(album.already ? `${album.name} is already in the Library` : `Added ${album.name} to the Library`)
         return album
       } catch (err) {
-        if (err instanceof ApiError && err.status === 422) toast.show(`${label ?? 'That album'} isn't on Spotify, so it can't be added.`)
+        if (err instanceof ApiError && err.status === 422 && target.url) {
+          const url = target.url
+          toast.show(err.message, { label: 'Import as playlist', run: () => openDialog({ kind: 'import', url, asPlaylist: true }) })
+        } else if (err instanceof ApiError && err.status === 422) toast.show(`${label ?? 'That album'} isn't on Spotify as a whole album.`)
         else toast.error(err)
         return null
       }
     },
-    [toast, upsertAlbum],
+    [openDialog, toast, upsertAlbum],
   )
 
   const removeAlbum = useCallback(
