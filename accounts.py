@@ -18,7 +18,7 @@ import urllib.request
 import links
 
 SLACK = "https://slack.com"
-SESSION_TTL = 30 * 86400
+SESSION_COOKIE_AGE = 400 * 86400  # browsers cap cookie lifetimes at 400 days; it's renewed while in use
 ADMIN = {"id": "admin", "name": "@admin", "avatar": None, "admin": True, "kind": "token"}
 AUTOPLAY = {"id": None, "name": "Autoplay", "avatar": None}
 
@@ -164,23 +164,25 @@ class Sessions:
         sid = secrets.token_urlsafe(32)
         now = int(time.time())
         with self.lock:
-            self.sessions = {k: s for k, s in self.sessions.items() if now - s["seen"] < SESSION_TTL}
             self.sessions[self._key(sid)] = {"user": user, "created": now, "seen": now}
             _write_json(self.path, self.sessions)
         return sid
 
     def get(self, sid):
+        """(user, renew) for a live session, else (None, False). Sessions don't expire; `renew` is True about
+        once a day so the caller re-sends the cookie and the browser's 400-day clock restarts."""
         if not sid:
-            return None
+            return None, False
         now = int(time.time())
         with self.lock:
             s = self.sessions.get(self._key(sid))
-            if not s or now - s["seen"] > SESSION_TTL:
-                return None
-            if now - s["seen"] > 3600:
+            if not s:
+                return None, False
+            renew = abs(now - s["seen"]) > 86400
+            if renew or abs(now - s["seen"]) > 3600:
                 s["seen"] = now
                 _write_json(self.path, self.sessions)
-            return s["user"]
+            return s["user"], renew
 
     def delete(self, sid):
         with self.lock:

@@ -10,7 +10,6 @@ Visit http://127.0.0.1:8765/ for the web remote, or GET /api for the endpoint li
 """
 import argparse
 import html
-import http.cookies
 import json
 import os
 import queue as queuelib
@@ -26,7 +25,7 @@ import activity as activity_log
 import extras
 import links
 import slack_bot
-from accounts import ADMIN, AccountError, Credits, PersonalTokens, Playlists, Sessions, Slack
+from accounts import ADMIN, SESSION_COOKIE_AGE, AccountError, Credits, PersonalTokens, Playlists, Sessions, Slack
 from extras import ExtrasError
 from activity import Activity
 from player import REPEAT_ALIASES, Player, PlayerError
@@ -828,25 +827,32 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Link", '</llms.txt>; rel="describedby"; type="text/plain"')
-        for k, v in headers:
+        for k, v in [*headers, *getattr(_req, "cookies", ())]:
             self.send_header(k, v)
         self.end_headers()
         if self.command != "HEAD":
             self.wfile.write(body)
 
     def _session_id(self):
-        jar = http.cookies.SimpleCookie()
-        try:
-            jar.load(self.headers.get("Cookie", ""))
-        except http.cookies.CookieError:
-            return None
-        return jar[SESSION_COOKIE].value if SESSION_COOKIE in jar else None
+        # Not http.cookies: SimpleCookie drops every cookie after one it can't parse (JSON or spaces in values,
+        # set by other *.pinewoodrobotics.org apps), which silently signed people out.
+        for part in self.headers.get("Cookie", "").split(";"):
+            name, _, value = part.strip().partition("=")
+            if name == SESSION_COOKIE and value:
+                return value.strip('"')
+        return None
 
     def _authorized(self, query):
         given = self.headers.get("Authorization", "").removeprefix("Bearer ").strip() or query.get("token", "")
         _req.token = tokens.check(given)
         _req.bearer = bool(given)
-        _req.user = ADMIN if _req.token is not None else personal.check(given) or sessions.get(self._session_id())
+        _req.cookies = ()
+        _req.user = ADMIN if _req.token is not None else personal.check(given)
+        if not _req.user:
+            sid = self._session_id()
+            _req.user, renew = sessions.get(sid)
+            if renew:
+                _req.cookies = (self._set_cookie(sid, SESSION_COOKIE_AGE),)
         _req.origin = activity_log.origin_for(self.headers, _req.bearer)
         if _req.user:
             return True
@@ -911,6 +917,7 @@ class Handler(BaseHTTPRequestHandler):
         self._send(status, json.dumps(res) if res is not None else b"")
 
     def _dispatch(self, method):
+        _req.cookies = ()
         url = urllib.parse.urlparse(self.path)
         query = dict(urllib.parse.parse_qsl(url.query))
         path = url.path.rstrip("/") or "/"
@@ -941,7 +948,7 @@ class Handler(BaseHTTPRequestHandler):
                 user, next_path = slack.finish(query.get("code"), query.get("state"))
                 personal.refresh(user)
                 return self._send(302, b"", "text/plain", [("Location", next_path),
-                                                           self._set_cookie(sessions.create(user), 30 * 86400)])
+                                                           self._set_cookie(sessions.create(user), SESSION_COOKIE_AGE)])
             if path == "/auth/slack/logout" and method == "POST":
                 sessions.delete(self._session_id())
                 return self._send(200, {"result": {"signed_out": True}}, headers=[self._set_cookie("", 0)])
