@@ -192,12 +192,25 @@ export function onUnauthorized(listener: () => void) {
   return () => void unauthorizedListeners.delete(listener)
 }
 
+let clientOrigin = 'ui'
+
+export function withClientOrigin<T>(origin: string, fn: () => T): T {
+  const previous = clientOrigin
+  clientOrigin = origin
+  try {
+    return fn()
+  } finally {
+    clientOrigin = previous
+  }
+}
+
 const RETRYABLE = new Set([502, 503, 504])
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
 async function request<T>(method: string, path: string, body?: unknown, retried = false): Promise<T> {
   const headers: Record<string, string> = {}
   if (body !== undefined) headers['Content-Type'] = 'application/json'
+  if (method !== 'GET') headers['X-Client-Origin'] = clientOrigin
   if (token) headers.Authorization = `Bearer ${token}`
   const retry = method === 'GET' && !retried
   let res: Response

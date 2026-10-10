@@ -10,7 +10,7 @@ const MAX_SECONDS = 20 * 60
 const DRIFT_S = 1.5
 const END_SLACK_S = 0.3
 
-export const mediaSessionSupported = false && typeof navigator !== 'undefined' && 'mediaSession' in navigator
+export const mediaSessionSupported = typeof navigator !== 'undefined' && 'mediaSession' in navigator
 
 let state: SyncState = mediaSessionSupported && storage.get(STORAGE_KEY) === '1' ? 'starting' : 'off'
 let error: string | null = null
@@ -20,9 +20,8 @@ let trackUrl: string | null = null
 let trackKey: string | null = null
 let target: SyncTarget | null = null
 let ourPause = false
-let ourSeek = false
 let unlocking = false
-let onSystemSeek: ((ms: number) => void) | null = null
+let lastOwnOperation = 0
 const playingListeners = new Set<() => void>()
 const listeners = new Set<() => void>()
 
@@ -73,32 +72,31 @@ function element() {
     }
     if (state === 'on' && target?.playing && !atEnd(el)) setState('interrupted')
   })
-  el.addEventListener('seeking', () => {
-    if (ourSeek) return
-    if (state === 'on' && trackKey && el.src === trackUrl) onSystemSeek?.(el.currentTime * 1000)
-  })
   el.addEventListener('playing', () => playingListeners.forEach((l) => l()))
-  el.addEventListener('seeked', () => {
-    ourSeek = false
-  })
   audio = el
   return el
 }
 
+function markOwnOperation() {
+  lastOwnOperation = performance.now()
+}
+
 function seekTo(el: HTMLAudioElement, seconds: number) {
   if (!(el.duration > 0) || seconds >= el.duration) return
-  ourSeek = true
+  markOwnOperation()
   el.currentTime = seconds
 }
 
 function play(el: HTMLAudioElement) {
   if (!el.paused || atEnd(el)) return
+  markOwnOperation()
   el.play().catch((err: unknown) => setState('interrupted', describe(err)))
 }
 
 function pause(el: HTMLAudioElement) {
   if (el.paused) return
   ourPause = true
+  markOwnOperation()
   el.pause()
 }
 
@@ -111,6 +109,7 @@ function loadTrack(el: HTMLAudioElement, next: SyncTarget) {
   trackKey = next.key
   trackUrl = silentWavUrl(Math.min(MAX_SECONDS, Math.max(1, next.durationMs / 1000)))
   ourPause = !el.paused
+  markOwnOperation()
   el.src = trackUrl
   el.addEventListener(
     'loadedmetadata',
@@ -144,6 +143,7 @@ function start() {
   if (!el.src) el.src = primerUrl
   unlocking = true
   setState('on')
+  markOwnOperation()
   el.play().then(
     () => {
       unlocking = false
@@ -185,8 +185,8 @@ export const nowPlayingSync = {
     if (!next && audio) pause(audio)
     else apply()
   },
-  onSeek(handler: ((ms: number) => void) | null) {
-    onSystemSeek = handler
+  ownOperationWithin(ms: number) {
+    return performance.now() - lastOwnOperation < ms
   },
   onPlaying(listener: () => void) {
     playingListeners.add(listener)

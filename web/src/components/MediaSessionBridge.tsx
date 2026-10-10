@@ -1,10 +1,12 @@
 import { useEffect, useReducer, useRef } from 'react'
-import type { Track } from '../lib/api'
+import { withClientOrigin, type Track } from '../lib/api'
 import { byline } from '../lib/format'
 import { mediaSessionSupported, nowPlayingSync, useSyncState } from '../lib/nowPlayingSync'
 import { usePlayer } from '../state/player'
 
 const SEEK_STEP_S = 10
+const ECHO_WINDOW_MS = 1000
+const RATE_LIMIT_MS = { skip: 1500, seek: 1000 }
 const SPOTIFY_SIZES: [string, string][] = [
   ['ab67616d00004851', '64x64'],
   ['ab67616d00001e02', '300x300'],
@@ -50,15 +52,28 @@ export function MediaSessionBridge() {
   useEffect(() => {
     if (!enabled) return
     const p = () => latest.current
+    const lastSent = { skip: 0, seek: 0 }
+    const guarded =
+      (action: MediaSessionAction, kind: keyof typeof lastSent | null, run: (d: MediaSessionActionDetails) => void): MediaSessionActionHandler =>
+      (details) => {
+        const now = performance.now()
+        if (nowPlayingSync.ownOperationWithin(ECHO_WINDOW_MS)) return
+        if (kind && now - lastSent[kind] < RATE_LIMIT_MS[kind]) return
+        if (kind) lastSent[kind] = now
+        withClientOrigin(`media-session:${action}`, () => run(details))
+      }
+    const seekTo = (ms: number) => {
+      if (Math.abs(p().positionAt(performance.now()) - ms) >= 1000) p().seek(ms)
+    }
     const handlers: Record<string, MediaSessionActionHandler> = {
-      play: () => !p().isPlaying && p().togglePlay(),
-      pause: () => p().isPlaying && p().togglePlay(),
-      stop: () => p().isPlaying && p().togglePlay(),
-      nexttrack: () => p().next(),
-      previoustrack: () => p().previous(),
-      seekto: (d) => d.seekTime != null && p().seek(d.seekTime * 1000),
-      seekforward: (d) => p().seekBy((d.seekOffset ?? SEEK_STEP_S) * 1000),
-      seekbackward: (d) => p().seekBy(-(d.seekOffset ?? SEEK_STEP_S) * 1000),
+      play: guarded('play', null, () => !p().isPlaying && p().togglePlay()),
+      pause: guarded('pause', null, () => p().isPlaying && p().togglePlay()),
+      stop: guarded('stop', null, () => p().isPlaying && p().togglePlay()),
+      nexttrack: guarded('nexttrack', 'skip', () => p().next()),
+      previoustrack: guarded('previoustrack', 'skip', () => p().previous()),
+      seekto: guarded('seekto', 'seek', (d) => d.seekTime != null && seekTo(d.seekTime * 1000)),
+      seekforward: guarded('seekforward', 'seek', (d) => p().seekBy((d.seekOffset ?? SEEK_STEP_S) * 1000)),
+      seekbackward: guarded('seekbackward', 'seek', (d) => p().seekBy(-(d.seekOffset ?? SEEK_STEP_S) * 1000)),
     }
     const register = () => {
       const current = p().status?.track
@@ -67,14 +82,12 @@ export function MediaSessionBridge() {
       navigator.mediaSession.playbackState = current ? (p().isPlaying ? 'playing' : 'paused') : 'none'
     }
     register()
-    nowPlayingSync.onSeek((ms) => p().seek(ms))
     const stopListening = nowPlayingSync.onPlaying(register)
     const onVisible = () => document.visibilityState === 'visible' && resync()
     document.addEventListener('visibilitychange', onVisible)
     return () => {
       stopListening()
       document.removeEventListener('visibilitychange', onVisible)
-      nowPlayingSync.onSeek(null)
       ACTIONS.forEach((action) => setHandler(action, null))
       navigator.mediaSession.metadata = null
       navigator.mediaSession.playbackState = 'none'

@@ -2,11 +2,12 @@ import type { AppPlaylist, Lyrics, Queue, Status, Track } from '../lib/api'
 import fixtures from './fixtures.json'
 
 type Mode = 'full' | 'signedout' | 'writes' | 'down'
-type Call = { method: string; path: string; body: unknown }
+type Call = { method: string; path: string; body: unknown; origin: string | null }
 
 declare global {
   interface Window {
     __mockCalls: Call[]
+    __mockLab: { next: () => void; pause: () => void; resume: () => void; seek: (ms: number) => void }
   }
 }
 
@@ -333,6 +334,15 @@ export function installMock(param: string | null) {
   const mode: Mode = param === 'signedout' || param === 'writes' || param === 'down' ? param : param !== null ? 'full' : ((stored as Mode) ?? 'full')
   sessionStorage.setItem('mock', mode)
   window.__mockCalls = []
+  window.__mockLab = {
+    next: () => {
+      const i = tracks.findIndex((t) => t.uri === state.status.track?.uri)
+      playTrack(tracks[(i + 1) % tracks.length])
+    },
+    pause: () => setStatus({ state: 'paused' }),
+    resume: () => setStatus({ state: 'playing' }),
+    seek: (ms) => setStatus({ position_ms: ms }),
+  }
   const realFetch = window.fetch.bind(window)
 
   window.fetch = async (input, init) => {
@@ -340,7 +350,8 @@ export function installMock(param: string | null) {
     const method = (init?.method ?? 'GET').toUpperCase()
     if (!/^\/(api|auth)(\/|$)/.test(url.pathname)) return realFetch(input, init)
     const body = init?.body ? JSON.parse(String(init.body)) : {}
-    if (method !== 'GET') window.__mockCalls.push({ method, path: url.pathname + url.search, body })
+    const origin = new Headers(init?.headers).get('X-Client-Origin')
+    if (method !== 'GET') window.__mockCalls.push({ method, path: url.pathname + url.search, body, origin })
     if (mode === 'writes' && (method === 'GET' || url.pathname === '/api/resolve')) return realFetch(input, init)
     const slow = url.pathname.endsWith('/import') || url.pathname === '/api/resolve'
     await new Promise((r) => setTimeout(r, slow ? (String(body.url ?? '').includes('apple') ? 3500 : 1500) : 120))

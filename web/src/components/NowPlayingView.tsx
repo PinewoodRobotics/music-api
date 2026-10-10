@@ -77,7 +77,7 @@ function Sheet() {
     return () => window.removeEventListener('keydown', key)
   }, [dismiss, wake])
 
-  const fade = `transition-opacity duration-700 ${awake ? 'opacity-100' : 'pointer-events-none opacity-0'}`
+  const fade = `transition-opacity duration-[400ms] ${awake ? 'opacity-100' : 'pointer-events-none opacity-0'}`
   const art = status?.track?.artwork ?? null
 
   return (
@@ -112,7 +112,7 @@ function Sheet() {
           {compact ? (
             <PhoneLayout art={art} panel={panel} onToggle={togglePanel} />
           ) : (
-            <WideLayout art={art} panel={panel} onToggle={togglePanel} fine={fine} fade={fade} hold={hold} />
+            <WideLayout art={art} panel={panel} onToggle={togglePanel} fine={fine} idle={fine && !awake} fade={fade} hold={hold} />
           )}
         </div>
       </div>
@@ -176,20 +176,41 @@ function PhoneLayout({ art, panel, onToggle }: LayoutProps) {
   )
 }
 
-function WideLayout({ art, panel, onToggle, fine, fade, hold }: LayoutProps & { fine: boolean; fade: string; hold: (on: boolean) => void }) {
+function useHeight<T extends HTMLElement>() {
+  const ref = useRef<T>(null)
+  const [height, setHeight] = useState(0)
+  useLayoutEffect(() => {
+    const el = ref.current
+    if (!el) return
+    const observer = new ResizeObserver(() => setHeight(el.offsetHeight))
+    observer.observe(el)
+    setHeight(el.offsetHeight)
+    return () => observer.disconnect()
+  }, [])
+  return [ref, height] as const
+}
+
+type WideProps = LayoutProps & { fine: boolean; idle: boolean; fade: string; hold: (on: boolean) => void }
+
+function WideLayout({ art, panel, onToggle, fine, idle, fade, hold }: WideProps) {
   const column = panel ? 'min(40vw, 54vh)' : fine ? 'min(60vh, 56vw)' : 'min(52vh, 70vw)'
+  const [controlsRef, controlsHeight] = useHeight<HTMLDivElement>()
   return (
     <div className="relative flex min-h-0 flex-1 items-center justify-center gap-[6vw] px-[5vw] pb-4">
-      <div className="flex shrink-0 flex-col transition-[width] duration-500" style={{ width: column }}>
+      <div
+        className="flex shrink-0 flex-col transition-[width,transform] duration-[400ms] ease-[cubic-bezier(0.25,0.1,0.25,1)]"
+        style={{ width: column, transform: idle ? `translateY(${controlsHeight / 2}px)` : undefined }}
+      >
         <Artwork art={art} className="aspect-square w-full rounded-xl" />
+        <div className="mt-6">
+          <TrackTitle size={fine ? 'sm' : 'lg'} withMenu={!fine} />
+        </div>
         <div
+          ref={controlsRef}
           className={fine ? fade : ''}
           onPointerEnter={(e) => e.pointerType === 'mouse' && hold(true)}
           onPointerLeave={(e) => e.pointerType === 'mouse' && hold(false)}
         >
-          <div className="mt-6">
-            <TrackTitle size={fine ? 'sm' : 'lg'} withMenu={!fine} />
-          </div>
           {fine ? <DesktopStrip panel={panel} onToggle={onToggle} /> : <TabletControls />}
         </div>
       </div>
