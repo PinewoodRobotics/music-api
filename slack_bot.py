@@ -4,6 +4,7 @@ Stdlib only. Everything that talks to Slack runs on its own threads; the player 
 The HTTP routes (/slack/commands, /slack/interactions, /slack/events) are verified with the signing secret
 and bypass token/session auth. The feed subscribes to Player events like the SSE endpoint does.
 """
+import copy
 import hashlib
 import hmac
 import json
@@ -26,6 +27,9 @@ DEFAULT_TEAM = "T09DBUR4YER"
 DEFAULT_CHANNEL = "C0C80T1DNBF"
 DEFAULT_REMOTE = "https://music.pinewoodrobotics.org/"
 LINK_RX = re.compile(r"https?://(?:open\.spotify\.com|music\.apple\.com)/\S+|spotify:(?:track|album|playlist):\w{22}")
+CARD_LINKS = 3
+QUEUE_CAP = 50
+PLAY_CAP = 100
 MAX_AGE = 300
 UPDATE_EVERY = 5
 SETTLE = 3  # seconds of silence before the card collapses to "Played"
@@ -225,7 +229,8 @@ def link_blocks(r):
     if kind == "track" and uri:
         btns = [button("Add to queue", "queue_add", uri, "primary"), button("Play", "play_uri", uri)]
     elif kind == "album":
-        btns = ([button("Play", "play_uri", uri, "primary")] if uri else []) + [button("Import as playlist", "import_playlist", r["url"])]
+        btns = ([button("Play", "play_uri", uri, "primary"), button("Add to Library", "add_album", r["url"])] if uri
+                else [button("Import as playlist", "import_playlist", r["url"])])
     elif kind == "playlist":
         btns = [button("Import as playlist", "import_playlist", r["url"], "primary")] + \
                ([button("Play", "play_uri", uri)] if uri and not apple else [])
@@ -233,16 +238,74 @@ def link_blocks(r):
     return blocks + ([{"type": "actions", "block_id": "link", "elements": btns}] if btns else [])
 
 
+KIND_LABEL = {"track": "Song", "album": "Album", "playlist": "Playlist"}
+
+
+def matched_uris(r):
+    return [t["uri"] for t in r.get("tracks") or [] if t.get("uri")]
+
+
+def reply_card(r, idx, poster):
+    """The card the bot posts in the thread of a link shared in the music channel. Block IDs carry the card
+    index so one reply can hold several cards: info<i>, rl<i> (buttons), out<i> (accumulated outcomes)."""
+    kind, apple, uri = r.get("kind"), r.get("source") == "apple", r.get("spotify_uri")
+    name = esc(r.get("name") or "Untitled")
+    sec = {"type": "section", "text": {"type": "mrkdwn", "text": (f"*<{r['url']}|{name}>*" if r.get("url") else f"*{name}*")
+                                       + (f"\n{esc(r['subtitle'])}" if r.get("subtitle") else "")}}
+    if r.get("artwork"):
+        sec["accessory"] = {"type": "image", "image_url": r["artwork"], "alt_text": r.get("name") or "cover"}
+    label = KIND_LABEL.get(kind, "Link")
+    if apple:
+        label += " · Apple Music → matched on Spotify" if uri or matched_uris(r) else " · Apple Music, not found on Spotify"
+    info = [label]
+    if kind != "track" and r.get("total"):
+        n = f"{r['total']} songs"
+        if r.get("matched") is not None:
+            n += f" · {r['matched']} on Spotify"
+        info.append(n + (" (first batch only)" if r.get("truncated") else ""))
+    if poster:
+        info.append(f"shared by {esc(poster)}")
+    queue_n = len(matched_uris(r))
+    btns = []
+    if kind == "track":
+        if uri:
+            btns = [button("▶ Play now", "rl_play", r["url"], "primary"), button("＋ Add to queue", "rl_queue", r["url"])]
+    elif kind == "album":
+        if uri:
+            btns = [button("▶ Play now", "rl_play", r["url"], "primary")]
+            btns += [button("＋ Queue album", "rl_queue", r["url"])] if queue_n else []
+            btns.append(button("Add to Library", "rl_library", r["url"]))
+        else:
+            info.append("No Spotify match, so it can only be imported as a playlist")
+            btns = [button("Import as playlist", "rl_import", r["url"])]
+    elif kind == "playlist":
+        if (uri and not apple) or (apple and queue_n):
+            btns.append(button("▶ Play now", "rl_play", r["url"], "primary"))
+        if queue_n:
+            btns.append(button("＋ Queue songs", "rl_queue", r["url"]))
+        btns.append(button("Import to Library", "rl_import", r["url"]))
+    blocks = [sec, {"type": "context", "block_id": f"info{idx}",
+                    "elements": [{"type": "mrkdwn", "text": " · ".join(info)}]}]
+    if btns:
+        blocks.append({"type": "actions", "block_id": f"rl{idx}", "elements": btns})
+    return blocks
+
+
 # ---------- the bot ----------
 
 class SlackBot:
     def __init__(self, slack, player, api, credits, signing_secret, channel=DEFAULT_CHANNEL, team=DEFAULT_TEAM,
-                 remote=DEFAULT_REMOTE, resolve=None, importer=None, state_path=None, activity=None):
+                 remote=DEFAULT_REMOTE, resolve=None, importer=None, state_path=None, activity=None, add_album=None,
+                 playlist_importer=None):
         self.slack, self.player, self.api, self.credits = slack, player, api, credits
         self.token = slack.bot_token
         self.secret, self.channel, self.team, self.remote = signing_secret, channel, team, remote
         self.resolve = resolve or self.spotify_resolve
         self.importer = importer
+        self.add_album = add_album
+        self._playlist_importer = playlist_importer
+        self.cards, self.card_lock = {}, threading.Lock()
+        self.replied, self.bot_user = set(), None
         self.activity = activity
         self.users, self.users_lock = {}, threading.Lock()
         self.warned = set()
@@ -277,6 +340,10 @@ class SlackBot:
             os.replace(tmp, self.state_path)
         except OSError as e:
             self._warn(("state", str(e)[:60]), f"couldn't save feed state: {e}")
+
+    @property
+    def playlist_importer(self):
+        return self._playlist_importer or self.importer
 
     @property
     def enabled(self):
@@ -517,19 +584,50 @@ class SlackBot:
                 self.done(p, a, ephemeral, "Playing", "Playing now")
             elif act == "import_playlist":
                 self.import_playlist(p, a, ephemeral, a.get("value"))
+            elif act == "add_album":
+                self.add_to_library(p, a, ephemeral, a.get("value"))
+            elif act in ("rl_play", "rl_queue", "rl_library", "rl_import"):
+                self.card_action(p, a)
         except (PlayerError, SpotifyError, ValueError) as e:
             self.respond(url, {"response_type": "ephemeral", "replace_original": False, "text": f"Couldn't do that: {e}"})
 
+    def add_to_library(self, p, a, ephemeral, link):
+        url, uid = p.get("response_url"), p["user"]["id"]
+        if not self.add_album:
+            return self.respond(url, {"response_type": "ephemeral", "replace_original": False, "text": "The Library isn't available."})
+        u = self.user(uid, p["user"].get("name"))
+        try:
+            album = self.add_album(link, self.library_user(u))
+        except Exception as e:  # noqa: BLE001 - LinkError, AccountError, Spotify and network errors become a message
+            return self.respond(url, {"response_type": "ephemeral", "replace_original": False, "text": f"Couldn't add that: {e}"})
+        self.log_album(u, album)
+        self.done(p, a, ephemeral, "Added", self.album_text(album))
+
+    @staticmethod
+    def library_user(u):
+        return {"id": u["id"], "name": u["name"], "avatar": u.get("avatar"), "admin": False}
+
+    def log_album(self, u, album):
+        if not album.get("already"):
+            self.log(u, "album_add", {"id": album.get("id"), "name": album.get("name")})
+
+    def album_text(self, album):
+        link = f"<{self.remote.rstrip('/')}/album/{album.get('id')}|{esc(album.get('name'))}>"
+        return f"{link} is already in the Library" if album.get("already") else f"Added {link} to the Library"
+
     def import_playlist(self, p, a, ephemeral, link):
         url, uid = p.get("response_url"), p["user"]["id"]
-        if not self.importer:
+        if not self.playlist_importer:
             return self.respond(url, {"response_type": "ephemeral", "replace_original": False, "text": "Importing isn't available."})
         self.respond(url, {"response_type": "ephemeral", "replace_original": False, "text": "Importing... this can take a minute."})
         u = self.user(uid, p["user"].get("name"))
         try:
-            res = self.importer(link, {"id": uid, "name": u["name"], "avatar": u["avatar"], "admin": False})
+            res = self.playlist_importer(link, self.library_user(u))
         except Exception as e:  # noqa: BLE001 - LinkError, AccountError, Spotify and network errors become a message
             return self.respond(url, {"response_type": "ephemeral", "replace_original": False, "text": f"Couldn't import that: {e}"})
+        if res.get("kind") == "album":
+            self.log_album(u, res["album"])
+            return self.done(p, a, ephemeral, "Added", self.album_text(res["album"]))
         pl = res["playlist"]
         self.log({"id": uid, "name": u["name"], "avatar": u["avatar"]}, "playlist_import",
                  {"id": pl["id"], "name": pl.get("name"), "imported": res.get("imported"), "source": res.get("source")})
@@ -540,6 +638,88 @@ class SlackBot:
         if miss:
             text += "\nNot on Spotify: " + "; ".join(miss)
         self.done(p, a, ephemeral, "Imported", text)
+
+    def card_action(self, p, a):
+        """A button on a card the bot posted in a thread: do it, then add the outcome to that same message."""
+        url, act = p.get("response_url"), a.get("action_id")
+        uid = p["user"]["id"]
+        idx = (a.get("block_id") or "rl0")[2:]
+        u = self.user(uid, p["user"].get("name"))
+        who_ = who(u)
+        try:
+            r = self.resolve(a["value"])
+            kind, uri, uris = r["kind"], r.get("spotify_uri"), matched_uris(r)
+            names = [t.get("name") for t in r.get("tracks") or [] if t.get("uri")]
+            drop, outcome = (), None
+            if act == "rl_play":
+                if kind == "playlist" and r.get("source") == "apple":
+                    plan = {"uris": uris[:PLAY_CAP]}
+                    self.player.play(plan)
+                    self.credits.start(plan["uris"], u)
+                    self.log(u, "play_item", {"uri": plan["uris"][0], "type": "track", "name": r.get("name")})
+                else:
+                    self.player.play({"uri": uri})
+                    self.credits.start([uri], u)
+                    self.log(u, "play_item", {"uri": uri, "type": kind, "name": r.get("name")})
+                outcome = f"✓ Playing now, started by {who_}"
+            elif act == "rl_queue":
+                q = ([uri] if kind == "track" else uris[:QUEUE_CAP])
+                self.player.enqueue({"uris": q})
+                self.credits.add(q, u)
+                self.log(u, "queue_add", {"uris": q, "count": len(q)}, lambda: {"names": names[:len(q)]})
+                outcome = f"✓ Added {'to queue' if len(q) == 1 else f'{len(q)} songs to queue'} by {who_}"
+            elif act == "rl_library":
+                if not self.add_album:
+                    raise ValueError("the Library isn't available")
+                album = self.add_album(r["url"], self.library_user(u))
+                self.log_album(u, album)
+                outcome, drop = f"✓ {'Already in' if album.get('already') else 'Added to'} Library by {who_}", ("rl_library", "rl_import")
+            else:
+                if not self.playlist_importer:
+                    raise ValueError("importing isn't available")
+                res = self.playlist_importer(r["url"], self.library_user(u))
+                if res.get("kind") == "album":
+                    self.log_album(u, res["album"])
+                    outcome = f"✓ Added to Library by {who_}"
+                else:
+                    pl = res["playlist"]
+                    self.log(u, "playlist_import", {"id": pl["id"], "name": pl.get("name"), "imported": res.get("imported"),
+                                                    "source": res.get("source")})
+                    outcome = f"✓ Imported {res.get('imported')} of {res.get('total') or res.get('imported')} songs to Library by {who_}"
+                drop = ("rl_library", "rl_import")
+        except Exception as e:  # noqa: BLE001 - failures go to the person who clicked, not the channel
+            return self.respond(url, {"response_type": "ephemeral", "replace_original": False, "text": f"Couldn't do that: {e}"})
+        self.update_card(p, idx, outcome, drop)
+
+    def update_card(self, p, idx, outcome, drop=()):
+        msg = p.get("message") or {}
+        ts, ch = msg.get("ts") or (p.get("container") or {}).get("message_ts"), (p.get("channel") or {}).get("id") or self.channel
+        with self.card_lock:
+            blocks = copy.deepcopy(self.cards.get(ts) or msg.get("blocks") or [])
+            out_id = f"out{idx}"
+            for i, b in enumerate(blocks):
+                if b.get("block_id") == f"rl{idx}":
+                    b["elements"] = [e for e in b["elements"] if e.get("action_id") not in drop]
+                    if not b["elements"]:
+                        blocks[i] = None
+                elif b.get("block_id") == f"info{idx}" and drop:
+                    t = b["elements"][0]["text"]
+                    if "✓ In Library" not in t:
+                        b["elements"][0]["text"] = t + " · ✓ In Library"
+            blocks = [b for b in blocks if b]
+            out = next((b for b in blocks if b.get("block_id") == out_id), None)
+            if out:
+                if outcome not in out["elements"][0]["text"].split(" · "):
+                    out["elements"][0]["text"] += " · " + outcome
+            else:
+                at = next((i for i, b in enumerate(blocks) if b.get("block_id") == f"rl{idx}"), None)
+                if at is None:
+                    at = next((i for i, b in enumerate(blocks) if b.get("block_id") == f"info{idx}"), len(blocks) - 1)
+                blocks.insert(at + 1, {"type": "context", "block_id": out_id, "elements": [{"type": "mrkdwn", "text": outcome}]})
+            if self.call("chat.update", channel=ch, ts=ts, text=msg.get("text") or "Music link", blocks=blocks):
+                self.cards[ts] = blocks
+                while len(self.cards) > 50:
+                    self.cards.pop(next(iter(self.cards)))
 
     def done(self, p, a, ephemeral, label, text):
         url = p.get("response_url")
@@ -566,8 +746,40 @@ class SlackBot:
         self.seen_events[eid] = now
         e = ev.get("event") or {}
         if e.get("type") == "link_shared":
-            self.spawn(self.unfurl, e)
+            self.spawn(self.thread_reply if e.get("channel") == self.channel else self.unfurl, e)
         return 200, None
+
+    def own_user_id(self):
+        if not self.bot_user:
+            try:
+                self.bot_user = self.slack._call("auth.test", self.token).get("user_id")
+            except (AccountError, KeyError) as err:
+                self._warn(("auth.test", str(err)[:60]), f"auth.test failed: {err}")
+        return self.bot_user
+
+    def thread_reply(self, e):
+        """Links posted in the music channel get one threaded card (also sent to the channel) instead of an unfurl."""
+        ts = e.get("message_ts")
+        if not ts or ts in self.replied or (e.get("user") and e["user"] == self.own_user_id()):
+            return
+        self.replied.add(ts)
+        if len(self.replied) > 200:
+            self.replied = set(sorted(self.replied)[100:])
+        poster = self.user(e["user"])["name"] if e.get("user") else None
+        cards, names = [], []
+        for link in e.get("links", [])[:6]:
+            if len(names) >= CARD_LINKS:
+                break
+            try:
+                r = self.resolve(link["url"])
+            except Exception as err:  # noqa: BLE001 - unsupported links (LinkError) and lookup failures get no card
+                self._warn(("reply", str(err)[:60]), f"link {link.get('url')}: {err}")
+                continue
+            cards += reply_card(r, len(names), poster)
+            names.append(r.get("name") or "link")
+        if cards:
+            self.call("chat.postMessage", channel=self.channel, thread_ts=e.get("thread_ts") or ts, reply_broadcast=True,
+                      text="Robotics Music: " + ", ".join(names), blocks=cards, unfurl_links=False, unfurl_media=False)
 
     def unfurl(self, e):
         unfurls = {}
@@ -682,8 +894,9 @@ class SlackBot:
             cur["sig"] = self.sig(cur)
 
 
-def from_env(slack, player, api, credits, resolve=None, importer=None, state_path=None, activity=None):
+def from_env(slack, player, api, credits, resolve=None, importer=None, state_path=None, activity=None, add_album=None,
+             playlist_importer=None):
     return SlackBot(slack, player, api, credits, os.environ.get("SLACK_SIGNING_SECRET"),
                     os.environ.get("SLACK_MUSIC_CHANNEL") or DEFAULT_CHANNEL,
                     slack.team_id or DEFAULT_TEAM, os.environ.get("SLACK_REMOTE_URL") or DEFAULT_REMOTE,
-                    resolve, importer, state_path, activity)
+                    resolve, importer, state_path, activity, add_album, playlist_importer)

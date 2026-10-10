@@ -101,6 +101,16 @@ Setup: create a Slack app from this manifest at api.slack.com/apps, install it t
 `SLACK_CLIENT_ID`, `SLACK_CLIENT_SECRET`, `SLACK_BOT_TOKEN` (`xoxb-…`) and `SLACK_REDIRECT_URI` in `~/.config/music-api/env`.
 The bot token is used for `users.info` (display names), `auth.test` (the workspace ID sign-ins must match), and the Slack bot below.
 
+**Sign in with Google.** An alternative for `@pinewood.edu` accounts (`GET /auth/google/login`, callback `/auth/google/callback`, `GET /auth/methods` returns
+`{"slack": bool, "google": bool}`). The Google email is mapped to the Slack user with the same email (`users.lookupByEmail`), so the session, name, avatar,
+admin rights and personal token are identical to signing in with Slack. Accounts that aren't verified, not in the allowed domain, or not in the Slack workspace are refused.
+1. Google Cloud console > APIs & Services > Credentials > Create credentials > OAuth client ID > Web application.
+   Authorized redirect URI: `https://music.pinewoodrobotics.org/auth/google/callback`.
+2. OAuth consent screen: user type **Internal** if available (Workspace), scopes `openid email profile`.
+3. In `~/.config/music-api/env` set `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` and optionally `GOOGLE_REDIRECT_URI`
+   (default `<MUSIC_API_URL>/auth/google/callback`, else `http://127.0.0.1:<port>/auth/google/callback`) and `GOOGLE_ALLOWED_DOMAIN` (default `pinewood.edu`).
+4. Add the bot scope `users:read.email` to the Slack app and reinstall it (without it Google sign-in shows "isn't fully set up yet").
+
 **Slack bot ("Robotics Music").** Set `SLACK_SIGNING_SECRET` (Basic Information > Signing Secret) and invite the bot to the channel
 (`SLACK_MUSIC_CHANNEL`, default #music). Without the secret the bot stays off and the server starts normally.
 - *Live feed:* every track change posts one "Now playing" message (art, title, who queued it, the next 3 songs with art, Play/Pause, Skip, More Controls).
@@ -109,6 +119,7 @@ The bot token is used for `users.info` (display names), `auth.test` (the workspa
   Pasting a Spotify link after `/music` works too. Skips, pauses and plays are announced in the channel with who did them.
 - Tracks queued from Slack are credited to that person, so the web app's Up Next shows "Added by".
 - Spotify and Apple Music song, album and playlist links shared in Slack (or after `/music`) unfurl with Add to queue / Play / Import as playlist buttons.
+- A Spotify or Apple Music link posted in the music channel gets one threaded reply (also sent to the channel) with a card per link (up to 3): Play now, Queue, and Add to Library / Import to Library. Clicks update that same message with who did what.
 - `/slack/*` requests are verified with the signing secret (v0 HMAC, 5 minute window) and only accepted from the workspace.
 
 ```yaml

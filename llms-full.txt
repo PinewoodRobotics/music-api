@@ -36,6 +36,7 @@ A token is required for everything except:
 
 - `GET /` and any other non-`/api` page (the web app; it shows a Slack sign-in screen when needed)
 - `GET /auth/slack/login`, `GET /auth/slack/callback`, `POST /auth/slack/logout` (Sign in with Slack)
+- `GET /auth/google/login`, `GET /auth/google/callback` (Sign in with Google, @pinewood.edu accounts that are in the Slack workspace; same session as Slack), `GET /auth/methods` (`{"slack": bool, "google": bool}`)
 - `POST /slack/commands`, `POST /slack/interactions`, `POST /slack/events` (the Slack bot; called by Slack only, each request must carry a valid `X-Slack-Signature` for `SLACK_SIGNING_SECRET`, else 401)
 - `GET /llms.txt`, `GET /llms-full.txt`, `GET /LLMS.md`, `GET /API.md`, `GET /README.md`
 - `GET /auth/callback` (protected by the OAuth PKCE state instead)

@@ -239,7 +239,8 @@ class Links(unittest.TestCase):
         self.assertEqual(b[1]["elements"][0]["text"], "92 songs · 87 on Spotify")
         self.assertEqual(buttons(b), [("import_playlist", APPLE_PL["url"])])
         album = dict(APPLE_PL, kind="album", spotify_uri="spotify:album:2noRn2Aes5aoNVsU6iWThc")
-        self.assertEqual([a for a, _ in buttons(sb.link_blocks(album))], ["play_uri", "import_playlist"])
+        self.assertEqual([a for a, _ in buttons(sb.link_blocks(album))], ["play_uri", "add_album"])
+        self.assertEqual([a for a, _ in buttons(sb.link_blocks(dict(album, spotify_uri=None)))], ["import_playlist"])
         sp = dict(APPLE_PL, source="spotify", spotify_uri="spotify:playlist:2noRn2Aes5aoNVsU6iWThc")
         self.assertEqual([a for a, _ in buttons(sb.link_blocks(sp))], ["import_playlist", "play_uri"])
         self.assertEqual(buttons(sb.link_blocks(dict(APPLE_TRACK, spotify_uri=None))), [])
@@ -310,6 +311,180 @@ class Links(unittest.TestCase):
         bot.importer = fail
         bot.on_interaction(self.interaction())
         self.assertIn("Apple said no", bot.sent[-1][1]["text"])
+
+
+class FakeActivity:
+    def __init__(self):
+        self.entries = []
+
+    def record(self, user, action, detail=None, origin="web"):
+        e = {"id": len(self.entries), "by": user, "action": action, "detail": detail, "origin": origin}
+        self.entries.append(e)
+        return e
+
+    def enrich(self, entry, fn):
+        entry["detail"] = {**entry["detail"], **fn()}
+
+
+MUSIC = sb.DEFAULT_CHANNEL
+ALBUM_URI = "spotify:album:2noRn2Aes5aoNVsU6iWThc"
+
+
+def song(i, uri=True):
+    return {"name": f"S{i}", "artists": ["A"], "album": "Al", "duration_ms": 1000, "artwork": None,
+            "uri": f"spotify:track:{i:022d}" if uri else None}
+
+
+SP_ALBUM = {"source": "spotify", "kind": "album", "name": "Discovery", "subtitle": "Daft Punk", "artwork": "http://x/a.jpg",
+            "url": "https://open.spotify.com/album/2noRn2Aes5aoNVsU6iWThc", "spotify_uri": ALBUM_URI,
+            "tracks": [song(i) for i in range(60)], "total": 60, "matched": 60, "truncated": False}
+AP_ALBUM_NOMATCH = dict(SP_ALBUM, source="apple", url="https://music.apple.com/us/album/x/9", spotify_uri=None,
+                        tracks=[song(1, False)], matched=0, total=1)
+AP_PL = dict(APPLE_PL, tracks=[song(i, i % 2 == 0) for i in range(300)], total=300, matched=150)
+SP_PL = dict(APPLE_PL, source="spotify", url="https://open.spotify.com/playlist/2noRn2Aes5aoNVsU6iWThc",
+             spotify_uri="spotify:playlist:2noRn2Aes5aoNVsU6iWThc", tracks=[song(1)], total=1, matched=1)
+SP_TRACK = dict(APPLE_TRACK, source="spotify", url="https://open.spotify.com/track/5W3cjX2J3tjhG8zb6u0qHn")
+RESOLVED = {r["url"]: r for r in (SP_ALBUM, AP_ALBUM_NOMATCH, AP_PL, SP_PL, SP_TRACK, APPLE_TRACK)}
+
+
+class ThreadCards(unittest.TestCase):
+    def setUp(self):
+        self.bot = make()
+        self.bot.resolve = lambda u: RESOLVED[u]
+        self.bot.activity = FakeActivity()
+        self.bot.own_user_id = lambda: "UBOT"
+        self.albums = []
+
+        def add_album(url, user):
+            self.albums.append((url, user))
+            return {"id": "2noRn2Aes5aoNVsU6iWThc", "name": "Discovery", "already": len(self.albums) > 1}
+        self.bot.add_album = add_album
+
+    def shared(self, urls, channel=MUSIC, eid="E1", user="U9", ts="5.5", **kw):
+        return self.bot.on_event({"team_id": self.bot.team, "event_id": eid, "event": {
+            "type": "link_shared", "channel": channel, "message_ts": ts, "user": user,
+            "links": [{"url": u} for u in urls], **kw}}, {})
+
+    def click(self, blocks, block_id, action_id, value, uid="U1", name="ada", ts="7.7"):
+        self.bot.sent.clear()
+        self.bot.on_interaction({"type": "block_actions", "team": {"id": self.bot.team}, "user": {"id": uid, "name": name},
+                                 "response_url": "http://r/9", "channel": {"id": MUSIC}, "container": {"type": "message"},
+                                 "message": {"ts": ts, "text": "t", "blocks": blocks},
+                                 "actions": [{"action_id": action_id, "value": value, "block_id": block_id}]})
+        return self.bot.sent
+
+    def post(self, urls):
+        self.shared(urls)
+        call = self.bot.sent[-1]
+        self.assertTrue(call[0].endswith("chat.postMessage"))
+        return call[1]
+
+    def test_music_channel_posts_one_broadcast_reply(self):
+        post = self.post([SP_ALBUM["url"], SP_TRACK["url"], AP_PL["url"], SP_PL["url"]])
+        self.assertEqual((post["thread_ts"], post["reply_broadcast"], post["channel"]), ("5.5", True, MUSIC))
+        ids = [b.get("block_id") for b in post["blocks"] if b.get("block_id")]
+        self.assertEqual(ids, ["info0", "rl0", "info1", "rl1", "info2", "rl2"])
+        self.assertEqual(len([u for u, _ in self.bot.sent if u.endswith("chat.postMessage")]), 1)
+        info = post["blocks"][1]["elements"][0]["text"]
+        self.assertEqual(info, "Album · 60 songs · 60 on Spotify · shared by Ada")
+        self.assertNotIn("<@", json.dumps(post["blocks"]))
+        self.assertEqual([a for a, _ in buttons(post["blocks"][:3])], ["rl_play", "rl_queue", "rl_library"])
+
+    def test_dedupe_and_other_channel_and_own_posts(self):
+        self.shared([SP_TRACK["url"]])
+        n = len(self.bot.sent)
+        self.shared([SP_TRACK["url"]], eid="E2")
+        self.assertEqual(len(self.bot.sent), n)
+        self.bot.sent.clear()
+        self.shared([SP_TRACK["url"]], eid="E3", ts="6.6", user="UBOT")
+        self.assertEqual(self.bot.sent, [])
+        self.shared([SP_TRACK["url"]], channel="C999", eid="E4", ts="8.8", unfurl_id="U.1", source="composer")
+        self.assertTrue(self.bot.sent[-1][0].endswith("chat.unfurl"))
+
+    def test_unresolvable_links_post_nothing(self):
+        self.bot.resolve = lambda u: (_ for _ in ()).throw(ValueError("nope"))
+        self.shared(["https://open.spotify.com/artist/x"])
+        self.assertEqual(self.bot.sent, [])
+
+    def test_card_variants(self):
+        apple = sb.reply_card(APPLE_TRACK, 0, "Ada")
+        self.assertIn("Song · Apple Music → matched on Spotify", apple[1]["elements"][0]["text"])
+        self.assertEqual([a for a, _ in buttons(apple)], ["rl_play", "rl_queue"])
+        self.assertIn("Playlist", sb.reply_card(AP_PL, 0, None)[1]["elements"][0]["text"])
+        self.assertEqual([a for a, _ in buttons(sb.reply_card(AP_PL, 0, None))], ["rl_play", "rl_queue", "rl_import"])
+        self.assertEqual([a for a, _ in buttons(sb.reply_card(SP_PL, 0, None))], ["rl_play", "rl_queue", "rl_import"])
+        nomatch = sb.reply_card(AP_ALBUM_NOMATCH, 0, "Ada")
+        self.assertIn("can only be imported as a playlist", json.dumps(nomatch))
+        self.assertEqual([a for a, _ in buttons(nomatch)], ["rl_import"])
+
+    def test_play_queue_accumulate_on_same_message(self):
+        blocks = sb.reply_card(SP_ALBUM, 0, "Ada")
+        sent = self.click(blocks, "rl0", "rl_queue", SP_ALBUM["url"])
+        upd = sent[-1]
+        self.assertTrue(upd[0].endswith("chat.update"))
+        self.assertEqual((upd[1]["ts"], upd[1]["channel"]), ("7.7", MUSIC))
+        self.assertEqual(len(self.bot.player.calls[-1][1]["uris"]), sb.QUEUE_CAP)
+        out = [b for b in upd[1]["blocks"] if b.get("block_id") == "out0"][0]
+        self.assertEqual(out["elements"][0]["text"], "✓ Added 50 songs to queue by Ada")
+        self.assertEqual([b.get("block_id") for b in upd[1]["blocks"]][-2:], ["rl0", "out0"])
+        self.assertEqual(len(buttons(upd[1]["blocks"])), 3)
+        self.assertEqual(self.bot.activity.entries[-1]["origin"], "slack")
+        self.assertEqual(self.bot.activity.entries[-1]["action"], "queue_add")
+        self.bot.user = lambda uid, fb=None: {"id": uid, "name": "Howard", "avatar": None}
+        upd = self.click(blocks, "rl0", "rl_library", SP_ALBUM["url"], uid="U2")[-1]
+        out = [b for b in upd[1]["blocks"] if b.get("block_id") == "out0"][0]["elements"][0]["text"]
+        self.assertIn("✓ Added 50 songs to queue by Ada · ✓ Added to Library by Howard", out)
+        self.assertEqual([a for a, _ in buttons(upd[1]["blocks"])], ["rl_play", "rl_queue"])
+        self.assertIn("✓ In Library", upd[1]["blocks"][1]["elements"][0]["text"])
+        self.assertEqual(self.albums[0][0], SP_ALBUM["url"])
+        self.assertEqual(self.albums[0][1]["admin"], False)
+        self.assertEqual(self.bot.activity.entries[-1]["action"], "album_add")
+
+    def test_already_in_library_not_logged(self):
+        blocks = sb.reply_card(SP_ALBUM, 0, None)
+        self.click(blocks, "rl0", "rl_library", SP_ALBUM["url"])
+        n = len(self.bot.activity.entries)
+        upd = self.click(blocks, "rl0", "rl_library", SP_ALBUM["url"])[-1]
+        self.assertIn("Already in Library", json.dumps(upd[1]["blocks"]))
+        self.assertEqual(len(self.bot.activity.entries), n)
+
+    def test_play_variants(self):
+        self.click(sb.reply_card(SP_ALBUM, 0, None), "rl0", "rl_play", SP_ALBUM["url"])
+        self.assertEqual(self.bot.player.calls[-1], ("play", {"uri": ALBUM_URI}))
+        self.click(sb.reply_card(AP_PL, 0, None), "rl0", "rl_play", AP_PL["url"])
+        uris = self.bot.player.calls[-1][1]["uris"]
+        self.assertEqual(len(uris), 100)
+        self.assertEqual(self.bot.credits.started["uris"], uris)
+        self.click(sb.reply_card(SP_TRACK, 0, None), "rl0", "rl_queue", SP_TRACK["url"])
+        self.assertEqual(self.bot.player.calls[-1], ("enqueue", {"uris": [TRACK["uri"]]}))
+
+    def test_playlist_import_and_unmatched_album(self):
+        calls = []
+        self.bot.importer = lambda url, user: calls.append(url) or {
+            "playlist": {"id": "PL1", "name": "Mix"}, "imported": 150, "total": 300}
+        upd = self.click(sb.reply_card(AP_PL, 0, None), "rl0", "rl_import", AP_PL["url"])[-1]
+        self.assertIn("✓ Imported 150 of 300 songs to Library by Ada", json.dumps(upd[1]["blocks"], ensure_ascii=False))
+        self.assertNotIn("rl_import", json.dumps(upd[1]["blocks"]))
+        self.assertEqual(upd[1]["blocks"][-1]["block_id"], "out0")
+        self.click(sb.reply_card(AP_ALBUM_NOMATCH, 0, None), "rl0", "rl_import", AP_ALBUM_NOMATCH["url"])
+        self.assertEqual(calls[-1], AP_ALBUM_NOMATCH["url"])
+
+    def test_errors_are_ephemeral_to_clicker(self):
+        def boom(url, user):
+            raise ValueError("no Spotify match")
+        self.bot.add_album = boom
+        sent = self.click(sb.reply_card(SP_ALBUM, 0, None), "rl0", "rl_library", SP_ALBUM["url"])
+        self.assertEqual([u for u, _ in sent], ["http://r/9"])
+        self.assertIn("no Spotify match", sent[0][1]["text"])
+        self.assertEqual(sent[0][1]["response_type"], "ephemeral")
+
+    def test_add_album_button_in_other_flows(self):
+        sent = self.click(sb.link_blocks(SP_ALBUM), "link", "add_album", SP_ALBUM["url"])
+        self.assertEqual(self.albums[0][0], SP_ALBUM["url"])
+        self.assertIn("to the Library", sent[-1][1]["text"])
+        self.bot.importer = lambda u, user: {"kind": "album", "album": {"id": "A1", "name": "Disc"}}
+        sent = self.click(sb.link_blocks(AP_ALBUM_NOMATCH), "link", "import_playlist", AP_ALBUM_NOMATCH["url"])
+        self.assertIn("Added", sent[-1][1]["text"])
 
 
 class Events(unittest.TestCase):
