@@ -28,6 +28,7 @@ type Player = {
   pending: string | null
   addToQueue: (uris: string[]) => Promise<void>
   refreshQueue: () => void
+  replaceQueue: (queue: Queue) => void
 }
 
 const PlayerContext = createContext<Player | null>(null)
@@ -65,6 +66,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
 
   const apply = useCallback(
     (incoming: Status) => {
+      if (incoming.removed && clockRef.current.status) return
       const now = performance.now()
       const s = { ...incoming }
       const wall = Date.now()
@@ -275,6 +277,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       },
       pending,
       refreshQueue,
+      replaceQueue: setQueue,
       addToQueue: async (uris) => {
         try {
           await api.addToQueue(uris)

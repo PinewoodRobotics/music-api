@@ -130,6 +130,8 @@ function playTrack(track: Track, context: Status['context'] = state.status.conte
   setStatus({ track, duration_ms: track.duration_ms, position_ms: 0, state: 'playing', context, credit: { by: adam, how: 'started' } })
 }
 
+const removedUids = new Set<string>()
+
 function queue(): Queue {
   const ctx = items.p1
   const i = ctx.findIndex((t) => t.uri === state.status.track?.uri)
@@ -137,7 +139,7 @@ function queue(): Queue {
     upcoming: [
       ...queued.map((item, n) => ({ uid: `q${n}`, source: 'queue' as const, item, added_by: n === 0 ? maya : adam })),
       ...[...ctx.slice(i + 1), ...tracks, ...tracks].map((item, n) => ({ uid: `c${n}`, source: 'context' as const, item, added_by: null })),
-    ],
+    ].filter((e) => !removedUids.has(e.uid)),
     previous: [],
   }
 }
@@ -367,6 +369,13 @@ function handle(method: string, url: URL, body: Record<string, unknown>): readon
   if (route === 'POST /api/volume') return mutate({ volume: Number(body.volume) })
   if (route === 'POST /api/shuffle') return mutate({ shuffle: !!body.enabled })
   if (route === 'POST /api/repeat') return mutate({ repeat: body.mode as Status['repeat'] })
+  if (route === 'POST /api/queue/remove') {
+    const visible = queue().upcoming
+    const uids = (body.uids as string[] | undefined) ?? (body.uid ? [String(body.uid)] : [visible[Number(body.index)]?.uid].filter((u): u is string => !!u))
+    if (uids.some((u) => !visible.some((e) => e.uid === u))) return fail(404, 'not in Up Next')
+    uids.forEach((u) => removedUids.add(u))
+    return ok(queue())
+  }
   if (route === 'POST /api/queue') {
     const uris = (body.uris as string[]) ?? [body.uri]
     queued.push(...tracks.filter((t) => uris.includes(t.uri)))

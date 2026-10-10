@@ -26,6 +26,11 @@ export function describeActivity(entry: ActivityEntry, count = 1, total?: number
     case 'previous':
       if (count > 1) return `went back ${count} times`
       return str(d.from) ? <>went back from <Em>{str(d.from)}</Em></> : 'went back a song'
+    case 'queue_remove': {
+      const n = total ?? num(d.count) ?? 1
+      const first = Array.isArray(d.names) ? str(d.names[0]) : null
+      return n === 1 && first ? <>removed <Em>{first}</Em> from the queue</> : `removed ${songs(n)} from the queue`
+    }
     case 'jump':
       return name ? <>jumped to <Em>{name}</Em></> : 'jumped ahead in Up Next'
     case 'seek':

@@ -8,8 +8,8 @@ import { describeActivity, OriginIcon } from './ActivitySentence'
 const LIFETIME_MS = 10_000
 const GROUP_WINDOW_MS = 10_000
 const MAX_TOASTS = 3
-const GROUPED = new Set(['next', 'previous', 'queue_add', 'playlist_add', 'seek', 'volume', 'jump', 'play_item'])
-const SUMMED = new Set(['queue_add', 'playlist_add'])
+const GROUPED = new Set(['next', 'previous', 'queue_add', 'queue_remove', 'playlist_add', 'seek', 'volume', 'jump', 'play_item'])
+const SUMMED = new Set(['queue_add', 'queue_remove', 'playlist_add'])
 
 type Toast = { key: number; personId: string; action: string; entries: ActivityEntry[]; updatedAt: number }
 

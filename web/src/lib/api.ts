@@ -70,6 +70,7 @@ export type Status = {
   actions: string[]
   credit?: Credit | null
   skip?: Skip | null
+  removed?: boolean
   source?: 'context' | 'queue' | 'autoplay' | null
 }
 
@@ -300,6 +301,7 @@ export const api = {
   play: (body: { uri?: string; uris?: string[]; context?: string; offset?: number | string; shuffle?: boolean } = {}) => post<Status>('/api/play', body),
   pause: () => post<Status>('/api/pause'),
   next: () => post<Status>('/api/next'),
+  removeFromQueue: (target: { uids: string[] } | { index: number }) => post<Queue>('/api/queue/remove', target),
   jumpTo: (entry: { uid?: string | null; index: number }) =>
     post<Status>('/api/queue/jump', entry.uid ? { uid: entry.uid } : { index: entry.index }),
   previous: () => post<Status>('/api/previous'),
