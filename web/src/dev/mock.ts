@@ -1,4 +1,4 @@
-import type { AppPlaylist, Lyrics, Queue, Status, Track } from '../lib/api'
+import type { ActivityEntry, AppPlaylist, Lyrics, Queue, Status, Track } from '../lib/api'
 import fixtures from './fixtures.json'
 
 type Mode = 'full' | 'signedout' | 'writes' | 'down'
@@ -7,6 +7,10 @@ type Call = { method: string; path: string; body: unknown; origin: string | null
 declare global {
   interface Window {
     __mockCalls: Call[]
+    __mockActivity: (action: string, detail?: Record<string, unknown>, who?: string, origin?: string) => number
+    __mockActivityUpdate: (id: number, patch: Record<string, unknown>) => void
+    __mockActivitySilent: (action: string, detail?: Record<string, unknown>, who?: string, agoMs?: number) => number
+    __mockReconnect: () => void
     __mockLab: { next: () => void; pause: () => void; resume: () => void; seek: (ms: number) => void }
   }
 }
@@ -15,6 +19,35 @@ const tracks = fixtures.tracks as Track[]
 const lyrics = fixtures.lyrics as unknown as Lyrics
 const adam = { id: 'U01', name: 'Adam Xu', avatar: null }
 const maya = { id: 'U02', name: 'Maya', avatar: null }
+const howard = { id: 'U03', name: 'Howard Kent', avatar: null }
+const people: Record<string, { id: string; name: string; avatar: null }> = { maya, howard, me: { id: 'U01', name: 'Adam Xu', avatar: null } }
+
+const activityBus = new EventTarget()
+const openSources = new Set<EventTarget>()
+let activityId = 0
+const activityLog: ActivityEntry[] = []
+
+function logActivity(by: ActivityEntry['by'], action: string, detail: Record<string, unknown>, origin = 'web', at = Date.now()) {
+  const entry: ActivityEntry = { id: ++activityId, at, by, action, detail, origin }
+  activityLog.push(entry)
+  return entry
+}
+
+function seedActivity() {
+  const ago = (min: number) => Date.now() - min * 60_000
+  const seed: [ActivityEntry['by'], string, Record<string, unknown>, string, number][] = [
+    [maya, 'playlist_import', { id: 'p2', name: 'Competition Hype', imported: 88, source: 'spotify' }, 'web', ago(22 * 60)],
+    [{ id: 'U01', name: 'Adam Xu', avatar: null }, 'playlist_create', { id: 'p1', name: 'Build Night' }, 'web', ago(20 * 60)],
+    [howard, 'queue_add', { uris: ['x'], count: 3 }, 'slack', ago(5 * 60)],
+    [maya, 'shuffle', { enabled: true }, 'web', ago(3 * 60 + 10)],
+    [howard, 'volume', { volume: 45 }, 'media-session', ago(95)],
+    [{ id: 'U01', name: 'Adam Xu', avatar: null }, 'playlist_play', { id: 'p1', name: 'Build Night' }, 'web', ago(40)],
+    [maya, 'next', { from: 'Dreams' }, 'web', ago(6)],
+    [howard, 'queue_add', { uris: ['y'], count: 1, names: ['Kiss from a Rose'] }, 'slack', ago(2)],
+  ]
+  for (const [by, action, detail, origin, at] of seed) logActivity(by, action, detail, origin, at)
+}
+seedActivity()
 
 const playlists: AppPlaylist[] = [
   {
@@ -165,6 +198,12 @@ function handle(method: string, url: URL, body: Record<string, unknown>): readon
   if (route === 'POST /api/app/token/regenerate') {
     personal = { ...personal, token: `mapu_${Math.random().toString(36).slice(2, 14)}${Math.random().toString(36).slice(2, 14)}`, created: Date.now() / 1000 }
     return ok(personal)
+  }
+  if (route === 'GET /api/activity') {
+    const since = Number(url.searchParams.get('since') ?? 0)
+    const limit = Number(url.searchParams.get('limit') ?? 500)
+    const list = since ? activityLog.filter((e) => e.id > since) : activityLog.slice(-limit)
+    return ok({ entries: list, latest: activityId })
   }
   if (route === 'GET /api/status') return ok(snapshot())
   if (route === 'GET /api/queue') return ok(queue())
@@ -319,6 +358,11 @@ class MockEventSource extends EventTarget {
       this.emit()
     }, 50)
     this.timer = setInterval(() => this.emit(), 1000)
+    activityBus.addEventListener('activity', this.forward)
+    openSources.add(this)
+  }
+  private forward = (e: Event) => {
+    this.dispatchEvent(new MessageEvent('activity', { data: JSON.stringify((e as CustomEvent).detail) }))
   }
   private emit() {
     this.dispatchEvent(new MessageEvent('status', { data: JSON.stringify(snapshot()) }))
@@ -326,6 +370,8 @@ class MockEventSource extends EventTarget {
   close() {
     this.readyState = 2
     clearInterval(this.timer)
+    activityBus.removeEventListener('activity', this.forward)
+    openSources.delete(this)
   }
 }
 
@@ -334,6 +380,20 @@ export function installMock(param: string | null) {
   const mode: Mode = param === 'signedout' || param === 'writes' || param === 'down' ? param : param !== null ? 'full' : ((stored as Mode) ?? 'full')
   sessionStorage.setItem('mock', mode)
   window.__mockCalls = []
+  window.__mockActivity = (action, detail = {}, who = 'howard', origin = 'web') => {
+    const entry = logActivity(people[who] ?? howard, action, detail, origin)
+    activityBus.dispatchEvent(new CustomEvent('activity', { detail: entry }))
+    return entry.id
+  }
+  window.__mockActivitySilent = (action, detail = {}, who = 'howard', agoMs = 0) =>
+    logActivity(people[who] ?? howard, action, detail, 'web', Date.now() - agoMs).id
+  window.__mockReconnect = () => openSources.forEach((source) => source.dispatchEvent(new Event('open')))
+  window.__mockActivityUpdate = (id, patch) => {
+    const entry = activityLog.find((e) => e.id === id)
+    if (!entry) return
+    Object.assign(entry.detail, patch)
+    activityBus.dispatchEvent(new CustomEvent('activity', { detail: { ...entry } }))
+  }
   window.__mockLab = {
     next: () => {
       const i = tracks.findIndex((t) => t.uri === state.status.track?.uri)

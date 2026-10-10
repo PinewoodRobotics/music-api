@@ -1,6 +1,7 @@
 import { ChevronLeft, ChevronRight, Loader2 } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { AccountMenu } from './components/AccountMenu'
+import { ActivityToasts } from './components/activity/ActivityToasts'
 import { BrandMark } from './components/Brand'
 import { MediaSessionBridge } from './components/MediaSessionBridge'
 import { MobileNav } from './components/MobileNav'
@@ -181,6 +182,7 @@ function Shell() {
       <AmbientTheme />
       <MediaSessionBridge />
       <SkipWatcher />
+      <ActivityToasts />
       <div className="flex min-h-0 flex-1 gap-2 md:p-2 md:pb-0">
         <Sidebar />
         <main

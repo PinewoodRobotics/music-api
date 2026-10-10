@@ -1,15 +1,5 @@
 import { BrandMark } from '../components/Brand'
-
-function SlackLogo() {
-  return (
-    <svg viewBox="0 0 122.8 122.8" className="size-5" aria-hidden>
-      <path d="M25.8 77.6a12.9 12.9 0 1 1-12.9-12.9h12.9v12.9zm6.5 0a12.9 12.9 0 0 1 25.8 0v32.3a12.9 12.9 0 1 1-25.8 0V77.6z" fill="#e01e5a" />
-      <path d="M45.2 25.8a12.9 12.9 0 1 1 12.9-12.9v12.9H45.2zm0 6.5a12.9 12.9 0 0 1 0 25.8H12.9a12.9 12.9 0 1 1 0-25.8h32.3z" fill="#36c5f0" />
-      <path d="M97 45.2a12.9 12.9 0 1 1 12.9 12.9H97V45.2zm-6.5 0a12.9 12.9 0 0 1-25.8 0V12.9a12.9 12.9 0 1 1 25.8 0v32.3z" fill="#2eb67d" />
-      <path d="M77.6 97a12.9 12.9 0 1 1-12.9 12.9V97h12.9zm0-6.5a12.9 12.9 0 0 1 0-25.8h32.3a12.9 12.9 0 1 1 0 25.8H77.6z" fill="#ecb22e" />
-    </svg>
-  )
-}
+import { SlackLogo } from '../components/SlackLogo'
 
 const BARS = [0.35, 0.6, 0.9, 0.55, 0.75, 1, 0.65, 0.4, 0.8, 0.5, 0.95, 0.7, 0.45, 0.85, 0.6, 0.3, 0.7, 0.9, 0.5, 0.65]
 
@@ -37,7 +27,7 @@ export function SignIn() {
           href={href}
           className="mt-10 inline-flex h-12 w-full items-center justify-center gap-3 rounded-full bg-white px-6 text-[15px] font-semibold text-black transition-transform hover:scale-[1.02] active:scale-[0.98]"
         >
-          <SlackLogo />
+          <SlackLogo className="size-5" />
           Sign in with Slack
         </a>
         <p className="mt-5 text-xs text-faint">For members of the Pinewood Robotics Slack.</p>

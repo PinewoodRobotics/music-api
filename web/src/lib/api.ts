@@ -75,6 +75,15 @@ export type Status = {
 
 export type Person = { id?: string | null; name: string; avatar: string | null }
 
+export type ActivityEntry = {
+  id: number
+  at: number
+  by: Person
+  action: string
+  detail: Record<string, unknown>
+  origin: 'web' | 'slack' | 'api' | 'media-session' | (string & {})
+}
+
 export type Skip = { by: Person; from: string; at: number }
 
 export type Credit = { by: Person; how: 'queued' | 'started' | 'autoplay' }
@@ -246,6 +255,10 @@ export function eventsUrl() {
 
 export const api = {
   me: () => get<Me>('/api/app/me'),
+  activity: (params: { since?: number; limit?: number } = {}) =>
+    get<{ entries: ActivityEntry[]; latest: number | null }>(
+      `/api/activity?${qs(Object.fromEntries(Object.entries(params).filter(([, v]) => v != null)) as Record<string, number>)}`,
+    ),
   personalToken: () => get<PersonalToken>('/api/app/token'),
   regenerateToken: () => post<PersonalToken>('/api/app/token/regenerate'),
   logout: () => post<unknown>('/auth/slack/logout').catch(() => undefined),

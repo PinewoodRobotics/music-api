@@ -6,6 +6,7 @@ import { navigate } from '../lib/router'
 import { useSession } from '../state/session'
 import { useToast } from '../state/toast'
 import { useUI } from '../state/ui'
+import { ActivityPanel } from './activity/ActivityPanel'
 import { ApiTokenDialog } from './ApiTokenDialog'
 import { ImportDialog } from './ImportDialog'
 import { Button, Field, fieldClass, Modal } from './Modal'
@@ -20,6 +21,8 @@ export function Dialogs() {
       return <PlaylistForm onClose={closeDialog} playlist={dialog.playlist} />
     case 'import':
       return <ImportDialog onClose={closeDialog} initialUrl={dialog.url} />
+    case 'activity':
+      return <ActivityPanel onClose={closeDialog} />
     case 'api':
       return <ApiTokenDialog onClose={closeDialog} />
     case 'delete':

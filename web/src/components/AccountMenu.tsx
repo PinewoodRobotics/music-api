@@ -1,4 +1,4 @@
-import { LogOut, SquareTerminal } from 'lucide-react'
+import { History, LogOut, SquareTerminal } from 'lucide-react'
 import { useState } from 'react'
 import { useSession } from '../state/session'
 import { useUI } from '../state/ui'
@@ -33,6 +33,18 @@ export function AccountMenu() {
           </div>
           <SyncToggle />
           <div className="p-1">
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                setAnchor(null)
+                openDialog({ kind: 'activity' })
+              }}
+              className="flex w-full items-center gap-3 rounded-[5px] px-3 py-2 text-left text-sm hover:bg-white/[0.08]"
+            >
+              <History className="size-4 text-dim" />
+              Activity
+            </button>
             {me.kind !== 'token' && (
               <button
                 type="button"

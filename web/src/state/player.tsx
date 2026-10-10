@@ -1,5 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { api, eventsUrl, type Queue, type RepeatMode, type Status, type Track } from '../lib/api'
+import { activity } from '../lib/activity'
 import { storage } from '../lib/storage'
 import { useToast } from './toast'
 
@@ -108,6 +109,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     let retryIn = 1000
     let timer: ReturnType<typeof setTimeout> | undefined
     let disposed = false
+    let everOpened = false
 
     const connect = () => {
       if (disposed) return
@@ -115,7 +117,10 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       es.addEventListener('open', () => {
         setConnected(true)
         retryIn = 1000
+        void (everOpened ? activity.catchUp() : activity.load()).catch(() => {})
+        everOpened = true
       })
+      es.addEventListener('activity', (e) => activity.receive(JSON.parse((e as MessageEvent).data)))
       es.addEventListener('status', (e) => apply(JSON.parse((e as MessageEvent).data)))
       es.addEventListener('queue', (e) => setQueue(JSON.parse((e as MessageEvent).data)))
       es.addEventListener('error', (e) => {

@@ -8,6 +8,7 @@ export type Dialog =
   | { kind: 'edit'; playlist: AppPlaylist }
   | { kind: 'delete'; playlist: AppPlaylist }
   | { kind: 'api' }
+  | { kind: 'activity' }
 
 type UI = {
   expanded: boolean
