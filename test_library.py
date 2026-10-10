@@ -10,7 +10,7 @@ from library import Library
 
 ADA = {"id": "U1", "name": "Ada", "avatar": None, "admin": False}
 BOB = {"id": "U2", "name": "Bob", "avatar": None, "admin": False}
-ADMIN = {"id": "admin", "name": "@admin", "avatar": None, "admin": True}
+ADMIN = {"id": "admin", "name": "Admin", "avatar": None, "admin": True}
 
 
 def sid(c):

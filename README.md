@@ -85,7 +85,7 @@ To hand someone the web remote, create a token and send them `https://…/?token
 
 People sign in to the web app with their Slack account in the pinewoodrobotics workspace and appear under their Slack
 display name. The session is an HttpOnly cookie (30 days, stored hashed in `<data-dir>/sessions.json`).
-API tokens keep working and act as **@admin**. Slack users are admins only if their user ID or email is in `SLACK_ADMINS` (comma-separated).
+API tokens keep working and act as **Admin**. Slack users are admins only if their user ID or email is in `SLACK_ADMINS` (comma-separated).
 Everyone signed in with Slack also gets a personal API token (`mapu_…`, account menu → API) that acts as them; regenerating it revokes the old one.
 Every play and queue action is credited to whoever did it (`credit` on `/api/status`, `added_by` on the queue), saved in `<data-dir>/credits.json` and shown in the web app and the Slack feed.
 Non-admins can control playback, search, queue, lyrics and the app's playlists, but get 403 on tokens, the Spotify login,

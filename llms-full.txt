@@ -45,7 +45,7 @@ The public server runs with `--public`, so a token is required even for requests
 
 There are no scopes: every token can do everything, including creating and revoking other tokens. See "Tokens" in section 3.
 
-The web app instead uses a session cookie from Sign in with Slack (pinewoodrobotics workspace only). Sessions belong to a person: non-admin sessions get `403 {"error": "admins only"}` on tokens, the Spotify login, `/api/spotify/*`, `/api/library/*`, `/api/recent`, `/api/top`, `/api/me`, `/api/devices/transfer`, the raw `GET/POST /api/playlists` list, and hidden playlists. API tokens act as the user **@admin** and can do everything. `GET /api/app/me` says who you are.
+The web app instead uses a session cookie from Sign in with Slack (pinewoodrobotics workspace only). Sessions belong to a person: non-admin sessions get `403 {"error": "admins only"}` on tokens, the Spotify login, `/api/spotify/*`, `/api/library/*`, `/api/recent`, `/api/top`, `/api/me`, `/api/devices/transfer`, the raw `GET/POST /api/playlists` list, and hidden playlists. API tokens act as the user **Admin** and can do everything. `GET /api/app/me` says who you are.
 
 Do not confuse the API token with the Spotify Web API login. They are separate. The server holds one Spotify login (the account whose music this is); you never send Spotify credentials. If the Spotify login is missing or expired, Web API endpoints fail with 412 and an error text that mentions `/auth/login` (see section 7). A 401 always means a missing or wrong API token.
 
@@ -452,7 +452,7 @@ The logged-in Spotify user: `{"id", "name", "uri", "artwork"}`.
 
 ### Web app (accounts and the shared Library)
 
-These power the web app. With an API token you act as `@admin`.
+These power the web app. With an API token you act as `Admin`.
 
 #### GET /api/app/me
 `{"id": "U0123" | "admin", "name": "Adam", "avatar": url | null, "admin": bool, "kind": "slack" | "token"}`. `name` is the Slack display name.

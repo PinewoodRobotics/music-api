@@ -608,7 +608,7 @@ def _playlist_play(q, b, id):
 
 @route("GET", "/api/app/me")
 def _app_me(q, b):
-    """Who's signed in: {id, name, avatar, admin, kind: slack|token}. API tokens show as @admin"""
+    """Who's signed in: {id, name, avatar, admin, kind: slack|token}. API tokens show as Admin"""
     return _req.user
 
 

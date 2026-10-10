@@ -371,11 +371,11 @@ class Feed(unittest.TestCase):
 
     def test_admin_credit_stays_plain(self):
         bot = make()
-        bot.credit = {"by": {"id": "admin", "name": "@admin", "avatar": None}, "how": "queued"}
+        bot.credit = {"by": {"id": "admin", "name": "Admin", "avatar": None}, "how": "queued"}
         self.run_feed(bot, [("playing", TRACK, 0), ("playing", TRACK, 4), ("paused", TRACK, 6)])
         self.assertEqual(len(self.calls(bot, "chat.postMessage")), 1)
         self.assertNotIn("<@", json.dumps(bot.sent))
-        self.assertIn("@admin", json.dumps(self.calls(bot, "chat.update")[-1]["blocks"]))
+        self.assertIn("Admin", json.dumps(self.calls(bot, "chat.update")[-1]["blocks"]))
 
     def test_old_state_file_without_credit_loads(self):
         import os, tempfile
