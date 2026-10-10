@@ -266,6 +266,34 @@ Body `{minutes, fade?}`: pause after `minutes` (may be fractional), fading the v
 #### DELETE /api/sleep
 Cancel the timer (restores volume if a fade had started). Returns the sleep status.
 
+### Activity feed
+
+#### GET /api/activity
+What people did in the last 24 hours, oldest first: `{"entries": [...], "latest": <id>}`. `?since=<id>` returns only entries with a higher id (poll or catch up after reconnecting); without it you get the newest `limit` entries. `?limit=` defaults to and is capped at 500. Open to every signed-in user, not admin-only. The same entries are pushed live as the `activity` SSE event (section 4).
+
+Entry: `{"id": 42, "at": 1760000000000, "by": {"id", "name", "avatar"}, "action": "queue_add", "detail": {...}, "origin": "web"}`. `id` increases monotonically; `at` is unix milliseconds. `origin` is `web` (session cookie), `api` (API token), `media-session` (request header `X-Client-Origin` starting with `media-session`, i.e. the OS media controls) or `slack` (the bot's buttons and `/music` commands).
+
+Only successful actions are recorded. Names can arrive late: the entry is first sent with URIs only, then sent again with the same `id` and `names`/`name` filled in, so replace by `id`. `volume` entries coalesce: the same person changing volume again within 10 s updates that entry (new `at` and `volume`, same `id`).
+
+| `action` | `detail` |
+|---|---|
+| `play`, `pause` | `{}` (`POST /api/playpause` records whichever it did) |
+| `play_item` | `{uri, type, name?}` of what was started |
+| `next`, `previous` | `{from?}`: name of the track that was playing |
+| `jump` | `{name?}`: the Up Next track jumped to |
+| `seek` | `{position_ms}` |
+| `volume` | `{volume}` |
+| `shuffle` | `{enabled}` |
+| `repeat` | `{mode}`: `off`, `context` or `track` |
+| `queue_add` | `{uris, count, names?}` |
+| `playlist_create` | `{id, name}` |
+| `playlist_import` | `{id, name, imported, source}` |
+| `playlist_rename` | `{id, name}` (new name) |
+| `playlist_delete` | `{id, name}` |
+| `playlist_add` | `{id, count, name?, names?}` |
+| `playlist_remove` | `{id, count, name?}` |
+| `playlist_play` | `{id, name?}` |
+
 ### Queue and devices
 
 #### GET /api/queue
@@ -521,6 +549,7 @@ Forget the stored Spotify login. Returns the login status. Don't call this unles
 | `track` | track/episode object or `null` | When the current item changes |
 | `queue` | `{upcoming, previous}` | When the queue changes (Soloist backend only) |
 | `sleep` | sleep status | When a sleep timer is set, cancelled or fires |
+| `activity` | activity entry | When someone does something (see `GET /api/activity`). A coalesced or name-enriched entry is sent again with the same `id` |
 | `error` | `{"error": "..."}` | When fetching status fails (e.g. Spotify unreachable) |
 
 Lines starting with `:` (`: ping`) are keep-alives sent after 15 s of silence. Status polling only runs while at least one client is subscribed.

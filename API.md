@@ -27,6 +27,7 @@ Path `{id}`s are bare 22-character Spotify IDs. `uri`/`uris`/`context` fields ta
 | `POST` | `/api/volume` | Body {volume: 0-100} \| {delta: ±n} |
 | `POST` | `/api/shuffle` | Body {enabled?: bool}; omit to toggle |
 | `POST` | `/api/repeat` | Body {mode?: off\|context\|track} (one/all accepted); omit to cycle |
+| `GET` | `/api/activity` | What people did in the last 24 h, oldest first: {entries: [{id, at (unix ms), by {id, name, avatar}, action, detail, origin: web\|slack\|api\|media-session}], latest}. ?since=<id> returns only newer entries; ?limit= (default and max 500). Also pushed live as the `activity` SSE event |
 
 ## Queue & devices
 
@@ -122,7 +123,7 @@ Tokens have no scopes: any token can do everything, including creating and revok
 | `PATCH` | `/api/app/playlists/{id}` | Body {name?, description?} (creator or admin) |
 | `DELETE` | `/api/app/playlists/{id}` | Delete (creator or admin) |
 | `GET` | `/api` | This list as JSON: a bare array of `{method, path, doc}` (no `result` envelope) |
-| `GET` | `/api/events` | Server-sent events: `status` (every 1 s with Soloist, 2 s with connect, while anyone listens), `track`, `queue` (Soloist only), `sleep`, `error`. Use `?token=` with `EventSource` |
+| `GET` | `/api/events` | Server-sent events: `status` (every 1 s with Soloist, 2 s with connect, while anyone listens), `track`, `queue` (Soloist only), `sleep`, `activity`, `error`. Use `?token=` with `EventSource` |
 | `ANY` | `/api/spotify/{path}` | Raw Spotify Web API passthrough with your login, e.g. `GET /api/spotify/me/player/devices` |
 
 ## Auth (Web API login)

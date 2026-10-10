@@ -3,7 +3,7 @@ import inspect
 import server
 
 BASE = "https://music.pinewoodrobotics.org"
-SECTIONS = [("Playback", "/api/status /api/now-playing /api/artwork /api/play /api/pause /api/next /api/previous /api/back /api/seek /api/volume /api/shuffle /api/repeat /api/lyrics /api/sleep"),
+SECTIONS = [("Playback", "/api/status /api/now-playing /api/artwork /api/play /api/pause /api/next /api/previous /api/back /api/seek /api/volume /api/shuffle /api/repeat /api/lyrics /api/sleep /api/activity"),
             ("Queue & devices", "/api/queue /api/devices /api/backend"),
             ("Catalog", "/api/search /api/tracks /api/albums /api/artists /api/episodes /api/shows /api/audiobooks /api/chapters"),
             ("Playlists", "/api/playlists"),
@@ -52,7 +52,7 @@ for m, _, path, d, fn in rest:
     row(m, path, doc(d))
 row("GET", "/api", "This list as JSON: a bare array of `{method, path, doc}` (no `result` envelope)")
 row("GET", "/api/events", "Server-sent events: `status` (every 1 s with Soloist, 2 s with connect, while anyone listens), "
-    "`track`, `queue` (Soloist only), `sleep`, `error`. Use `?token=` with `EventSource`")
+    "`track`, `queue` (Soloist only), `sleep`, `activity`, `error`. Use `?token=` with `EventSource`")
 row("ANY", "/api/spotify/{path}", "Raw Spotify Web API passthrough with your login, e.g. `GET /api/spotify/me/player/devices`")
 print(f"\n## Auth (Web API login)\n\n{HEAD}")
 row("GET", "/auth", "Login status, scopes, redirect URI")

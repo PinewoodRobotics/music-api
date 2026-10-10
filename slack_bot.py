@@ -237,12 +237,13 @@ def link_blocks(r):
 
 class SlackBot:
     def __init__(self, slack, player, api, credits, signing_secret, channel=DEFAULT_CHANNEL, team=DEFAULT_TEAM,
-                 remote=DEFAULT_REMOTE, resolve=None, importer=None, state_path=None):
+                 remote=DEFAULT_REMOTE, resolve=None, importer=None, state_path=None, activity=None):
         self.slack, self.player, self.api, self.credits = slack, player, api, credits
         self.token = slack.bot_token
         self.secret, self.channel, self.team, self.remote = signing_secret, channel, team, remote
         self.resolve = resolve or self.spotify_resolve
         self.importer = importer
+        self.activity = activity
         self.users, self.users_lock = {}, threading.Lock()
         self.warned = set()
         self.pause_until = 0
@@ -451,16 +452,30 @@ class SlackBot:
             raise SpotifyError("only tracks, albums and playlists can be played from Slack", 400)
         return item(self.api.get(f"/{path}/{sid}"))
 
+    def log(self, who, action, detail=None, enrich=None):
+        """Record a successful action in the activity feed; `who` is a user dict or a Slack user ID."""
+        if not self.activity:
+            return None
+        entry = self.activity.record(who if isinstance(who, dict) else self.user(who), action, detail, "slack")
+        if enrich:
+            self.activity.enrich(entry, enrich)
+        return entry
+
     def transport(self, verb, uid):
         """Do play/pause/skip for a Slack user (the feed card itself is the channel's feedback)."""
         if verb == "skip":
-            self.credits.skipped(self.user(uid))
+            user = self.user(uid)
+            self.credits.skipped(user)
+            name = ((self.player.status().get("track") or {}).get("name")) if self.activity else None
             self.player.next()
+            self.log(user, "next", {"from": name} if name else {})
             return "Skipped."
         if verb == "pause":
             self.player.pause()
+            self.log(uid, "pause")
             return "Paused."
         self.player.play({})
+        self.log(uid, "play")
         return "Playing."
 
     # ---------- interactions ----------
@@ -491,12 +506,14 @@ class SlackBot:
                 uri = to_uri(a.get("value"))
                 self.player.enqueue({"uri": uri})
                 self.credits.add([uri], u)
+                self.log(u, "queue_add", {"uris": [uri], "count": 1}, lambda: {"names": [self.lookup(uri)["name"]]})
                 self.done(p, a, ephemeral, "Queued", f"Queued by {esc(u['name'])}")
             elif act == "play_uri":
                 u = self.user(uid, (p.get("user") or {}).get("name"))
                 uri = to_uri(a.get("value"))
                 self.player.play({"uri": uri})
                 self.credits.start([uri], u)
+                self.log(u, "play_item", {"uri": uri, "type": uri.split(":")[1]}, lambda: {"name": self.lookup(uri)["name"]})
                 self.done(p, a, ephemeral, "Playing", "Playing now")
             elif act == "import_playlist":
                 self.import_playlist(p, a, ephemeral, a.get("value"))
@@ -514,6 +531,8 @@ class SlackBot:
         except Exception as e:  # noqa: BLE001 - LinkError, AccountError, Spotify and network errors become a message
             return self.respond(url, {"response_type": "ephemeral", "replace_original": False, "text": f"Couldn't import that: {e}"})
         pl = res["playlist"]
+        self.log({"id": uid, "name": u["name"], "avatar": u["avatar"]}, "playlist_import",
+                 {"id": pl["id"], "name": pl.get("name"), "imported": res.get("imported"), "source": res.get("source")})
         total = res.get("total") or res.get("imported")
         text = (f"Imported {res.get('imported')} of {total} songs as "
                 f"<{self.remote.rstrip('/')}/playlist/{pl['id']}|{esc(pl.get('name'))}>")
@@ -663,8 +682,8 @@ class SlackBot:
             cur["sig"] = self.sig(cur)
 
 
-def from_env(slack, player, api, credits, resolve=None, importer=None, state_path=None):
+def from_env(slack, player, api, credits, resolve=None, importer=None, state_path=None, activity=None):
     return SlackBot(slack, player, api, credits, os.environ.get("SLACK_SIGNING_SECRET"),
                     os.environ.get("SLACK_MUSIC_CHANNEL") or DEFAULT_CHANNEL,
                     slack.team_id or DEFAULT_TEAM, os.environ.get("SLACK_REMOTE_URL") or DEFAULT_REMOTE,
-                    resolve, importer, state_path)
+                    resolve, importer, state_path, activity)

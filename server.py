@@ -22,12 +22,14 @@ import urllib.parse
 import mimetypes
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+import activity as activity_log
 import extras
 import links
 import slack_bot
 from accounts import ADMIN, AccountError, Credits, PersonalTokens, Playlists, Sessions, Slack
 from extras import ExtrasError
-from player import Player, PlayerError
+from activity import Activity
+from player import REPEAT_ALIASES, Player, PlayerError
 from soloist import Soloist, SoloistError, default_data_dir as soloist_data_dir
 from spotify import Auth, SpotifyError, WebAPI, item, page, to_uri
 from tokens import TokenError, Tokens
@@ -36,7 +38,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 SEARCH_TYPES = "track,album,artist,playlist,show,episode,audiobook"
 
 auth = api = player = soloist = tokens = slack = sessions = app_playlists = bot = personal = None
-credits = None
+credits = activity = None
 _req = threading.local()  # per-request context: the token entry and the user that authenticated it
 WEB_DIST = os.path.join(HERE, "web", "dist")
 SESSION_COOKIE = "mapi_session"
@@ -74,6 +76,34 @@ def _uris(q, b):
 
 def _limit(q, default=20, cap=50):
     return min(int(q.get("limit", default)), cap)
+
+
+# ---------- activity feed ----------
+
+def _log(action, detail=None):
+    """Record a successful action by the current user; returns the entry so callers can enrich it later."""
+    return activity.record(_req.user, action, detail, _req.origin)
+
+
+def _playing_name():
+    try:
+        return (player.status().get("track") or {}).get("name")
+    except (SpotifyError, PlayerError):
+        return None
+
+
+def _log_play_item(b):
+    ref = b.get("context") or b.get("uri") or (b.get("uris") or [None])[0]
+    uri = to_uri(ref, "track")
+    entry = _log("play_item", {"uri": uri, "type": uri.split(":")[1]})
+    activity.enrich(entry, lambda: {"name": activity_log.item_name(api, uri)})
+
+
+def _log_playlist(action, playlist_id, **detail):
+    entry = _log(action, {"id": playlist_id, **detail})
+    if "name" not in detail:
+        activity.enrich(entry, lambda: {"name": activity_log.item_name(api, f"spotify:playlist:{playlist_id}")})
+    return entry
 
 
 # ---------- playback ----------
@@ -177,6 +207,9 @@ def _play(q, b):
     named = [to_uri(b[k]) for k in ("uri", "context") if b.get(k)] + [to_uri(u, "track") for u in b.get("uris", [])]
     if named:
         credits.start(named, _req.user)
+        _log_play_item(b)
+    else:
+        _log("play")
     return res
 
 
@@ -185,64 +218,101 @@ def _play_url(q, b):
     """Body {url}: play any open.spotify.com / spotify: link"""
     res = player.play({"uri": b["url"]})
     credits.start([to_uri(b["url"])], _req.user)
+    _log_play_item({"uri": b["url"]})
     return res
 
 
 @route("POST", "/api/pause")
 def _pause(q, b):
     """Pause"""
-    return player.pause()
+    res = player.pause()
+    _log("pause")
+    return res
 
 
 @route("POST", "/api/playpause")
 def _playpause(q, b):
     """Toggle play/pause"""
-    return player.playpause()
+    was_playing = player.status().get("state") in ("playing", "buffering")
+    res = player.playpause()
+    _log("pause" if was_playing else "play")
+    return res
 
 
 @route("POST", "/api/next")
 def _next(q, b):
     """Skip to next"""
     credits.skipped(_req.user)
-    return player.next()
+    name = _playing_name()
+    res = player.next()
+    _log("next", {"from": name} if name else {})
+    return res
 
 
 @route("POST", "/api/previous")
 def _previous(q, b):
     """Previous track (restarts the current one if it's past the first few seconds)"""
     credits.skipped(_req.user)
-    return player.previous()
+    name = _playing_name()
+    res = player.previous()
+    _log("previous", {"from": name} if name else {})
+    return res
 
 
 @route("POST", "/api/back")
 def _back(q, b):
     """Alias of /api/previous (v1 compatibility)"""
-    credits.skipped(_req.user)
-    return player.previous()
+    return _previous(q, b)
 
 
 @route("POST", "/api/seek")
 def _seek(q, b):
     """Body {position: seconds} | {position_ms} | {delta: ±seconds}"""
-    return player.seek(b)
+    res = player.seek(b)
+    ms = int(b["position_ms"]) if "position_ms" in b else int(float(b["position"]) * 1000) if "position" in b \
+        else res.get("position_ms")
+    _log("seek", {"position_ms": max(0, ms)} if ms is not None else {})
+    return res
 
 
 @route("POST", "/api/volume")
 def _volume(q, b):
     """Body {volume: 0-100} | {delta: ±n}"""
-    return player.volume(b)
+    res = player.volume(b)
+    vol = max(0, min(100, int(b["volume"]))) if "volume" in b else res.get("volume")
+    _log("volume", {"volume": vol})
+    return res
 
 
 @route("POST", "/api/shuffle")
 def _shuffle(q, b):
     """Body {enabled?: bool}; omit to toggle"""
-    return player.shuffle(b)
+    enabled = b.get("enabled")
+    if enabled is None:
+        enabled = not player.status().get("shuffle")
+    res = player.shuffle(b)
+    _log("shuffle", {"enabled": bool(enabled)})
+    return res
 
 
 @route("POST", "/api/repeat")
 def _repeat(q, b):
     """Body {mode?: off|context|track} (one/all accepted); omit to cycle"""
-    return player.repeat(b)
+    mode = b.get("mode")
+    if mode is None:
+        mode = {"off": "context", "context": "track"}.get(player.status().get("repeat") or "off", "off")
+    res = player.repeat(b)
+    _log("repeat", {"mode": REPEAT_ALIASES.get(mode, mode)})
+    return res
+
+
+@route("GET", "/api/activity")
+def _activity(q, b):
+    """What people did in the last 24 h, oldest first: {entries: [{id, at (unix ms), by {id, name, avatar}, action,
+    detail, origin: web|slack|api|media-session}], latest}. ?since=<id> returns only newer entries; ?limit= (default and max 500).
+    Also pushed live as the `activity` SSE event"""
+    since = int(q["since"]) if q.get("since") else None
+    return {"entries": activity.since(since, min(int(q.get("limit", 500)), 500)), "latest": activity.latest}
 
 
 @route("GET", "/api/queue")
@@ -257,6 +327,10 @@ def _enqueue(q, b):
     """Body {uri} | {uris: [...]}: add to the end of the queue"""
     res = player.enqueue(b)
     credits.add(res["added"], _req.user)
+    uris = res["added"]
+    entry = _log("queue_add", {"uris": uris, "count": len(uris)})
+    activity.enrich(entry, lambda: {"names": activity_log.track_names(
+        api, uris, player.queue(80) if player.backend == "soloist" else None)})
     return res
 
 
@@ -264,7 +338,17 @@ def _enqueue(q, b):
 def _queue_jump(q, b):
     """Body {uid} (Soloist) or {index}: skip ahead to that Up Next entry, dropping the ones before it"""
     credits.skipped(_req.user)
-    return player.jump(b)
+    target = None
+    try:
+        up = player.queue(80)["upcoming"]
+        e = next((x for x in up if x.get("uid") == b["uid"]), None) if b.get("uid") else \
+            up[int(b["index"])] if 0 <= int(b.get("index", -1)) < len(up) else None
+        target = ((e or {}).get("item") or {}).get("name")
+    except (SpotifyError, PlayerError, KeyError, ValueError):
+        pass
+    res = player.jump(b)
+    _log("jump", {"name": target} if target else {})
+    return res
 
 
 @route("GET", "/api/devices")
@@ -464,13 +548,20 @@ def _playlist_add(q, b, id):
     body = {"uris": _uris(q, b)}
     if b.get("position") is not None:
         body["position"] = int(b["position"])
-    return api.req("POST", f"/playlists/{id}/items", body=body)
+    res = api.req("POST", f"/playlists/{id}/items", body=body)
+    uris = body["uris"]
+    entry = _log_playlist("playlist_add", id, count=len(uris))
+    activity.enrich(entry, lambda: {"names": activity_log.track_names(api, uris)})
+    return res
 
 
 @route("DELETE", "/api/playlists/{id}/items")
 def _playlist_remove(q, b, id):
     """Body {uris: [...]} (removes every occurrence)"""
-    return api.req("DELETE", f"/playlists/{id}/items", body={"items": [{"uri": u} for u in _uris(q, b)]})
+    uris = _uris(q, b)
+    res = api.req("DELETE", f"/playlists/{id}/items", body={"items": [{"uri": u} for u in uris]})
+    _log_playlist("playlist_remove", id, count=len(uris))
+    return res
 
 
 @route("PUT", "/api/playlists/{id}/items")
@@ -504,6 +595,7 @@ def _playlist_play(q, b, id):
         player.shuffle({"enabled": b["shuffle"]})
     res = player.play({"context": f"spotify:playlist:{id}", "offset": b.get("offset")})
     credits.start([f"spotify:playlist:{id}"], _req.user)
+    _log_playlist("playlist_play", id)
     return res
 
 
@@ -540,14 +632,19 @@ def _app_playlists(q, b):
 @route("POST", "/api/app/playlists")
 def _app_create(q, b):
     """Body {name, description?}: create a playlist credited to you"""
-    return app_playlists.create(api, _req.user, b.get("name"), b.get("description") or "")
+    pl = app_playlists.create(api, _req.user, b.get("name"), b.get("description") or "")
+    _log("playlist_create", {"id": pl["id"], "name": pl["name"]})
+    return pl
 
 
 @route("POST", "/api/app/playlists/import")
 def _app_import(q, b):
     """Body {url}: copy a Spotify or Apple Music playlist/album into a new playlist
     → {playlist, imported, total, truncated, source, unmatched: [{name, artists}]}"""
-    return app_playlists.import_link(api, _req.user, b.get("url"))
+    res = app_playlists.import_link(api, _req.user, b.get("url"))
+    pl = res["playlist"]
+    _log("playlist_import", {"id": pl["id"], "name": pl["name"], "imported": res["imported"], "source": res["source"]})
+    return res
 
 
 @route("POST", "/api/resolve")
@@ -566,13 +663,22 @@ def _app_playlist(q, b, id):
 @route("PATCH", "/api/app/playlists/{id}")
 def _app_edit(q, b, id):
     """Body {name?, description?} (creator or admin)"""
-    return app_playlists.edit(api, _req.user, id, b)
+    pl = app_playlists.edit(api, _req.user, id, b)
+    if "name" in b:
+        _log("playlist_rename", {"id": id, "name": pl["name"]})
+    return pl
 
 
 @route("DELETE", "/api/app/playlists/{id}")
 def _app_delete(q, b, id):
     """Delete (creator or admin)"""
-    return app_playlists.delete(api, _req.user, id)
+    try:
+        name = app_playlists.get(api, id, _req.user)["name"]
+    except (SpotifyError, AccountError):
+        name = None
+    res = app_playlists.delete(api, _req.user, id)
+    _log("playlist_delete", {"id": id, "name": name})
+    return res
 
 
 # ---------- library & listening history ----------
@@ -741,6 +847,7 @@ class Handler(BaseHTTPRequestHandler):
         _req.token = tokens.check(given)
         _req.bearer = bool(given)
         _req.user = ADMIN if _req.token is not None else personal.check(given) or sessions.get(self._session_id())
+        _req.origin = activity_log.origin_for(self.headers, _req.bearer)
         if _req.user:
             return True
         if not (tokens.enabled or self.require_token):
@@ -862,7 +969,7 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/api" and method == "GET":
             return self._send(200, [{"method": m, "path": p, "doc": d} for m, _, p, d, _ in ROUTES] + [
-                {"method": "GET", "path": "/api/events", "doc": "Server-sent events: status (1/s with Soloist, every 2 s with connect), track, queue, sleep, error"},
+                {"method": "GET", "path": "/api/events", "doc": "Server-sent events: status (1/s with Soloist, every 2 s with connect), track, queue, sleep, activity, error"},
                 {"method": "ANY", "path": "/api/spotify/{path}", "doc": "Raw Spotify Web API passthrough, e.g. GET /api/spotify/me/player"},
                 {"method": "GET", "path": "/auth/login", "doc": "Web API login page (?redirect=1 to go straight to Spotify)"},
                 {"method": "GET", "path": "/auth", "doc": "Web API login status"},
@@ -996,7 +1103,7 @@ def main():
                     help="connect backend: Connect device name or id to control (default: whichever is active)")
     a = ap.parse_args()
 
-    global auth, api, player, soloist, tokens, slack, sessions, app_playlists, bot, personal, credits
+    global auth, api, player, soloist, tokens, slack, sessions, app_playlists, bot, personal, credits, activity
     os.makedirs(a.data_dir, mode=0o700, exist_ok=True)
     auth = Auth(a.data_dir, a.client_id, a.redirect_uri or f"http://127.0.0.1:{a.port}/auth/callback")
     api = WebAPI(auth)
@@ -1033,13 +1140,15 @@ def main():
     credits = Credits(os.path.join(a.data_dir, "credits.json"))
     player = Player(backend, api, soloist, a.device, credits.for_status)
     player.skip_fn = credits.recent_skip
+    activity = Activity(os.path.join(a.data_dir, "activity.jsonl"))
+    activity.publish = lambda entry: player.publish("activity", entry)
     if soloist:
         soloist.on_event = player.on_soloist_event
         threading.Thread(target=soloist.loop, daemon=True).start()
     threading.Thread(target=player.loop, daemon=True).start()
     bot = slack_bot.from_env(slack, player, api, credits, resolve=lambda url: links.resolve(api, url),
                              importer=lambda url, user: app_playlists.import_link(api, user, url),
-                             state_path=os.path.join(a.data_dir, "slack-feed.json"))
+                             state_path=os.path.join(a.data_dir, "slack-feed.json"), activity=activity)
     bot.start()
 
     Handler.require_token = require
