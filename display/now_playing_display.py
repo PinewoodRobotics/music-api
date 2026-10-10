@@ -182,9 +182,11 @@ class Scene:
             if art is None:
                 bg = Image.new("RGB", (self.w, self.h), (18, 18, 22))
             else:
-                tiny = art.resize((24, 24), Image.BOX).filter(ImageFilter.GaussianBlur(2))
-                tiny = tiny.point([int(v * 0.42) for v in range(256)] * 3)
-                bg = tiny.resize((self.w, self.h), Image.BICUBIC)
+                small = art.convert("RGB").resize((64, 64), Image.BOX).filter(ImageFilter.GaussianBlur(5))
+                small = small.point([int(v * 0.42) for v in range(256)] * 3)
+                mid = small.resize((max(1, self.w // 4), max(1, self.h // 4)), Image.BICUBIC)
+                mid = mid.filter(ImageFilter.GaussianBlur(3))
+                bg = ImageChops.add(mid.resize((self.w, self.h), Image.BICUBIC), dither(self.w, self.h))
             self.bg_key, self.bg = key, bg
         return self.bg.copy()
 
@@ -226,7 +228,7 @@ class Scene:
         if credit and credit.get("by"):
             by = credit["by"]
             credit_text = "Autoplay" if credit.get("how") == "autoplay" else (
-                ("Queued by " if credit.get("how") == "queued" else "Started by ") + (by.get("name") or "")
+                by.get("name") or ""
             )
 
         title_lh = int(self.px(60) * 1.2)
@@ -249,7 +251,7 @@ class Scene:
                 ht += pad + self.px(44) + rows * pitch
             return ht
 
-        rows = min(4, len(upcoming))
+        rows = min(3, len(upcoming))
         while rows and column_height(rows) > h - 2 * self.px(60):
             rows -= 1
         y = max(self.px(60), (h - column_height(rows)) // 2)
@@ -345,6 +347,24 @@ _LUT = {
 }
 
 
+_BAYER = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5]
+_dither = {}
+
+
+def dither(w, h):
+    """4x4 ordered-dither offsets sized to one RGB565 step (8 for red/blue, 4 for green), so the darkened
+    blurred background doesn't band on the 16-bit framebuffer."""
+    if (w, h) not in _dither:
+        tile = Image.new("RGB", (4, 4))
+        tile.putdata([(v // 2, v // 4, v // 2) for v in _BAYER])
+        img = Image.new("RGB", (w, h))
+        for y in range(0, h, 4):
+            for x in range(0, w, 4):
+                img.paste(tile, (x, y))
+        _dither[(w, h)] = img
+    return _dither[(w, h)]
+
+
 def pack(img, bpp):
     if bpp == 32:
         return img.tobytes("raw", "BGRX")
@@ -404,7 +424,7 @@ def stream_events(api, out):
     while True:
         try:
             out.put(("status", api.get("/api/status")))
-            out.put(("queue", api.get("/api/queue?limit=4")))
+            out.put(("queue", api.get("/api/queue?limit=3")))
             u = urllib.parse.urlsplit(api.base)
             conn = http.client.HTTPConnection(u.hostname, u.port, timeout=WATCHDOG)
             conn.request("GET", "/api/events", headers={"Authorization": "Bearer " + api.token, "Accept": "text/event-stream"})
@@ -484,7 +504,7 @@ class Display:
 
     def handle(self, kind, data):
         if kind == "queue":
-            ups = (data or {}).get("upcoming", [])[:4]
+            ups = (data or {}).get("upcoming", [])[:3]
             if [i["item"]["uri"] for i in ups] != [i["item"]["uri"] for i in self.upcoming]:
                 self.upcoming = ups
                 if self.key(self.status, ups) != self.shown_key:
@@ -497,7 +517,7 @@ class Display:
         self.anchor = (data.get("position_ms") or 0, time.monotonic())
         if new_uri != old_uri and new_uri:
             try:
-                self.upcoming = self.api.get("/api/queue?limit=4").get("upcoming", [])[:4]
+                self.upcoming = self.api.get("/api/queue?limit=3").get("upcoming", [])[:3]
             except Exception as e:
                 log("queue fetch failed:", e)
         if self.key(data, self.upcoming) != self.shown_key or self.base is None:
@@ -525,7 +545,7 @@ class Display:
 def render_png(api, path, size):
     w, h = (int(v) for v in size.split("x"))
     st = api.get("/api/status")
-    ups = api.get("/api/queue?limit=4").get("upcoming", [])[:4]
+    ups = api.get("/api/queue?limit=3").get("upcoming", [])[:3]
     scene = Scene(w, h)
     if st.get("track"):
         img, box = scene.track(st, ups, st.get("state") == "paused")
