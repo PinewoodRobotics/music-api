@@ -646,8 +646,13 @@ def _app_create(q, b):
 def _app_import(q, b):
     """Body {url}: copy a Spotify or Apple Music playlist/song link into a new playlist
     → {playlist, imported, total, truncated, source, unmatched: [{name, artists}]}.
-    Album links are added to the Library as albums instead → {kind: "album", album: {...}}"""
-    res = library.import_link(api, _req.user, b.get("url"))
+    Album links are added to the Library as albums instead → {kind: "album", album: {...}}, unless
+    {as: "playlist"} (e.g. an Apple album with no Spotify match) copies its songs into a playlist"""
+    if b.get("as") == "playlist":
+        res = app_playlists.import_link(api, _req.user, b.get("url"))
+        library.invalidate()
+    else:
+        res = library.import_link(api, _req.user, b.get("url"))
     if res.get("kind") == "album":
         if not res["album"].get("already"):
             _log("album_add", {"id": res["album"]["id"], "name": res["album"]["name"]})

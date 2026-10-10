@@ -474,7 +474,7 @@ The playlists the web app shows: every playlist in the account except the hidden
 Body `{name, description?}`. Creates a private playlist on the account, credited to you. Returns the playlist object.
 
 #### POST /api/app/playlists/import
-Body `{url}`: a Spotify or Apple Music playlist (or song) link. Copies its tracks into a new playlist credited to you and returns `{"playlist": {...}, "imported": 100, "total": null, "truncated": true, "source": "spotify"|"apple", "unmatched": [{"name", "artists"}]}`. Spotify playlists must be **public** and only the first 100 tracks can be read, so `truncated` just means the cap was hit. 404 if there is no public playlist there.
+Body `{url}`: a Spotify or Apple Music playlist (or song) link. Copies its tracks into a new playlist credited to you and returns `{"playlist": {...}, "imported": 100, "total": null, "truncated": true, "source": "spotify"|"apple", "unmatched": [{"name", "artists"}]}`. Spotify playlists must be **public** and only the first 100 tracks can be read, so `truncated` just means the cap was hit. 404 if there is no public playlist there. Send `{url, as: "playlist"}` to copy an album's songs into a playlist instead (needed for Apple Music albums that have no Spotify match, which otherwise return 422).
 
 **Album links are routed to the Library instead** (Spotify `open.spotify.com/album/...` or `spotify:album:`, Apple Music `music.apple.com/.../album/...` without `?i=`): no playlist is created, the album is added as in `POST /api/app/library/albums` and the response is `{"kind": "album", "album": {...album object...}}` (`album.already` is true if it was there already). 422 if an Apple album has no Spotify album match.
 
