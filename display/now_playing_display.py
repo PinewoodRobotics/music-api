@@ -510,6 +510,8 @@ class Display:
                 if self.key(self.status, ups) != self.shown_key:
                     self.render()
             return
+        if data.get("removed"):
+            return
         old_uri = ((self.status or {}).get("track") or {}).get("uri")
         new_uri = (data.get("track") or {}).get("uri")
         drift = abs(data.get("position_ms", 0) - self.position())

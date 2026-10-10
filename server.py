@@ -334,6 +334,16 @@ def _enqueue(q, b):
     return res
 
 
+@route("POST", "/api/queue/remove")
+def _queue_remove(q, b):
+    """Body {uid} | {uids: [...]} | {index}: remove entries from Up Next (any signed-in user). Soft: they're hidden from
+    every queue view and skipped the moment they start. 404 if one isn't in Up Next. Returns the queue"""
+    res = player.remove_from_queue(b, _req.user)
+    names = [(e.get("item") or {}).get("name") for e in res["removed"]]
+    _log("queue_remove", {"names": [n for n in names if n], "count": len(res["removed"])})
+    return credits.annotate(res["queue"])
+
+
 @route("POST", "/api/queue/jump")
 def _queue_jump(q, b):
     """Body {uid} (Soloist) or {index}: skip ahead to that Up Next entry, dropping the ones before it"""
@@ -1253,6 +1263,7 @@ def main():
     credits = Credits(os.path.join(a.data_dir, "credits.json"))
     player = Player(backend, api, soloist, a.device, credits.for_status)
     player.skip_fn = credits.recent_skip
+    player.uncredit_fn = credits.unqueue
     activity = Activity(os.path.join(a.data_dir, "activity.jsonl"))
     activity.publish = lambda entry: player.publish("activity", entry)
     if soloist:

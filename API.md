@@ -35,6 +35,7 @@ Path `{id}`s are bare 22-character Spotify IDs. `uri`/`uris`/`context` fields ta
 |---|---|---|
 | `GET` | `/api/queue` | Upcoming (and, with Soloist, previous) queue entries, each with added_by {id, name, avatar} when someone queued it through this API. ?limit=n (Soloist: up to 80) |
 | `POST` | `/api/queue` | Body {uri} \| {uris: [...]}: add to the end of the queue |
+| `POST` | `/api/queue/remove` | Body {uid} \| {uids: [...]} \| {index}: remove entries from Up Next (any signed-in user). Soft: they're hidden from every queue view and skipped the moment they start. 404 if one isn't in Up Next. Returns the queue |
 | `POST` | `/api/queue/jump` | Body {uid} (Soloist) or {index}: skip ahead to that Up Next entry, dropping the ones before it |
 | `GET` | `/api/devices` | Spotify Connect devices on the account (plus the local Soloist device) |
 | `POST` | `/api/devices/transfer` | Body {device: name\|id\|"soloist", play?: bool}: move playback to a device |
@@ -112,12 +113,12 @@ Tokens have no scopes: any token can do everything, including creating and revok
 | Method | Path | Notes |
 |---|---|---|
 | `POST` | `/api/playpause` | Toggle play/pause |
-| `GET` | `/api/app/me` | Who's signed in: {id, name, avatar, admin, kind: slack\|token}. API tokens show as @admin |
+| `GET` | `/api/app/me` | Who's signed in: {id, name, avatar, admin, kind: slack\|token}. API tokens show as Admin |
 | `GET` | `/api/app/token` | Your personal API token {token, created, docs}: same permissions as you; created on first request |
 | `POST` | `/api/app/token/regenerate` | Replace your personal API token; the old one stops working immediately |
 | `GET` | `/api/app/playlists` | Playlists shown in the web app (the account's own are hidden), newest first, with created_by, source_url, can_edit |
 | `POST` | `/api/app/playlists` | Body {name, description?}: create a playlist credited to you |
-| `POST` | `/api/app/playlists/import` | Body {url}: copy a Spotify or Apple Music playlist/song link into a new playlist → {playlist, imported, total, truncated, source, unmatched: [{name, artists}]}. Album links are added to the Library as albums instead → {kind: "album", album: {...}} |
+| `POST` | `/api/app/playlists/import` | Body {url}: copy a Spotify or Apple Music playlist/song link into a new playlist → {playlist, imported, total, truncated, source, unmatched: [{name, artists}]}. Album links are added to the Library as albums instead → {kind: "album", album: {...}}, unless {as: "playlist"} (e.g. an Apple album with no Spotify match) copies its songs into a playlist |
 | `POST` | `/api/app/playlists/{id}/duplicate` | Body {name?}: copy a playlist's tracks into a new playlist credited to you → the new playlist |
 | `POST` | `/api/resolve` | Body {url}: a Spotify or Apple Music song/album/playlist link → {source, kind, name, subtitle, artwork, url, spotify_uri, tracks: [{name, artists, album, duration_ms, artwork, uri}], total, matched, truncated} |
 | `GET` | `/api/app/playlists/{id}` | One app playlist |

@@ -154,6 +154,7 @@ Status (`GET /api/status`, and the `status` SSE event):
 - `state`: `playing`, `paused` or `idle` (nothing on any device). Soloist may also report other states such as `buffering`.
 - `repeat`: `off`, `context` or `track`.
 - `actions`: the actions currently allowed, using Soloist's names (`play`, `pause`, `seek`, `skip_next`, `skip_prev`, `shuffle`, `set_repeat`, `add_to_queue`, plus `seek_forward`/`seek_backward` with Soloist). On the connect backend it's derived from Spotify's `disallows`. It's empty when nothing is playing.
+- `removed`: only present, as `true`, for the instant a track removed from Up Next (`POST /api/queue/remove`) is playing before it gets skipped; clients should hide that status.
 - `source`: where the current track came from: `context`, `queue` or `autoplay` (Soloist only; null if unknown).
 - `skip`: for 30 s after someone presses next/previous or jumps in Up Next: `{"by": {id, name, avatar}, "from": <uri of the track they skipped>, "at": unix ms}`, else null. The skip is credited on the track that was skipped; the new track keeps its own `credit`.
 - `credit`: who is responsible for the current track, or null. `how` is `queued` (someone added it with `POST /api/queue`) `started` (someone began playback of it or of its album/playlist/artist with `POST /api/play`, `/api/play-url`, `/api/playlists/{id}/play` or Slack), or `autoplay` (Spotify picked it after the album/playlist ended; `by` is `{"id": null, "name": "Autoplay", "avatar": null}`). It stays the same for the whole track and survives restarts; credits expire after 6 hours (queued) or 12 hours (started).
@@ -287,6 +288,7 @@ Only successful actions are recorded. Names can arrive late: the entry is first 
 | `shuffle` | `{enabled}` |
 | `repeat` | `{mode}`: `off`, `context` or `track` |
 | `queue_add` | `{uris, count, names?}` |
+| `queue_remove` | `{names, count}`: Up Next entries removed with `POST /api/queue/remove` |
 | `playlist_create` | `{id, name}` |
 | `playlist_import` | `{id, name, imported, source}` |
 | `playlist_rename` | `{id, name}` (new name) |
@@ -310,6 +312,11 @@ Only successful actions are recorded. Names can arrive late: the entry is first 
 
 #### POST /api/queue/jump
 Body `{uid}` (from `GET /api/queue`, Soloist) or `{index}` (0 = the next entry): skip ahead to that Up Next entry, dropping the entries before it, like clicking a song in Spotify's queue. 409 if that uid is no longer in Up Next. Returns the status.
+
+#### POST /api/queue/remove
+Body `{uid}`, `{uids: [...]}` (several at once) or `{index}` (0 = first entry of the list `GET /api/queue` returns): remove entries from Up Next. Any signed-in user may do it. 404 (and nothing is removed) if a uid or index isn't in Up Next. Returns the queue as `GET /api/queue` does, without the removed entries.
+
+The removal is soft, because Soloist and the Web API can't delete from the queue. The entry is hidden immediately from `GET /api/queue`, the `queue` event, the Slack feed and the display, and `POST /api/queue/jump` indexes ignore it. The moment it starts playing the server skips it, so a fraction of a second of it may be audible (that status has `"removed": true`, no credit, and gets no Slack card). Skipping is Soloist-only; on the connect backend the entry is only hidden. The removal is forgotten after 6 hours or shortly after the entry leaves Up Next. A removed song's queued credit is dropped.
 
 #### POST /api/queue
 Body `{uri}` or `{uris: [...]}`: add tracks or episodes to the end of the user queue (bare IDs are treated as tracks). Albums and playlists can't be queued; play them, or queue their tracks one by one. Returns `{"added": [uris]}`.

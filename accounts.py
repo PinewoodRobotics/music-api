@@ -433,6 +433,16 @@ class Credits:
             self.by_uri = {u: es for u, es in self.by_uri.items() if es}
             self._save()
 
+    def unqueue(self, uri):
+        """A queued song was removed from Up Next: drop its newest queued credit."""
+        with self.lock:
+            es = self.by_uri.get(uri)
+            if es:
+                es.pop()
+                if not es:
+                    del self.by_uri[uri]
+                self._save()
+
     def skipped(self, user):
         """Someone pressed next/previous or jumped in Up Next. The skip is credited on the track they left;
         the next track keeps its own credit (queued/started/autoplay), since they didn't pick it."""

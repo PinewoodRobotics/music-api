@@ -16,6 +16,8 @@ from spotify import SpotifyError, item, to_uri
 WS_PLAYABLE = ("track", "album", "playlist", "episode")
 REPEAT_ALIASES = {"one": "track", "all": "context", "none": "off"}
 # Web API `actions.disallows` keys -> the action names Soloist uses in `available_actions`
+REMOVED_TTL = 6 * 3600  # soft-removed queue entries are forgotten after this long
+REMOVED_GONE = 30       # ...or this long after they left Up Next (played, skipped or cleared)
 DISALLOW_KEYS = {"resuming": "play", "pausing": "pause", "seeking": "seek", "skipping_next": "skip_next",
                  "skipping_prev": "skip_prev", "toggling_shuffle": "shuffle", "toggling_repeat_context": "set_repeat"}
 
@@ -58,7 +60,12 @@ class Player:
     def __init__(self, backend, api, soloist=None, device=None, credit_fn=None):
         self.credit_fn = credit_fn
         self.skip_fn = None
-        self._src = (None, None, [])  # (track uri, its source, Up Next seen while it played)
+        self._src = (None, None, [], False)  # (track uri, its source, Up Next seen while it played, was removed)
+        self.removed = {}               # queue key -> {"by", "at", "uri", "name"}; see _keys
+        self.removed_lock = threading.RLock()
+        self.uncredit_fn = None
+        self.clock = time.time
+        self._no_autoskip_until = 0
         self.backend = backend          # "soloist" | "connect"
         self.api = api
         self.soloist = soloist
@@ -108,7 +115,7 @@ class Player:
         if name in ("command_result", "error"):
             return
         if name == "queue_changed":
-            self.publish("queue", self._soloist_queue_from(msg))
+            self.publish("queue", self._filtered(self._soloist_queue_from(msg), full=True))
         self._emit_status()
 
     def loop(self):
@@ -150,7 +157,10 @@ class Player:
     def status(self, fresh=False):
         st = self._status(fresh)
         st = {**st, "source": self._source(st)}
-        return {**st, "credit": self.credit_fn(st) if self.credit_fn else None,
+        removed = self._src[3] and (st.get("track") or {}).get("uri") == self._src[0]
+        if removed:
+            st["removed"] = True
+        return {**st, "credit": None if removed else self.credit_fn(st) if self.credit_fn else None,
                 "skip": self.skip_fn() if self.skip_fn else None}
 
     def _source(self, st):
@@ -160,13 +170,29 @@ class Player:
             return None
         uri = (st.get("track") or {}).get("uri")
         upcoming = (getattr(self.soloist, "queue", None) or {}).get("upcoming") or []
-        cur, source, seen = self._src
-        if uri != cur:
-            source = next((e.get("source") for e in seen if (e.get("item") or {}).get("uri") == uri), None)
-        else:
-            seen = upcoming or seen
-        self._src = (uri, source, seen)
+        skip = False
+        with self.removed_lock:
+            cur, source, seen, removed = self._src
+            if uri != cur:
+                source = next((e.get("source") for e in seen if (e.get("item") or {}).get("uri") == uri), None)
+                removed = False
+                if uri and seen and (seen[0].get("item") or {}).get("uri") == uri:
+                    key = self._keys(seen)[0]
+                    if self.removed.pop(key, None):
+                        removed = True
+                        skip = self.clock() >= self._no_autoskip_until
+            else:
+                seen = list(upcoming) or seen
+            self._src = (uri, source, seen, removed)
+        if skip:
+            threading.Thread(target=self._autoskip, daemon=True).start()
         return source
+
+    def _autoskip(self):
+        try:
+            self._sol("skip_next")
+        except PlayerError:
+            pass
 
     def _status(self, fresh=False):
         if self.backend == "soloist":
@@ -274,17 +300,25 @@ class Player:
 
     def jump(self, b):
         """Skip ahead to an Up Next entry (by uid, else index), dropping the ones before it like Spotify does."""
-        up = self.queue(80)["upcoming"]
+        raw = self._raw_queue(80)
+        keys = self._keys(raw["upcoming"])
+        with self.removed_lock:
+            visible = [i for i, k in enumerate(keys) if k not in self.removed]
         if b.get("uid"):
-            idx = next((i for i, e in enumerate(up) if e.get("uid") == b["uid"]), None)
+            idx = next((i for i in visible if raw["upcoming"][i].get("uid") == b["uid"]), None)
             if idx is None:
                 raise PlayerError("that song isn't in Up Next anymore", 409)
         else:
-            idx = int(b["index"])
-            if not 0 <= idx < len(up):
+            n = int(b["index"])
+            if not 0 <= n < len(visible):
                 raise PlayerError("no such Up Next entry", 404)
-        for _ in range(idx + 1):
-            self.next()
+            idx = visible[n]
+        self._no_autoskip_until = self.clock() + 60
+        try:
+            for _ in range(idx + 1):
+                self.next()
+        finally:
+            self._no_autoskip_until = self.clock() + 2
         return self.status(fresh=True)
 
     def previous(self):
@@ -358,15 +392,88 @@ class Player:
             return [{"uid": e.get("uid"), "source": e.get("source"), "item": entity(e.get("item"))} for e in entries]
         return {"upcoming": rows(q.get("upcoming", [])), "previous": rows(q.get("previous", []))}
 
-    def queue(self, limit=None):
+    def _raw_queue(self, limit=None):
         if self.backend == "soloist":
-            msg = self._sol("get_queue", limit=int(limit or 0))
-            return self._soloist_queue_from(msg)
+            return self._soloist_queue_from(self._sol("get_queue", limit=int(limit or 0)))
         self._need_api("queue")
         q = self.api.get("/me/player/queue")
         upcoming = [{"uid": None, "source": None, "item": item(x)} for x in q.get("queue", [])]
         return {"current": item(q.get("currently_playing")), "upcoming": upcoming[:limit] if limit else upcoming,
                 "previous": []}
+
+    @staticmethod
+    def _keys(upcoming):
+        """Identity of each Up Next entry: its Soloist uid, else (uri, n-th occurrence of that uri)."""
+        seen, out = {}, []
+        for e in upcoming:
+            if e.get("uid") is not None:
+                out.append(("uid", e["uid"]))
+                continue
+            uri = (e.get("item") or {}).get("uri")
+            out.append(("occ", uri, seen.get(uri, 0)))
+            seen[uri] = seen.get(uri, 0) + 1
+        return out
+
+    def _filtered(self, q, full=False):
+        """q without the soft-removed entries. `full` = q holds the whole Up Next, so removals that vanished from it
+        can be forgotten."""
+        keys = self._keys(q.get("upcoming", []))
+        now = self.clock()
+        with self.removed_lock:
+            for k, v in list(self.removed.items()):
+                if now - v["at"] > REMOVED_TTL:
+                    del self.removed[k]
+                elif full and k in keys:
+                    v.pop("gone", None)
+                elif full and now - v.setdefault("gone", now) > REMOVED_GONE:
+                    del self.removed[k]
+            hidden = set(self.removed)
+        return {**q, "upcoming": [e for e, k in zip(q.get("upcoming", []), keys) if k not in hidden]}
+
+    def queue(self, limit=None):
+        """Up Next without the entries hidden by remove_from_queue."""
+        want = int(limit or 0)
+        with self.removed_lock:
+            extra = len(self.removed)
+        q = self._filtered(self._raw_queue(want + extra if want else None), full=not want)
+        if want:
+            q["upcoming"] = q["upcoming"][:want]
+        return q
+
+    def remove_from_queue(self, b, user):
+        """Body {uid} | {uids: [...]} | {index}: hide Up Next entries (indexes are into the visible list) and skip
+        them the moment they start. Soloist can't delete from its queue; a real removal replaces this method.
+        Returns {"removed": [entries], "queue": the visible queue}."""
+        raw = self._raw_queue(80)["upcoming"]
+        with self.removed_lock:
+            up = [(e, k) for e, k in zip(raw, self._keys(raw)) if k not in self.removed]
+            if b.get("uids") or b.get("uid"):
+                picked = []
+                for uid in (list(b["uids"]) if b.get("uids") else [b["uid"]]):
+                    hit = next((p for p in up if p[0].get("uid") == uid), None)
+                    if hit is None:
+                        raise PlayerError("that song isn't in Up Next anymore", 404)
+                    picked.append(hit)
+            else:
+                n = int(b["index"])
+                if not 0 <= n < len(up):
+                    raise PlayerError("no such Up Next entry", 404)
+                picked = [up[n]]
+            now = self.clock()
+            marked = []
+            for e, k in picked:
+                if k in self.removed:
+                    continue
+                self.removed[k] = {"by": user, "at": now, "uri": (e.get("item") or {}).get("uri"),
+                                   "name": (e.get("item") or {}).get("name")}
+                marked.append(e)
+        if self.uncredit_fn:
+            for e in marked:
+                if e.get("source") in (None, "queue"):
+                    self.uncredit_fn((e.get("item") or {}).get("uri"))
+        q = self.queue(80)
+        self.publish("queue", q)
+        return {"removed": marked, "queue": q}
 
     def enqueue(self, b):
         """Body {uri} or {uris: [...]}: add tracks/episodes to the end of the user queue"""
