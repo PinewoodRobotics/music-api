@@ -12,7 +12,7 @@ Path `{id}`s are bare 22-character Spotify IDs. `uri`/`uris`/`context` fields ta
 |---|---|---|
 | `GET` | `/api/status` | Playback state, position, volume, shuffle/repeat, current track/episode, context, device, backend |
 | `GET` | `/api/now-playing` | Just the current track/episode (or null) |
-| `GET` | `/api/artwork` | Current cover image: 302 to Spotify's CDN, or ?proxy=1 to get the bytes (for devices without HTTPS) |
+| `GET` | `/api/artwork` | Current cover image: 302 to Spotify's CDN, or ?proxy=1 to get the bytes (for devices without HTTPS). During AirPlay: the sender's cover art bytes |
 | `GET` | `/api/lyrics` | Lyrics for the current song (or ?track=id), synced line-by-line when available (lrclib.net). Includes position_ms and the index of the current line |
 | `GET` | `/api/sleep` | Sleep timer state |
 | `POST` | `/api/sleep` | Body {minutes, fade?: seconds}: pause after N minutes, fading out over the last `fade` seconds (default 30) |
@@ -112,6 +112,10 @@ Tokens have no scopes: any token can do everything, including creating and revok
 
 | Method | Path | Notes |
 |---|---|---|
+| `GET` | `/api/airplay` | AirPlay session: {active, state: playing\|paused, sender, track {name, artists, album, artwork, duration_ms}, position_ms, duration_ms, started_at, resume_spotify} or {active: false}. Also folded into /api/status as source "airplay" while a session is on |
+| `GET` | `/api/airplay/artwork` | Cover art the AirPlay sender sent for the current song (bytes); 404 if none |
+| `POST` | `/api/airplay/stop` | End the AirPlay session (restarts the receiver, which disconnects the sender; it can reconnect a few seconds later). Spotify then resumes if it was playing when AirPlay took over. 409 airplay_inactive if there's none |
+| `GET` | `/api/quiet-hours` | Quiet hours: {enabled, window: "21:00-08:00", phase: open\|grace\|locked, locked, idle_since, locks_at, until: "08:00", until_ts, starts_at, grace_s}. After the window starts the speakers lock once nothing has played for grace_s seconds; while locked, play/resume/skip are refused with 423 {"error": "quiet_hours", "until"} |
 | `POST` | `/api/playpause` | Toggle play/pause |
 | `GET` | `/api/app/me` | Who's signed in: {id, name, avatar, admin, kind: slack\|token}. API tokens show as Admin |
 | `GET` | `/api/app/token` | Your personal API token {token, created, docs}: same permissions as you; created on first request |

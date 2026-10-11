@@ -28,8 +28,10 @@ All of these are served without a token, so you can point an LLM agent straight 
 
 ```
  phone / web remote / scripts ──HTTP+SSE──► server.py (this) ──┬─ WebSocket (127.0.0.1) ─► Spotify Soloist ─► PipeWire ─► USB speakers
-                                                               └─ HTTPS ─► Spotify Web API  (search, library, playlists,
-                                                                                             history, any Connect device)
+                                                               ├─ HTTPS ─► Spotify Web API  (search, library, playlists,   ▲
+                                                               │                             history, any Connect device) │
+ iPhone / Mac ──AirPlay 2──► shairport-sync ──────────────────────────────────────────────────────────────────────────────┘
+                                   └─ metadata pipe ─► server.py (now playing, pauses Spotify while AirPlay plays)
 ```
 
 There are two playback backends, chosen with `--backend auto|soloist|connect`:
@@ -239,15 +241,65 @@ Restart the Spotify desktop app, pick the device, then stop both commands. Adver
 - **USB speakers.** Soloist outputs through PipeWire (falling back to PulseAudio). Find the speakers with `wpctl status`.
   Then either set `SOLOIST_PIPEWIRE_DEVICE` in the env file, or make them the default with `POST /api/system/outputs {id}`.
 - **Install.** On the Pi, run `sh deploy/install-linux.sh`. It installs PipeWire, enables lingering so user services run
-  without a login, installs systemd user units for Soloist, the API and a daily Soloist update, and creates `~/.config/music-api/env`.
+  without a login, builds the AirPlay 2 receiver, installs systemd user units for Soloist, the API, AirPlay, the
+  quiet-hours timer and a daily Soloist update, and creates `~/.config/music-api/env`.
 - **Build expiry.** Soloist builds expire 90 days after they're built (exit code 10).
   [`deploy/update-soloist.sh`](deploy/update-soloist.sh) runs daily and pulls the current build from Spotify's CDN.
   Spotify asks that the binary not be redistributed, so it's never committed here.
+
+### Quiet hours
+
+From `QUIET_HOURS` (env file or `--quiet-hours`, default `21:00-08:00`, local time, may wrap midnight, `off` disables it):
+
+- When the window starts nothing is cut off. Whatever is playing (Spotify or AirPlay) keeps going and people can keep
+  playing, skipping and starting new AirPlay sessions. That's the **grace** phase.
+- Once no audio has come from any source for 5 continuous minutes (counted from the window start if it was already
+  quiet, so an idle evening locks at 21:05), the speakers **lock** until the window ends: play, resume, skip, jump and
+  transfer-with-play are refused with `423 {"error": "quiet_hours", "until": "08:00", "message": ...}` from every
+  route, the Slack bot and the raw `/api/spotify/me/player/...` passthrough. Pause, volume, search, playlists, the
+  Library and queue editing keep working. The AirPlay receiver stops advertising and every output sink is muted.
+  At the end of the window both are restored (the mute state each sink had before).
+- `GET /api/quiet-hours` and `status.quiet_hours` report `{window, phase: open|grace|locked, idle_since, locks_at, until}`.
+- The lock and the idle clock live in `<data-dir>/quiet-hours.json`, so restarts and reboots keep them. A reboot during
+  the window comes up locked if it was locked, otherwise in grace with the persisted idle clock (so a box that was idle
+  locks right away, and one that had been playing locks 5 minutes after boot unless something plays).
+- OS-level backstop, independent of the server: `quiet-hours.timer` runs `quiet_hours.py sync` every minute, which
+  applies the lock (receiver stopped, sinks muted) and undoes it in the morning. If the server's heartbeat in that
+  file is older than 150 s it also judges idleness itself from PipeWire sink activity (`pactl list short sinks`,
+  RUNNING = audio) and locks on its own. `airplay.service` has `quiet_hours.py receiver-allowed` as its
+  `ExecCondition`, so it can't come back while locked (boot, crash restart or a manual start).
+- Set the Pi's timezone (`sudo timedatectl set-timezone America/Los_Angeles`); the installer warns if it's UTC.
+
+### AirPlay 2 receiver
+
+The Pi also shows up as an AirPlay 2 speaker named `AIRPLAY_NAME` (default "Pinewood Music"). AirPlay completely
+overrides Spotify:
+
+- A session starting pauses Soloist (track, position and queue stay put) and remembers whether it was playing.
+- While it lasts, `/api/status` shows the AirPlay song (`source: "airplay"`, title, artist, album, art at
+  `/api/airplay/artwork`, progress, `airplay.sender`), and Spotify transport (play, pause, skip, seek, jump,
+  transfer) is refused with `409 {"error": "airplay_active", "sender": ...}`. Queue and library editing still work.
+  AirPlay doesn't carry the sender's queue, so there's no Up Next for it.
+- When it ends (the sender stops or disconnects, or someone presses Stop AirPlay / `POST /api/airplay/stop`, which
+  restarts the receiver to drop the sender, who can reconnect a few seconds later), Spotify resumes right where it
+  left off if it was playing before, and stays paused otherwise. It doesn't resume if quiet hours have locked.
+- Remote control of the AirPlay sender (pause/next from the web app) isn't implemented: shairport-sync only offers it
+  through D-Bus/MPRIS, which is unreliable with AirPlay 2 senders. Control AirPlay from the sending device.
+
+How it's installed (`deploy/install-airplay.sh`, run by `install-linux.sh`; `NO_AIRPLAY=1` skips it): the Ubuntu and
+Debian packages are classic AirPlay only, so it builds pinned NQPTP 1.2.4 (system service, PTP ports 319/320) and
+shairport-sync 4.3.7 with `--with-airplay-2 --with-pa --with-metadata` from source (about 15 minutes on a Pi 3), and
+disables any distro shairport-sync service. shairport-sync runs as the `airplay.service` user unit (it has to, to reach
+the user's PipeWire), with [`deploy/shairport-sync.conf`](deploy/shairport-sync.conf): PulseAudio output, metadata and
+cover art to `/tmp/shairport-sync-metadata`, progress every second. The server reads that pipe (`--airplay-pipe`); a
+missing pipe (macOS, receiver not installed) is fine, and shairport-sync restarts are picked up.
+Logs: `journalctl --user-unit airplay -f`, `journalctl -u nqptp`.
 
 ### HDMI now-playing display
 
 `display/now_playing_display.py` draws a now-playing screen (blurred artwork background, big cover, title, progress, "Playing Next") straight into `/dev/fb0` on a Pi with no desktop. It needs only `python3-pil` and `fonts-inter`, follows `/api/events`, and redraws the progress bar at most every 2 s.
 
+- AirPlay sessions show the sender's art and song with "AirPlay from <sender>"; locked quiet hours show a dim "Quiet hours" screen.
 - It reads the framebuffer size at runtime, so it works at any resolution (16 or 32 bpp). For 1080p add `video=HDMI-A-1:1920x1080@60` to `/boot/firmware/cmdline.txt`; `vt.global_cursor_default=0 consoleblank=0 quiet logo.nologo` keeps the text console quiet.
 - `install-linux.sh` disables `getty@tty1`, lets the `video` group hide the tty1 cursor, silences console kernel messages, and enables the `music-display` user unit. Create its token once: `POST /api/tokens {"name": "pi display"}` into `~/.config/music-api/display-token` (mode 600).
 - Preview without a framebuffer: `python3 display/now_playing_display.py --render-png /tmp/shot.png --size 1920x1080`.
@@ -281,6 +333,8 @@ v1 (Music.app) lived in `~/Developer/music-api` and is retired.
 - `GET/POST /api/system/volume`, `/api/system/outputs`: the machine's own mixer (PipeWire / PulseAudio / macOS).
 - `GET /api/artwork?proxy=1`: cover image bytes, for e-ink and other microcontroller clients that can't do HTTPS.
 - `ANY /api/spotify/{path}`: raw Web API passthrough using the stored login, for anything not wrapped yet.
+- `GET /api/airplay`, `GET /api/airplay/artwork`, `POST /api/airplay/stop`: the AirPlay receiver (see above).
+- `GET /api/quiet-hours`: the quiet-hours window and lock state.
 
 ## Status
 

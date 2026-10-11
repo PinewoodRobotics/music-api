@@ -71,10 +71,18 @@ Failure: HTTP 4xx/5xx with
 {"error": "human-readable message"}
 ```
 
+A few errors carry a machine-readable code in `error` plus a human `message` and extra fields:
+
+```json
+{"error": "quiet_hours", "message": "Quiet hours: the speakers are locked until 8:00 AM", "until": "08:00", "until_ts": 1791730800}
+{"error": "airplay_active", "message": "AirPlay from Adam's iPhone is playing, so Spotify is paused until it ends ...", "sender": "Adam's iPhone"}
+{"error": "airplay_inactive", "message": "no AirPlay session"}
+```
+
 Exceptions to the envelope:
 
 - `GET /api` returns a bare JSON array (no `result` wrapper).
-- `GET /api/artwork` returns `302` with a `Location` header, or raw image bytes with `?proxy=1`.
+- `GET /api/artwork` returns `302` with a `Location` header, or raw image bytes with `?proxy=1` (and always bytes during AirPlay). `GET /api/airplay/artwork` returns image bytes.
 - `GET /auth/login` returns an HTML page (or `302` to Spotify with `?redirect=1`); `/auth/callback` returns HTML.
 - `GET /api/events` is a `text/event-stream`.
 - The documentation files are `text/plain` or `text/markdown`.
@@ -155,9 +163,11 @@ Status (`GET /api/status`, and the `status` SSE event):
 - `repeat`: `off`, `context` or `track`.
 - `actions`: the actions currently allowed, using Soloist's names (`play`, `pause`, `seek`, `skip_next`, `skip_prev`, `shuffle`, `set_repeat`, `add_to_queue`, plus `seek_forward`/`seek_backward` with Soloist). On the connect backend it's derived from Spotify's `disallows`. It's empty when nothing is playing.
 - `removed`: only present, as `true`, for the instant a track removed from Up Next (`POST /api/queue/remove`) is playing before it gets skipped; clients should hide that status.
-- `source`: where the current track came from: `context`, `queue` or `autoplay` (Soloist only; null if unknown).
+- `source`: where the current track came from: `context`, `queue` or `autoplay` (Soloist only; null if unknown), or `airplay` during an AirPlay session.
 - `skip`: for 30 s after someone presses next/previous or jumps in Up Next: `{"by": {id, name, avatar}, "from": <uri of the track they skipped>, "at": unix ms}`, else null. The skip is credited on the track that was skipped; the new track keeps its own `credit`.
 - `credit`: who is responsible for the current track, or null. `how` is `queued` (someone added it with `POST /api/queue`) `started` (someone began playback of it or of its album/playlist/artist with `POST /api/play`, `/api/play-url`, `/api/playlists/{id}/play` or Slack), or `autoplay` (Spotify picked it after the album/playlist ended; `by` is `{"id": null, "name": "Autoplay", "avatar": null}`). It stays the same for the whole track and survives restarts; credits expire after 6 hours (queued) or 12 hours (started).
+- `quiet_hours`: `{"enabled", "window": "21:00-08:00", "phase": "open"|"grace"|"locked", "locked", "grace_s": 300, "idle_since", "locks_at", "starts_at", "until": "08:00", "until_ts"}` (times are unix seconds; `locks_at` is set during grace while nothing plays). See "Quiet hours" in section 6.
+- `airplay`: null, or while an AirPlay session is on `{"sender": "Adam's iPhone", "state", "started_at", "resume_spotify"}`. Then `source` is `"airplay"`, and `state`, `track`, `position_ms` and `duration_ms` describe the AirPlay song: `track` is `{"uri": null, "id": null, "type": "airplay", "name", "artists": [{"uri": null, "name"}], "album": {"uri": null, "name"} | null, "duration_ms", "artwork": "/api/airplay/artwork?v=..." | null}` (a relative URL on this server; add `?token=` or the header). `context`, `credit` and `skip` are null and `actions` is empty. The paused Spotify state is under `spotify: {state, track, position_ms, duration_ms, context, source, credit}`.
 - With the Soloist backend there are also `connected`, `logged_in` and `error` fields, `device` is `{name, type: "Soloist", active}`, and `context` is a compact object (`uri, id, type, name, artwork`).
 - When idle (connect backend), `device`, `track`, `context`, `volume`, `shuffle` and `repeat` are null.
 
@@ -258,6 +268,20 @@ Lyrics for the current song, from lrclib.net. Optional `?track=<id|uri|link>` fo
 - `line` is the index into `synced` of the line being sung now (`-1` before the first line). `position_ms` and `line` are only present for the current song, not with `?track=`.
 - `instrumental: true` means there are no words.
 - `404` when nothing is playing, for podcast episodes ("lyrics are only available for songs"), or when LRCLIB has nothing ("no lyrics found"). Lookup is exact (title, artist, album, duration) with a fuzzy search fallback; check `match` if it looks wrong.
+
+### AirPlay and quiet hours
+
+#### GET /api/airplay
+`{"active": false}`, or during a session `{"active": true, "state": "playing"|"paused", "sender", "track", "position_ms", "duration_ms", "started_at", "resume_spotify"}` (same `track` shape as in the status). AirPlay carries no queue.
+
+#### GET /api/airplay/artwork
+Cover art the sender sent for the current AirPlay song (image bytes). `404` if there's none.
+
+#### POST /api/airplay/stop
+Ends the AirPlay session by restarting the receiver (the sender is disconnected and can reconnect a few seconds later). Spotify then resumes where it left off if it was playing when AirPlay took over (not if quiet hours have locked). Returns the status. `409 airplay_inactive` if no session is on; `503` if the receiver couldn't be restarted.
+
+#### GET /api/quiet-hours
+The `quiet_hours` object from the status.
 
 #### GET /api/sleep
 Sleep timer: `{"active": false}` or `{"active": true, "ends_at": <unix seconds>, "remaining": <seconds>, "fade": <seconds>}`.
@@ -598,7 +622,7 @@ Forget the stored Spotify login. Returns the login status. Don't call this unles
 
 | Event | Data | When |
 |---|---|---|
-| `status` | status object | Right after connecting (if known), then every 1 s (Soloist) or 2 s (connect), and immediately on Soloist push events |
+| `status` | status object (with `quiet_hours` and `airplay`) | Right after connecting (if known), then every 1 s (Soloist) or 2 s (connect), immediately on Soloist push events, AirPlay changes and quiet-hours phase changes |
 | `track` | track/episode object or `null` | When the current item changes |
 | `queue` | `{upcoming, previous}` | When the queue changes (Soloist backend only) |
 | `sleep` | sleep status | When a sleep timer is set, cancelled or fires |
@@ -698,6 +722,14 @@ The server uses one of two backends; `GET /api/backend` says which.
 - `connect`: controls whatever Spotify Connect device is active on the account (Spotify desktop app, phone, speaker) through the Web API. Needs the Web API login, Premium on the account, and a device that is online. With no active device, play commands fail (Spotify 404, "no active device"); transfer to a device first. Status is polled every 2 s while someone listens to events. Previous-queue history isn't available. The public server runs on macOS, where this is normally the backend.
 - `soloist`: plays through a local Spotify Soloist daemon (Linux) over its WebSocket API, with push events and no Web API rate limits. Status, transport, volume, shuffle, repeat, seek, queue reading and queueing tracks work without the Web API. These fall back to the Web API (aimed at the Soloist device): playing with `uris`, `context`, `offset` or `position`; playing an artist or show URI; queueing episodes; listing other devices; transferring to another device. The queue includes previous items and up to 80 upcoming, each tagged `context`, `queue` or `autoplay`. `POST /api/backend/soloist/activate` makes it the active device. Soloist errors mentioning auth come back as 409; Soloist not running is 503; no answer is 504.
 
+### Quiet hours
+
+Default window 21:00-08:00, local time on the server. Music that's playing when it starts keeps going, and playback works normally (grace) until no audio has played from any source for 5 continuous minutes; then the speakers lock until the window ends. While locked, `POST /api/play`, `/api/play-url`, `/api/playpause` (when it would play), `/api/next`, `/api/previous`, `/api/back`, `/api/queue/jump`, `/api/playlists/{id}/play`, `/api/app/library/songs/play`, `/api/devices/transfer` with `play: true`, the Slack bot and `/api/spotify/me/player/{play,next,previous}` return `423 quiet_hours` with `until`. Pause, volume, search, playlists, the Library and queue editing still work. Tell the user it's quiet hours until `until`; don't retry. The lock also turns the AirPlay receiver off and mutes the speakers at the OS level.
+
+### AirPlay
+
+People can play to the speakers from an iPhone or Mac over AirPlay 2. That pauses Spotify; while it lasts, Spotify transport (`play`, `pause`, `playpause`, `next`, `previous`, `back`, `seek`, `queue/jump`, `devices/transfer`, `/api/spotify/me/player/...`) returns `409 airplay_active` with `sender`. Queueing, removing from the queue, search, playlists and the Library work. Don't stop someone's AirPlay session (`POST /api/airplay/stop`) unless the user asks.
+
 ### Other gotchas
 
 - `uri` in `/api/play` and URIs in library/playlist bodies must be URIs or links; a bare ID there is a 400 ("not a Spotify URI or link"). Path parameters are the opposite: bare IDs only.
@@ -721,7 +753,8 @@ The server uses one of two backends; `GET /api/backend` says which.
 | 403 | `Spotify 403: ...` | Spotify refused: e.g. Premium required, playlist not yours, user not on the app's allowlist |
 | 404 | `not found`, `nothing playing`, `no lyrics found`, `device '...' not found`, `Spotify 404: ... (NO_ACTIVE_DEVICE)` | Missing thing; for no active device, transfer playback first |
 | 405 | `method not allowed` | Path exists, wrong method |
-| 409 | `refusing to revoke the last token ...`, Soloist auth errors | Conflict; see message |
+| 409 | `refusing to revoke the last token ...`, Soloist auth errors, `airplay_active`, `airplay_inactive` | Conflict; see message. `airplay_active`: someone is playing over AirPlay, Spotify control is held until it ends |
+| 423 | `quiet_hours` | Quiet hours are locked until `until`; playback can't start. Library, search, playlists and the queue still work |
 | 412 | `... needs the Spotify Web API; log in at /auth/login`, `no Spotify Client ID ...` | Feature needs the Web API login, which isn't set up |
 | 429 | `Spotify 429: ...` | Spotify rate limit; wait and retry |
 | 501 | `no supported system mixer ...`, `output switching needs PipeWire or PulseAudio` | Not supported on this host |
@@ -735,7 +768,8 @@ Other Spotify 4xx errors are passed through with their status and a message of t
 ## 8. Deployment (for maintainers)
 
 - Code: a Python 3.9+ stdlib-only server (`server.py`), installed at `~/.local/share/music-api-v2` on a Raspberry Pi 3 B+ (Debian 13, user `ubuntu`). No dependencies.
-- systemd user units: `soloist.service` (Spotify Soloist, audio to the USB speakers via PipeWire), `music-api.service` (`server.py --host 0.0.0.0 --public`, settings from `~/.config/music-api/env`), `soloist-update.timer` (daily build refresh).
+- systemd user units: `soloist.service` (Spotify Soloist, audio to the USB speakers via PipeWire), `music-api.service` (`server.py --host 0.0.0.0 --public`, settings from `~/.config/music-api/env`), `soloist-update.timer` (daily build refresh), `airplay.service` (shairport-sync AirPlay 2 receiver, `AIRPLAY_NAME`), `quiet-hours.timer` (every minute: `quiet_hours.py sync`, the OS-level quiet-hours lock). System service `nqptp` (AirPlay 2 timing).
+- Quiet hours: `QUIET_HOURS=21:00-08:00` in the env file (or `off`); state in `<data-dir>/quiet-hours.json`.
 - System service `cloudflared` (config `/etc/cloudflared/config.yml`) maps `music.pinewoodrobotics.org` to `http://127.0.0.1:8765`.
 - Restart: `systemctl --user restart music-api`. Logs: `journalctl --user-unit soloist --user-unit music-api -f`.
 - Data directory `~/.local/share/music-api`: `spotify-tokens.json` (Spotify login), `api-tokens.json` (hashed API tokens), `token` (bootstrap token file).

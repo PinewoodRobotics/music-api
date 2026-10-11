@@ -1,7 +1,8 @@
 #!/bin/sh
 # AirPlay 2 receiver: NQPTP (PTP timing daemon, system service on ports 319/320) and shairport-sync built with
-# AirPlay 2, PulseAudio output (PipeWire's pulse server) and the metadata pipe. Ubuntu's shairport-sync package is
-# classic AirPlay only through 24.04 (3.3.8), so this builds pinned releases from source: ~15 min on a Pi 3.
+# AirPlay 2, PulseAudio output (PipeWire's pulse server) and the metadata pipe. The distro packages are classic
+# AirPlay only (Ubuntu 24.04: 3.3.8; Debian 13: 4.3.7 without AirPlay 2 and no nqptp package), so this builds pinned
+# releases from source: ~15 min on a Pi 3.
 # Idempotent; run from install-linux.sh or by hand:  sh deploy/install-airplay.sh
 set -eu
 NQPTP_TAG=1.2.4
