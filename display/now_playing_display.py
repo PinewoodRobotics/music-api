@@ -96,7 +96,16 @@ def wrap(text, font, width, lines):
 class Artwork:
     def __init__(self):
         self.mem = collections.OrderedDict()
+        self.api = None
         os.makedirs(CACHE_DIR, exist_ok=True)
+
+    def fetch(self, url):
+        if url.startswith("/") and self.api:
+            req = urllib.request.Request(self.api.base + url, headers={"Authorization": "Bearer " + self.api.token})
+        else:
+            req = url
+        with urllib.request.urlopen(req, timeout=10) as r:
+            return r.read()
 
     @staticmethod
     def sized(url, want):
@@ -120,8 +129,7 @@ class Artwork:
                 os.utime(path)
                 data = open(path, "rb").read()
             else:
-                with urllib.request.urlopen(url, timeout=10) as r:
-                    data = r.read()
+                data = self.fetch(url)
                 with open(path, "wb") as f:
                     f.write(data)
                 self.prune()
@@ -166,6 +174,28 @@ def blend(fg, alpha):
     return tuple(int(c * alpha) for c in fg)
 
 
+def clock(unix=None, hhmm=None):
+    if hhmm:
+        h, m = (int(v) for v in hhmm.split(":"))
+    else:
+        t = time.localtime(unix)
+        h, m = t.tm_hour, t.tm_min
+    return f"{(h % 12) or 12}:{m:02d} {'AM' if h < 12 else 'PM'}"
+
+
+def quiet_locked(st):
+    q = (st or {}).get("quiet_hours") or {}
+    return q.get("phase") == "locked" and (st or {}).get("state") != "playing"
+
+
+def quiet_note(st):
+    """Small line for the grace period: when the speakers will lock if nothing plays."""
+    q = (st or {}).get("quiet_hours") or {}
+    if q.get("phase") == "grace" and q.get("locks_at") and st.get("state") != "playing":
+        return f"QUIET HOURS LOCK AT {clock(q['locks_at'])}"
+    return None
+
+
 class Scene:
     def __init__(self, w, h):
         self.w, self.h = w, h
@@ -200,6 +230,21 @@ class Scene:
         d.text((self.w // 2, cy + self.px(50)), url, font=small, fill=(140, 140, 150), anchor="ms")
         return img, None
 
+    def quiet(self, st):
+        q = st.get("quiet_hours") or {}
+        img = Image.new("RGB", (self.w, self.h), (8, 8, 12))
+        d = ImageDraw.Draw(img)
+        cx, cy, r = self.w // 2, self.h // 2 - self.px(110), self.px(70)
+        moon = (150, 150, 175)
+        d.ellipse((cx - r, cy - r, cx + r, cy + r), fill=moon)
+        off = int(r * 0.55)
+        d.ellipse((cx - r + off, cy - r - off // 2, cx + r + off, cy + r - off // 2), fill=(8, 8, 12))
+        big, small = FONTS.get(self.px(72), 700), FONTS.get(self.px(32), 400)
+        d.text((cx, cy + r + self.px(110)), "Quiet hours", font=big, fill=(170, 170, 185), anchor="ms")
+        d.text((cx, cy + r + self.px(170)), f"Music is back at {clock(hhmm=q.get('until') or '08:00')}", font=small,
+               fill=(110, 110, 125), anchor="ms")
+        return img, None
+
     def geometry(self):
         w, h, u = self.w, self.h, self.u
         art = int(min(h * 0.5, w * 0.38))
@@ -225,7 +270,12 @@ class Scene:
         meta = fit(" · ".join(p for p in (artists, album) if p), f_meta, tw)
         credit = st.get("credit")
         credit_text = None
-        if credit and credit.get("by"):
+        airplay = st.get("source") == "airplay"
+        if airplay:
+            sender = (st.get("airplay") or {}).get("sender")
+            credit_text = f"AirPlay from {sender}" if sender else "AirPlay"
+            upcoming = []
+        elif credit and credit.get("by"):
             by = credit["by"]
             credit_text = "Autoplay" if credit.get("how") == "autoplay" else (
                 by.get("name") or ""
@@ -239,9 +289,11 @@ class Scene:
         times_h = self.px(46)
         pad = self.px(44)
 
+        label = quiet_note(st) or ("PAUSED" if paused else None)
+
         def column_height(rows):
             ht = 0
-            if paused:
+            if label:
                 ht += self.px(48)
             ht += len(title_lines) * title_lh + self.px(10) + self.px(40)
             if credit_text:
@@ -267,8 +319,9 @@ class Scene:
         else:
             d.rounded_rectangle((x0, ay, x0 + art_size, ay + art_size), self.px(18), fill=(40, 40, 48))
 
-        if paused:
-            d.text((tx, y), "PAUSED", font=FONTS.get(self.px(24), 600), fill=(255, 190, 90))
+        if label:
+            d.text((tx, y), fit(label, FONTS.get(self.px(24), 600), tw), font=FONTS.get(self.px(24), 600),
+                   fill=(255, 190, 90))
             y += self.px(48)
         for line in title_lines:
             d.text((tx, y), line, font=f_title, fill=WHITE)
@@ -278,7 +331,7 @@ class Scene:
         y += self.px(40)
         if credit_text:
             y += self.px(14)
-            avatar_url = (credit.get("by") or {}).get("avatar")
+            avatar_url = None if airplay else (credit.get("by") or {}).get("avatar")
             ax = tx
             if avatar_url:
                 im = ART.get(avatar_url, av)
@@ -474,18 +527,25 @@ class Display:
     @staticmethod
     def key(st, upcoming):
         tr = (st or {}).get("track")
+        if quiet_locked(st):
+            return ("quiet", (st.get("quiet_hours") or {}).get("until"))
         if not tr:
             return None
         credit = st.get("credit") or {}
+        if st.get("source") == "airplay":
+            return ("airplay", tr.get("name"), tr.get("artwork"), st.get("state") == "paused",
+                    (st.get("airplay") or {}).get("sender"))
         return (tr["uri"], st.get("state") == "paused", credit.get("how"), (credit.get("by") or {}).get("name"),
-                tuple(i["item"]["uri"] for i in upcoming))
+                tuple(i["item"]["uri"] for i in upcoming), quiet_note(st))
 
     def render(self):
         w, h = self.fb.size
         if self.scene is None or (self.scene.w, self.scene.h) != (w, h):
             self.scene = Scene(w, h)
         st = self.status
-        if st and st.get("track"):
+        if quiet_locked(st):
+            self.base, self.box = self.scene.quiet(st)
+        elif st and st.get("track"):
             self.base, self.box = self.scene.track(st, self.upcoming, st.get("state") == "paused")
         else:
             self.base, self.box = self.scene.idle()
@@ -496,7 +556,7 @@ class Display:
     def draw_progress(self):
         self.last_progress = time.monotonic()
         st = self.status
-        if not self.box or not st or not st.get("track"):
+        if not self.box or not st or not st.get("track") or quiet_locked(st):
             return
         region = self.scene.progress(self.base, self.box, self.position(), st.get("duration_ms") or 0,
                                      st.get("state") == "paused")
@@ -549,7 +609,9 @@ def render_png(api, path, size):
     st = api.get("/api/status")
     ups = api.get("/api/queue?limit=3").get("upcoming", [])[:3]
     scene = Scene(w, h)
-    if st.get("track"):
+    if quiet_locked(st):
+        img, _ = scene.quiet(st)
+    elif st.get("track"):
         img, box = scene.track(st, ups, st.get("state") == "paused")
         reg = scene.progress(img, box, st.get("position_ms") or 0, st.get("duration_ms") or 0, st.get("state") == "paused")
         img.paste(reg, box[:2])
@@ -567,6 +629,7 @@ def main():
     p.add_argument("--size", default="1920x1080")
     args = p.parse_args()
     api = Api(args.api, open(args.token_file).read().strip())
+    ART.api = api
     if args.render_png:
         render_png(api, args.render_png, args.size)
         return
