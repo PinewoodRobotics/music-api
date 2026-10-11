@@ -830,7 +830,7 @@ class SlackBot:
     def step(self, now):
         if now < self.pause_until:
             return
-        t = None if self.st.get("removed") else self.st.get("track")
+        t = None if self.st.get("removed") or self.st.get("source") == "airplay" else self.st.get("track")
         uri = t.get("uri") if t else None
         playing = self.st.get("state") in PLAYING
         if uri != self.cand[0]:

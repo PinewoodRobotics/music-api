@@ -23,9 +23,14 @@ DISALLOW_KEYS = {"resuming": "play", "pausing": "pause", "seeking": "seek", "ski
 
 
 class PlayerError(Exception):
-    def __init__(self, msg, status=400):
+    def __init__(self, msg, status=400, code=None, **extra):
         super().__init__(msg)
         self.status = status
+        self.code = code
+        self.extra = extra
+
+    def body(self):
+        return {"error": self.code, "message": str(self), **self.extra} if self.code else {"error": str(self)}
 
 
 def entity(e):
@@ -76,6 +81,8 @@ class Player:
         self._cache = (0, None)
         self._last_track = None
         self._sleep = None  # {"ends_at", "fade", "cancel": Event}
+        self.guard = None    # guard(action) raises PlayerError when quiet hours or AirPlay forbid it
+        self.overlay = None  # overlay(status) -> status with quiet hours / AirPlay folded in
 
     # ---------- events ----------
 
@@ -154,7 +161,15 @@ class Player:
 
     # ---------- status ----------
 
+    def _check(self, action, force):
+        if self.guard and not force:
+            self.guard(action)
+
     def status(self, fresh=False):
+        st = self.spotify_status(fresh)
+        return self.overlay(st) if self.overlay else st
+
+    def spotify_status(self, fresh=False):
         st = self._status(fresh)
         st = {**st, "source": self._source(st)}
         removed = self._src[3] and (st.get("track") or {}).get("uri") == self._src[0]
@@ -247,9 +262,10 @@ class Player:
 
     # ---------- transport ----------
 
-    def play(self, b):
+    def play(self, b, force=False):
         """Body (all optional): {uri} track/episode/album/playlist/artist/show URI or link,
         {uris: [...]}, {context, offset: n|uri}, {position_ms | position}."""
+        self._check("play", force)
         uri = to_uri(b["uri"]) if b.get("uri") else None
         uris = [to_uri(u, "track") for u in b.get("uris", [])]
         context = to_uri(b["context"]) if b.get("context") else None
@@ -281,7 +297,8 @@ class Player:
         self._put("/me/player/play", body=body or None)
         return self.status(fresh=True)
 
-    def pause(self):
+    def pause(self, force=False):
+        self._check("pause", force)
         if self.backend == "soloist":
             self._sol("pause")
             return self.status()
@@ -289,9 +306,10 @@ class Player:
         return self.status(fresh=True)
 
     def playpause(self):
-        return self.pause() if self.status(fresh=True)["state"] in ("playing", "buffering") else self.play({})
+        return self.pause() if self.spotify_status(fresh=True)["state"] in ("playing", "buffering") else self.play({})
 
-    def next(self):
+    def next(self, force=False):
+        self._check("next", force)
         if self.backend == "soloist":
             self._sol("skip_next")
             return self.status()
@@ -300,6 +318,7 @@ class Player:
 
     def jump(self, b):
         """Skip ahead to an Up Next entry (by uid, else index), dropping the ones before it like Spotify does."""
+        self._check("jump", False)
         raw = self._raw_queue(80)
         keys = self._keys(raw["upcoming"])
         with self.removed_lock:
@@ -316,12 +335,13 @@ class Player:
         self._no_autoskip_until = self.clock() + 60
         try:
             for _ in range(idx + 1):
-                self.next()
+                self.next(force=True)
         finally:
             self._no_autoskip_until = self.clock() + 2
         return self.status(fresh=True)
 
-    def previous(self):
+    def previous(self, force=False):
+        self._check("previous", force)
         if self.backend == "soloist":
             self._sol("skip_prev")
             return self.status()
@@ -330,6 +350,7 @@ class Player:
 
     def seek(self, b):
         """Body {position: seconds} | {position_ms} | {delta: ±seconds}"""
+        self._check("seek", False)
         if "position_ms" in b:
             ms = int(b["position_ms"])
         elif "position" in b:
@@ -508,6 +529,7 @@ class Player:
 
     def transfer(self, b):
         """Body {device: name|id|"soloist", play?: bool}: move playback to that device"""
+        self._check("transfer_play" if b.get("play") else "transfer", False)
         want = b["device"]
         if self.backend == "soloist" and want in ("soloist", self.soloist.auth.get("device_name")):
             self._sol("activate")
@@ -558,7 +580,7 @@ class Player:
                     return
                 self.volume({"volume": round(start * (1 - i / steps))})
             try:
-                self.pause()
+                self.pause(force=True)
             finally:
                 if steps:
                     time.sleep(1)

@@ -22,11 +22,14 @@ import mimetypes
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import activity as activity_log
+import airplay as airplay_mod
 import extras
+import quiet_hours
 import links
 import slack_bot
 from accounts import ADMIN, SESSION_COOKIE_AGE, AccountError, Credits, PersonalTokens, Google, Playlists, Sessions, Slack
 from extras import ExtrasError
+from guard import Guard
 from library import Library
 from activity import Activity
 from player import REPEAT_ALIASES, Player, PlayerError
@@ -39,6 +42,7 @@ SEARCH_TYPES = "track,album,artist,playlist,show,episode,audiobook"
 
 auth = api = player = soloist = tokens = slack = google = sessions = app_playlists = bot = personal = library = None
 credits = activity = None
+guard = airplay = quiet = None
 _req = threading.local()  # per-request context: the token entry and the user that authenticated it
 WEB_DIST = os.path.join(HERE, "web", "dist")
 SESSION_COOKIE = "mapi_session"
@@ -122,7 +126,10 @@ def _now_playing(q, b):
 
 @route("GET", "/api/artwork")
 def _artwork(q, b):
-    """Current cover image: 302 to Spotify's CDN, or ?proxy=1 to get the bytes (for devices without HTTPS)"""
+    """Current cover image: 302 to Spotify's CDN, or ?proxy=1 to get the bytes (for devices without HTTPS).
+    During AirPlay: the sender's cover art bytes"""
+    if airplay and airplay.snapshot():
+        return _airplay_artwork(q, b)
     art = (player.status().get("track") or {}).get("artwork")
     if not art:
         raise PlayerError("nothing playing / no artwork", 404)
@@ -134,6 +141,42 @@ def _current_track():
     if not t:
         raise PlayerError("nothing playing", 404)
     return t
+
+
+@route("GET", "/api/airplay")
+def _airplay(q, b):
+    """AirPlay session: {active, state: playing|paused, sender, track {name, artists, album, artwork, duration_ms},
+    position_ms, duration_ms, started_at, resume_spotify} or {active: false}. Also folded into /api/status as
+    source "airplay" while a session is on"""
+    ap = airplay.snapshot() if airplay else None
+    return {**ap, "resume_spotify": guard.resume_after} if ap else {"active": False}
+
+
+@route("GET", "/api/airplay/artwork")
+def _airplay_artwork(q, b):
+    """Cover art the AirPlay sender sent for the current song (bytes); 404 if none"""
+    art = airplay.artwork() if airplay else None
+    if not art:
+        raise PlayerError("no AirPlay artwork", 404)
+    return art
+
+
+@route("POST", "/api/airplay/stop")
+def _airplay_stop(q, b):
+    """End the AirPlay session (restarts the receiver, which disconnects the sender; it can reconnect a few seconds
+    later). Spotify then resumes if it was playing when AirPlay took over. 409 airplay_inactive if there's none"""
+    sender = (airplay.snapshot() or {}).get("sender") if airplay else None
+    res = guard.stop_airplay()
+    _log("airplay_stop", {"sender": sender} if sender else {})
+    return res
+
+
+@route("GET", "/api/quiet-hours")
+def _quiet_hours(q, b):
+    """Quiet hours: {enabled, window: "21:00-08:00", phase: open|grace|locked, locked, idle_since, locks_at,
+    until: "08:00", until_ts, starts_at, grace_s}. After the window starts the speakers lock once nothing has played
+    for grace_s seconds; while locked, play/resume/skip are refused with 423 {"error": "quiet_hours", "until"}"""
+    return quiet.status()
 
 
 @route("GET", "/api/lyrics")
@@ -904,6 +947,24 @@ def _done_page(st):
 
 # ---------- server ----------
 
+PASSTHROUGH_ACTIONS = {"/me/player/play": "play", "/me/player/next": "next", "/me/player/previous": "previous",
+                       "/me/player/seek": "seek", "/me/player/pause": "pause"}
+
+
+def _guard_passthrough(method, path, body):
+    if method == "GET" or not path.startswith("/me/player"):
+        return
+    action = PASSTHROUGH_ACTIONS.get(path.rstrip("/"))
+    if path.rstrip("/") == "/me/player" and method == "PUT":
+        action = "transfer_play" if isinstance(body, dict) and body.get("play") else "transfer"
+    if action:
+        guard.check(action)
+
+
+def _error_body(e):
+    return e.body() if isinstance(e, PlayerError) else {"error": str(e)}
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "MusicAPI/2.0"
     require_token = False  # --public or listening beyond localhost
@@ -1082,7 +1143,7 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/api" and method == "GET":
             return self._send(200, [{"method": m, "path": p, "doc": d} for m, _, p, d, _ in ROUTES] + [
-                {"method": "GET", "path": "/api/events", "doc": "Server-sent events: status (1/s with Soloist, every 2 s with connect), track, queue, sleep, activity, error"},
+                {"method": "GET", "path": "/api/events", "doc": "Server-sent events: status (1/s with Soloist, every 2 s with connect; includes quiet_hours and airplay), track, queue, sleep, activity, error"},
                 {"method": "ANY", "path": "/api/spotify/{path}", "doc": "Raw Spotify Web API passthrough, e.g. GET /api/spotify/me/player"},
                 {"method": "GET", "path": "/auth/login", "doc": "Web API login page (?redirect=1 to go straight to Spotify)"},
                 {"method": "GET", "path": "/auth", "doc": "Web API login status"},
@@ -1115,11 +1176,12 @@ class Handler(BaseHTTPRequestHandler):
                 auth.logout()
                 return self._send(200, {"result": auth.status()})
             if path.startswith("/api/spotify/"):
+                _guard_passthrough(method, path[len("/api/spotify"):], body)
                 q = {k: v for k, v in query.items() if k != "token"}
                 return self._send(200, {"result": api.req(method, "/" + path[len("/api/spotify/"):], q,
                                                           body if self.headers.get("Content-Length") else None)})
         except APP_ERRORS as e:
-            return self._send(e.status, {"error": str(e)})
+            return self._send(e.status, _error_body(e))
         except (KeyError, ValueError, TypeError) as e:
             return self._send(400, {"error": f"bad request: {e}"})
 
@@ -1135,7 +1197,7 @@ class Handler(BaseHTTPRequestHandler):
                 params = {k: urllib.parse.unquote(v) for k, v in mt.groupdict().items()}
                 return self._result(fn(query, body, **params))
             except APP_ERRORS as e:
-                return self._send(e.status, {"error": str(e)})
+                return self._send(e.status, _error_body(e))
             except (KeyError, ValueError, TypeError) as e:
                 return self._send(400, {"error": f"bad request: {e}"})
         self._send(405 if matched_path else 404, {"error": "method not allowed" if matched_path else "not found"})
@@ -1219,9 +1281,19 @@ def main():
                     help="public base URL, e.g. https://music.pinewoodrobotics.org; other tunnelled hostnames redirect to it")
     ap.add_argument("--device", default=os.environ.get("MUSIC_API_DEVICE"),
                     help="connect backend: Connect device name or id to control (default: whichever is active)")
+    ap.add_argument("--quiet-hours", default=os.environ.get("QUIET_HOURS", quiet_hours.DEFAULT_WINDOW),
+                    help="HH:MM-HH:MM local time (may wrap midnight) or off. After it starts the speakers lock once "
+                         "nothing has played for 5 minutes, until it ends (default %(default)s)")
+    ap.add_argument("--airplay-pipe", default=os.environ.get("AIRPLAY_METADATA_PIPE", airplay_mod.DEFAULT_PIPE),
+                    help="shairport-sync metadata pipe (default %(default)s); fine if it doesn't exist")
     a = ap.parse_args()
+    try:
+        window = quiet_hours.parse_window(a.quiet_hours)
+    except ValueError as e:
+        ap.error(str(e))
 
     global auth, api, player, soloist, tokens, slack, google, sessions, app_playlists, bot, personal, credits, activity, library
+    global guard, airplay, quiet
     os.makedirs(a.data_dir, mode=0o700, exist_ok=True)
     auth = Auth(a.data_dir, a.client_id, a.redirect_uri or f"http://127.0.0.1:{a.port}/auth/callback")
     api = WebAPI(auth)
@@ -1269,6 +1341,12 @@ def main():
     if soloist:
         soloist.on_event = player.on_soloist_event
         threading.Thread(target=soloist.loop, daemon=True).start()
+    quiet = quiet_hours.QuietHours(window, os.path.join(a.data_dir, quiet_hours.STATE_FILE))
+    airplay = airplay_mod.AirPlay(a.airplay_pipe)
+    guard = Guard(player, quiet, airplay, enforce=lambda locked: quiet_hours.enforce(locked, a.data_dir),
+                  receiver=quiet_hours.receiver)
+    threading.Thread(target=airplay.loop, daemon=True).start()
+    threading.Thread(target=guard.loop, args=(5 if backend == "soloist" else 15,), daemon=True).start()
     threading.Thread(target=player.loop, daemon=True).start()
     bot = slack_bot.from_env(slack, player, api, credits, resolve=lambda url: links.resolve(api, url),
                              importer=lambda url, user: app_playlists.import_link(api, user, url),
