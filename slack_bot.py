@@ -501,6 +501,10 @@ class SlackBot:
         t = st.get("track")
         if not t:
             return [context("Nothing is playing.")], "Nothing is playing."
+        if st.get("source") == "airplay":
+            sender = (st.get("airplay") or {}).get("sender")
+            text = f"AirPlay{' from ' + sender if sender else ''}: {t.get('name')}" + (f" by {artists_of(t)}" if artists_of(t) else "")
+            return [context(esc(text))], text
         up = self.credits.annotate(self.player.queue(4)).get("upcoming", [])
         return (now_playing_blocks(t, st.get("state") in PLAYING, st.get("credit"), up, self.remote,
                                    block_id="card"), now_playing_text(t))

@@ -453,8 +453,8 @@ def _track(q, b, id):
     """One track; id may be 'current'. Adds saved: bool"""
     if id == "current":
         t = player.status()["track"]
-        if not t:
-            raise PlayerError("nothing playing", 404)
+        if not t or not t.get("id"):
+            raise PlayerError("nothing playing on Spotify", 404)
         id = t["id"]
     t = item(api.get(f"/tracks/{id}"))
     t["saved"] = api.get("/me/library/contains", uris=t["uri"])[0]

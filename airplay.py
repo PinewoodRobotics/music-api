@@ -76,9 +76,9 @@ class AirPlay:
         self.pipe = pipe
         self.clock = clock
         self.lock = threading.RLock()
-        self.on_start = None   # called (outside the lock) when a session starts
-        self.on_end = None     # ...and when it ends
-        self.on_change = None  # any visible change
+        self.on_start = None
+        self.on_end = None
+        self.on_change = None
         self.art = None
         self._ignore_until = 0
         self._clear()

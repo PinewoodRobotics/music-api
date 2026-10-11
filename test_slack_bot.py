@@ -676,5 +676,27 @@ class Feed(unittest.TestCase):
         self.assertEqual(bot.sleeps, [2.0])
 
 
+
+AIR = {"uri": None, "type": "airplay", "name": "Clair de Lune", "artists": [{"uri": None, "name": "Debussy"}],
+       "album": None, "artwork": "/api/airplay/artwork?v=1"}
+
+
+class AirPlayTest(unittest.TestCase):
+    def test_now_card_names_the_sender(self):
+        bot = make()
+        bot.player.status = lambda fresh=False: {"state": "playing", "source": "airplay", "track": AIR,
+                                                 "airplay": {"sender": "Adam's iPhone"}}
+        blocks, text = bot.now_card()
+        self.assertEqual(text, "AirPlay from Adam's iPhone: Clair de Lune by Debussy")
+        self.assertNotIn("image", str(blocks))
+
+    def test_feed_ignores_airplay(self):
+        bot = make()
+        bot.st = {"state": "playing", "source": "airplay", "track": AIR}
+        bot.step(time.time())
+        self.assertIsNone(bot.cur)
+        self.assertEqual(bot.sent, [])
+
+
 if __name__ == "__main__":
     unittest.main()
