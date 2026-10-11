@@ -5,7 +5,7 @@ export type ArtistRef = { uri: string; name: string }
 export type Track = {
   uri: string
   id: string
-  type: 'track' | 'episode'
+  type: 'track' | 'episode' | 'airplay'
   name: string
   artists?: ArtistRef[]
   show?: { uri: string; name: string }
@@ -71,7 +71,23 @@ export type Status = {
   credit?: Credit | null
   skip?: Skip | null
   removed?: boolean
-  source?: 'context' | 'queue' | 'autoplay' | null
+  source?: 'context' | 'queue' | 'autoplay' | 'airplay' | null
+  airplay?: AirPlayInfo | null
+  quiet_hours?: QuietHours
+}
+
+export type AirPlayInfo = { sender: string | null; state: PlaybackState; started_at: number | null; resume_spotify: boolean }
+
+export type QuietHours = {
+  enabled: boolean
+  window: string | null
+  phase: 'open' | 'grace' | 'locked'
+  locked: boolean
+  grace_s?: number
+  idle_since?: number | null
+  locks_at?: number | null
+  until?: string
+  until_ts?: number
 }
 
 export type Person = { id?: string | null; name: string; avatar: string | null }
@@ -200,9 +216,11 @@ export type Resolved = {
 
 export class ApiError extends Error {
   status: number
-  constructor(status: number, message: string) {
+  code: string | null
+  constructor(status: number, message: string, code: string | null = null) {
     super(message)
     this.status = status
+    this.code = code
   }
 }
 
@@ -268,7 +286,10 @@ async function request<T>(method: string, path: string, body?: unknown, retried 
   if (retry && RETRYABLE.has(res.status)) return sleep(1000).then(() => request<T>(method, path, body, true))
   const data = await res.json().catch(() => null)
   if (res.status === 401) unauthorizedListeners.forEach((l) => l())
-  if (!res.ok) throw new ApiError(res.status, data?.error ?? friendlyStatus(res.status))
+  if (!res.ok)
+    throw data?.message
+      ? new ApiError(res.status, data.message, data.error ?? null)
+      : new ApiError(res.status, data?.error ?? friendlyStatus(res.status))
   return data?.result as T
 }
 
@@ -279,6 +300,10 @@ function friendlyStatus(status: number) {
 const get = <T>(path: string) => request<T>('GET', path)
 const post = <T>(path: string, body: unknown = {}) => request<T>('POST', path, body)
 const qs = (params: Record<string, string | number>) => new URLSearchParams(Object.entries(params).map(([k, v]) => [k, String(v)])).toString()
+
+export function assetUrl(path: string) {
+  return token && path.startsWith('/api/') ? `${path}${path.includes('?') ? '&' : '?'}${qs({ token })}` : path
+}
 
 export function eventsUrl() {
   return token ? `/api/events?${qs({ token })}` : '/api/events'
@@ -305,6 +330,7 @@ export const api = {
   jumpTo: (entry: { uid?: string | null; index: number }) =>
     post<Status>('/api/queue/jump', entry.uid ? { uid: entry.uid } : { index: entry.index }),
   previous: () => post<Status>('/api/previous'),
+  stopAirPlay: () => post<Status>('/api/airplay/stop'),
   seek: (position_ms: number) => post<Status>('/api/seek', { position_ms: Math.max(0, Math.round(position_ms)) }),
   volume: (volume: number) => post<Status>('/api/volume', { volume: Math.round(volume) }),
   shuffle: (enabled: boolean) => post<Status>('/api/shuffle', { enabled }),

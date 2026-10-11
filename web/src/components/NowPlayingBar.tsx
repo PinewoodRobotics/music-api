@@ -1,5 +1,6 @@
-import { ChevronUp, ListMusic, Maximize2, MicVocal, SkipForward } from 'lucide-react'
+import { Airplay, ChevronUp, ListMusic, Maximize2, MicVocal, SkipForward } from 'lucide-react'
 import { byline } from '../lib/format'
+import { airplayFrom, allowed } from '../lib/playback'
 import { usePlayer, usePosition } from '../state/player'
 import { useUI } from '../state/ui'
 import { Artwork } from './Artwork'
@@ -42,7 +43,14 @@ function DesktopBar() {
           <div className="min-w-0">
             <div className="truncate text-sm font-medium text-fg group-hover:underline">{track?.name ?? 'Nothing playing'}</div>
             <div className="truncate text-xs text-dim">{track ? byline(track) : status?.device?.name ?? 'Lab Speakers'}</div>
-            {track && <CreditOrSkip credit={status?.credit} className="mt-1 text-[11px] text-faint" />}
+            {track?.type === 'airplay' ? (
+              <div className="mt-1 flex min-w-0 items-center gap-1 text-[11px] text-faint">
+                <Airplay className="size-3 shrink-0" aria-hidden />
+                <span className="truncate">{airplayFrom(status?.airplay?.sender)}</span>
+              </div>
+            ) : (
+              track && <CreditOrSkip credit={status?.credit} className="mt-1 text-[11px] text-faint" />
+            )}
           </div>
         </button>
       </div>
@@ -83,7 +91,7 @@ function MiniPlayer() {
   const { setExpanded } = useUI()
   const track = status?.track
   if (!track) return null
-  const canSkip = status.actions.length === 0 || status.actions.includes('skip_next')
+  const canSkip = allowed(status, 'skip_next')
   return (
     <div className="px-2 pb-1.5 md:hidden">
       <div className="relative flex h-16 items-center overflow-hidden rounded-xl bg-glow shadow-lg shadow-black/50 transition-colors">
@@ -96,7 +104,7 @@ function MiniPlayer() {
           <Artwork src={track.artwork} className="size-12 shrink-0 rounded-md" />
           <div className="min-w-0">
             <div className="truncate text-[15px] font-semibold leading-tight">{track.name}</div>
-            <MiniSubtitle text={byline(track)} />
+            <MiniSubtitle text={track.type === 'airplay' ? airplayFrom(status.airplay?.sender) : byline(track)} />
           </div>
         </button>
         <PlayButton size="mini" />

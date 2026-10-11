@@ -8,6 +8,7 @@ import { MobileNav } from './components/MobileNav'
 import { Button } from './components/Modal'
 import { NowPlayingBar } from './components/NowPlayingBar'
 import { NowPlayingView } from './components/NowPlayingView'
+import { PlaybackBanner } from './components/PlaybackNotice'
 import { Dialogs } from './components/PlaylistDialogs'
 import { SidePanel } from './components/SidePanel'
 import { Sidebar } from './components/Sidebar'
@@ -191,6 +192,7 @@ function Shell() {
           className="scroll-thin relative min-w-0 flex-1 overflow-y-auto overflow-x-hidden bg-panel md:rounded-lg"
         >
           <TopBar scrolled={scrolled} />
+          <PlaybackBanner />
           <Page route={route} />
         </main>
         <SidePanel />

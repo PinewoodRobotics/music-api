@@ -1,6 +1,7 @@
-import { FastForward, ListMusic, MessageSquareQuote, MoreHorizontal, Pause, Play, Repeat, Repeat1, Rewind, Shuffle, Speaker, Volume, Volume2 } from 'lucide-react'
+import { Airplay, FastForward, ListMusic, MessageSquareQuote, MoreHorizontal, Pause, Play, Repeat, Repeat1, Rewind, Shuffle, Speaker, Volume, Volume2 } from 'lucide-react'
 import { useState, type ReactNode } from 'react'
 import { byline, formatTime } from '../../lib/format'
+import { airplayFrom, allowed, playBlocked } from '../../lib/playback'
 import { usePlayer, usePosition } from '../../state/player'
 import type { Panel } from '../../state/ui'
 import { CreditOrSkip } from '../SkipNote'
@@ -8,8 +9,6 @@ import type { AnchorRect } from '../Popover'
 import { Slider } from '../Slider'
 import { TrackMenu } from '../TrackMenu'
 
-const can = (actions: string[] | undefined, hasTrack: boolean, action: string) =>
-  hasTrack && (!actions?.length || actions.includes(action))
 
 export function GlassSeek({ timesAbove = false }: { timesAbove?: boolean }) {
   const { status, seek } = usePlayer()
@@ -28,7 +27,7 @@ export function GlassSeek({ timesAbove = false }: { timesAbove?: boolean }) {
       {timesAbove && times}
       <Slider
         tone="glass"
-        className={can(status?.actions, !!status?.track, 'seek') ? '' : 'pointer-events-none'}
+        className={allowed(status, 'seek') ? '' : 'pointer-events-none'}
         label="Seek"
         value={status?.track ? position : 0}
         max={duration}
@@ -59,20 +58,19 @@ function GlyphButton({ label, onClick, disabled, size, children }: { label: stri
 
 export function Transport({ size, withModes = false }: { size: 'md' | 'lg'; withModes?: boolean }) {
   const { status, isPlaying, togglePlay, next, previous } = usePlayer()
-  const has = !!status?.track
   const lg = size === 'lg'
   const skip = lg ? 'size-10' : 'size-6'
   const main = lg ? 'size-12' : 'size-8'
   return (
     <div className={`flex items-center ${lg ? 'justify-between' : 'justify-center gap-4'}`}>
       {withModes && <ModeButton kind="shuffle" />}
-      <GlyphButton size={size} label="Previous" onClick={previous} disabled={!can(status?.actions, has, 'skip_prev')}>
+      <GlyphButton size={size} label="Previous" onClick={previous} disabled={!allowed(status, 'skip_prev')}>
         <Rewind className={`${skip} fill-current`} strokeWidth={0} />
       </GlyphButton>
-      <GlyphButton size={size} label={isPlaying ? 'Pause' : 'Play'} onClick={togglePlay} disabled={!status}>
+      <GlyphButton size={size} label={isPlaying ? 'Pause' : 'Play'} onClick={togglePlay} disabled={!status || playBlocked(status, isPlaying)}>
         {isPlaying ? <Pause className={`${main} fill-current`} strokeWidth={0} /> : <Play className={`${main} fill-current`} strokeWidth={0} />}
       </GlyphButton>
-      <GlyphButton size={size} label="Next" onClick={next} disabled={!can(status?.actions, has, 'skip_next')}>
+      <GlyphButton size={size} label="Next" onClick={next} disabled={!allowed(status, 'skip_next')}>
         <FastForward className={`${skip} fill-current`} strokeWidth={0} />
       </GlyphButton>
       {withModes && <ModeButton kind="repeat" />}
@@ -90,7 +88,7 @@ function ModeButton({ kind }: { kind: 'shuffle' | 'repeat' }) {
       aria-label={kind === 'shuffle' ? 'Shuffle' : 'Repeat'}
       aria-pressed={on}
       onClick={kind === 'shuffle' ? toggleShuffle : cycleRepeat}
-      disabled={!can(status?.actions, !!status?.track, kind === 'shuffle' ? 'shuffle' : 'set_repeat')}
+      disabled={!allowed(status, kind === 'shuffle' ? 'shuffle' : 'set_repeat')}
       className={`grid size-11 place-items-center rounded-full transition active:scale-90 disabled:opacity-40 ${on ? 'text-white' : 'text-white/55'}`}
     >
       <Icon className="size-6" />
@@ -100,7 +98,6 @@ function ModeButton({ kind }: { kind: 'shuffle' | 'repeat' }) {
 
 export function ModePills({ className = '' }: { className?: string }) {
   const { status, toggleShuffle, cycleRepeat } = usePlayer()
-  const has = !!status?.track
   const RepeatIcon = status?.repeat === 'track' ? Repeat1 : Repeat
   const pill = (on: boolean) =>
     `flex h-10 flex-1 items-center justify-center rounded-full transition active:scale-95 disabled:opacity-40 ${
@@ -109,7 +106,7 @@ export function ModePills({ className = '' }: { className?: string }) {
   const repeatOn = !!status?.repeat && status.repeat !== 'off'
   return (
     <div className={`flex gap-3 ${className}`}>
-      <button type="button" aria-label="Shuffle" aria-pressed={!!status?.shuffle} onClick={toggleShuffle} disabled={!can(status?.actions, has, 'shuffle')} className={pill(!!status?.shuffle)}>
+      <button type="button" aria-label="Shuffle" aria-pressed={!!status?.shuffle} onClick={toggleShuffle} disabled={!allowed(status, 'shuffle')} className={pill(!!status?.shuffle)}>
         <Shuffle className="size-5" />
       </button>
       <button
@@ -117,7 +114,7 @@ export function ModePills({ className = '' }: { className?: string }) {
         aria-label={status?.repeat === 'track' ? 'Repeat one' : 'Repeat'}
         aria-pressed={repeatOn}
         onClick={cycleRepeat}
-        disabled={!can(status?.actions, has, 'set_repeat')}
+        disabled={!allowed(status, 'set_repeat')}
         className={pill(repeatOn)}
       >
         <RepeatIcon className="size-5" />
@@ -127,9 +124,9 @@ export function ModePills({ className = '' }: { className?: string }) {
 }
 
 export function GlassVolume({ className = '' }: { className?: string }) {
-  const { status, setVolume, toggleMute } = usePlayer()
+  const { status, setVolume, toggleMute, hold } = usePlayer()
   const volume = status?.volume ?? 0
-  const disabled = status?.volume == null
+  const disabled = status?.volume == null || hold?.kind === 'airplay'
   return (
     <div className={`flex items-center gap-3 text-white/70 ${disabled ? 'opacity-40' : ''} ${className}`}>
       <button type="button" onClick={toggleMute} disabled={disabled} aria-label={volume === 0 ? 'Unmute' : 'Mute'} className="-m-2 grid size-10 place-items-center active:scale-90">
@@ -173,11 +170,13 @@ export function ViewToggle({ panel, current, onToggle, small = false }: { panel:
 }
 
 export function DeviceIndicator() {
-  const { status } = usePlayer()
+  const { status, hold } = usePlayer()
+  const airplay = hold?.kind === 'airplay'
+  const Icon = airplay ? Airplay : Speaker
   return (
     <div className="flex min-w-0 items-center gap-1.5 text-[13px] font-medium text-white/70">
-      <Speaker className="size-4 shrink-0" />
-      <span className="truncate">{status?.device?.name ?? 'Lab Speakers'}</span>
+      <Icon className="size-4 shrink-0" />
+      <span className="truncate">{airplay ? airplayFrom(hold.sender) : status?.device?.name ?? 'Lab Speakers'}</span>
     </div>
   )
 }
@@ -186,7 +185,7 @@ export function TrackMenuButton({ subtle = false }: { subtle?: boolean }) {
   const { status } = usePlayer()
   const [menu, setMenu] = useState<AnchorRect | null>(null)
   const track = status?.track
-  if (!track) return <span className="size-11" />
+  if (!track || track.type === 'airplay') return <span className="size-11" />
   return (
     <>
       <button
@@ -215,8 +214,15 @@ export function TrackTitle({ size, withMenu = true }: { size: 'sm' | 'md' | 'lg'
     <div className="flex min-w-0 flex-1 items-center gap-2">
       <div className="min-w-0 flex-1">
         <div className={`truncate font-semibold leading-tight ${title}`}>{track.name}</div>
-        <div className={`truncate text-white/70 ${sub}`}>{byline(track)}</div>
-        <CreditOrSkip credit={status?.credit} className="mt-1 text-[13px] text-white/60" />
+        <div className={`truncate text-white/70 ${sub}`}>{track.type === 'airplay' ? [byline(track), track.album?.name].filter(Boolean).join(' · ') : byline(track)}</div>
+        {track.type === 'airplay' ? (
+          <div className="mt-1 flex min-w-0 items-center gap-1.5 text-[13px] text-white/60">
+            <Airplay className="size-3.5 shrink-0" aria-hidden />
+            <span className="truncate">{airplayFrom(status?.airplay?.sender)}</span>
+          </div>
+        ) : (
+          <CreditOrSkip credit={status?.credit} className="mt-1 text-[13px] text-white/60" />
+        )}
       </div>
       {withMenu && <TrackMenuButton />}
     </div>

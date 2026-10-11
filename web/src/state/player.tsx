@@ -1,5 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { api, eventsUrl, type Queue, type RepeatMode, type Status, type Track } from '../lib/api'
+import { api, assetUrl, eventsUrl, type Queue, type RepeatMode, type Status, type Track } from '../lib/api'
+import { holdMessage, playBlocked, playbackHold, type Hold } from '../lib/playback'
 import { activity } from '../lib/activity'
 import { storage } from '../lib/storage'
 import { useToast } from './toast'
@@ -14,6 +15,8 @@ type Player = {
   queue: Queue | null
   connected: boolean
   isPlaying: boolean
+  hold: Hold
+  stopAirPlay: () => Promise<void>
   positionAt: (now: number) => number
   togglePlay: () => void
   next: () => void
@@ -35,6 +38,12 @@ const PlayerContext = createContext<Player | null>(null)
 const REPEAT_ORDER: RepeatMode[] = ['off', 'context', 'track']
 const LAST_VOLUME_KEY = 'lastVolume'
 const VOLUME_INTERVAL_MS = 150
+
+function normalize(s: Status): Status {
+  const t = s.track
+  if (t?.type !== 'airplay') return s
+  return { ...s, track: { ...t, uri: `airplay:${t.name}`, id: '', artwork: t.artwork ? assetUrl(t.artwork) : null } }
+}
 
 const isStatus = (v: unknown): v is Status => !!v && typeof v === 'object' && 'state' in v && 'backend' in v
 
@@ -68,7 +77,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     (incoming: Status) => {
       if (incoming.removed && clockRef.current.status) return
       const now = performance.now()
-      const s = { ...incoming }
+      const s = normalize(incoming)
       const wall = Date.now()
       for (const key of Object.keys(overrides.current) as OverrideKey[]) {
         const o = overrides.current[key]
@@ -175,6 +184,14 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
 
   const status = clock.status
   const isPlaying = status?.state === 'playing' || status?.state === 'buffering'
+  const hold = useMemo(() => playbackHold(status), [status])
+  const refuse = useCallback(
+    (h: Hold) => {
+      toast.show(holdMessage(h))
+      return true
+    },
+    [toast],
+  )
 
   const positionAt = useCallback((now: number) => positionOf(clock, now), [clock])
 
@@ -226,12 +243,16 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       queue,
       connected,
       isPlaying,
+      hold,
+      stopAirPlay: () => send(api.stopAirPlay),
       positionAt,
       togglePlay: () => {
+        if (playBlocked(status, isPlaying) && refuse(hold)) return
         optimistic({ state: isPlaying ? 'paused' : 'playing' })
         void send(() => (isPlaying ? api.pause() : api.play()), ['state'])
       },
       next: () => {
+        if (hold && refuse(hold)) return
         const upcoming = queue?.upcoming.find((e) => e.item)?.item
         const now = performance.now()
         const current = clockRef.current.status
@@ -242,6 +263,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         void send(api.next)
       },
       previous: () => {
+        if (hold && refuse(hold)) return
         const current = clockRef.current
         if (positionOf(current, performance.now()) > 3000 && current.status) {
           pendingSeek.current = { ms: 0, at: performance.now(), until: Date.now() + 3000 }
@@ -288,7 +310,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         }
       },
     }),
-    [status, clock.at, queue, connected, isPlaying, positionAt, optimistic, send, seek, setVolume, refreshQueue, toast, commit, pending],
+    [status, clock.at, queue, connected, isPlaying, hold, refuse, positionAt, optimistic, send, seek, setVolume, refreshQueue, toast, commit, pending],
   )
 
   return <PlayerContext.Provider value={value}>{children}</PlayerContext.Provider>

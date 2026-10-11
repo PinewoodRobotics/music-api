@@ -1,6 +1,7 @@
 import { Pause, Play, Repeat, Repeat1, Shuffle, SkipBack, SkipForward, Volume, Volume1, Volume2, VolumeX } from 'lucide-react'
 import { useState } from 'react'
 import { formatTime } from '../lib/format'
+import { allowed, playBlocked } from '../lib/playback'
 import { usePlayer, usePosition } from '../state/player'
 import { IconButton } from './IconButton'
 import { Slider } from './Slider'
@@ -14,7 +15,7 @@ export function PlayButton({ size = 'md', className = '' }: { size?: 'mini' | 's
     <button
       type="button"
       onClick={togglePlay}
-      disabled={!status}
+      disabled={!status || playBlocked(status, isPlaying)}
       aria-label={isPlaying ? 'Pause' : 'Play'}
       title={isPlaying ? 'Pause (Space)' : 'Play (Space)'}
       className={`grid ${dims} shrink-0 place-items-center rounded-full bg-fg text-canvas transition-transform hover:scale-105 active:scale-95 disabled:opacity-40 ${className}`}
@@ -26,7 +27,7 @@ export function PlayButton({ size = 'md', className = '' }: { size?: 'mini' | 's
 
 export function Transport({ size = 'md' }: { size?: 'md' | 'lg' }) {
   const { status, next, previous, toggleShuffle, cycleRepeat } = usePlayer()
-  const can = (action: string) => !!status?.track && (status.actions.length === 0 || status.actions.includes(action))
+  const can = (action: string) => allowed(status, action)
   const RepeatIcon = status?.repeat === 'track' ? Repeat1 : Repeat
   const repeatLabel = { off: 'Enable repeat', context: 'Enable repeat one', track: 'Disable repeat' }[status?.repeat ?? 'off']
   const large = size === 'lg'
@@ -69,7 +70,7 @@ export function SeekBar({ className = '', large = false }: { className?: string;
   const [preview, setPreview] = useState<number | null>(null)
   const duration = status?.track ? status.duration_ms ?? status.track.duration_ms : 0
   const shown = preview ?? position
-  const canSeek = !!status?.track && (status.actions.length === 0 || status.actions.includes('seek'))
+  const canSeek = allowed(status, 'seek')
   const time = `tabular text-[11px] text-dim ${large ? 'sm:text-xs' : ''} w-10 shrink-0`
   return (
     <div className={`flex items-center gap-2 ${className}`}>
@@ -91,9 +92,9 @@ export function SeekBar({ className = '', large = false }: { className?: string;
 }
 
 export function VolumeControl({ className = '' }: { className?: string }) {
-  const { status, setVolume, toggleMute } = usePlayer()
+  const { status, setVolume, toggleMute, hold } = usePlayer()
   const volume = status?.volume ?? 0
-  const disabled = status?.volume == null
+  const disabled = status?.volume == null || hold?.kind === 'airplay'
   const Icon = volume === 0 ? VolumeX : volume < 34 ? Volume : volume < 67 ? Volume1 : Volume2
   return (
     <div className={`flex items-center gap-1 ${className} ${disabled ? 'opacity-40' : ''}`}>

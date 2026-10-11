@@ -7,6 +7,7 @@ import { useUI, type Panel } from '../state/ui'
 import { Lyrics } from './Lyrics'
 import { DeviceIndicator, GlassSeek, GlassVolume, ModePills, TrackMenuButton, Transport, TrackTitle, ViewToggle } from './nowplaying/Controls'
 import { Mesh } from './nowplaying/Mesh'
+import { SheetNotice } from './PlaybackNotice'
 import { UpNext } from './UpNext'
 
 const IDLE_MS = 3000
@@ -158,6 +159,7 @@ function PhoneLayout({ art, panel, onToggle }: LayoutProps) {
           <div className="pb-1">
             <TrackTitle size="md" />
           </div>
+          <SheetNotice className="mt-3" />
         </>
       )}
       <div className="pt-5">
@@ -205,6 +207,7 @@ function WideLayout({ art, panel, onToggle, fine, idle, fade, hold }: WideProps)
         <div className="mt-6">
           <TrackTitle size={fine ? 'sm' : 'lg'} withMenu={!fine} />
         </div>
+        <SheetNotice className="mt-4" />
         <div
           ref={controlsRef}
           className={fine ? fade : ''}

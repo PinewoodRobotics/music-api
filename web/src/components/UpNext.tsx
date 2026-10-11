@@ -30,6 +30,7 @@ import { TrackMenu, useTrackActions } from "./TrackMenu";
 import { useSelection } from "../lib/selection";
 import { PlaylistPicker } from "./library/PlaylistTools";
 import { SelectionBar } from "./SelectionBar";
+import { QueuePausedNote } from "./PlaybackNotice";
 
 type RowProps = {
   track: Track;
@@ -387,7 +388,8 @@ export function UpNext({ immersive = false }: { immersive?: boolean }) {
         remove: (ix) => void remove(ix),
       })}
     >
-      {status?.track && !immersive && (
+      <QueuePausedNote />
+      {status?.track && status.source !== "airplay" && !immersive && (
         <section className="mb-4">
           <h3 className="px-2 pb-2 pt-1 text-sm font-semibold text-white/90">
             Now playing

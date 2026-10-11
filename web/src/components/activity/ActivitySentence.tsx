@@ -76,6 +76,8 @@ export function describeActivity(entry: ActivityEntry, count = 1, total?: number
     }
     case 'playlist_play':
       return <>played playlist <Em>{name ?? 'a playlist'}</Em></>
+    case 'airplay_stop':
+      return str(d.sender) ? <>stopped AirPlay from <Em>{str(d.sender)}</Em></> : 'stopped AirPlay'
     default:
       return entry.action.replace(/_/g, ' ')
   }

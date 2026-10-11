@@ -1,4 +1,4 @@
-import type { ActivityEntry, AppPlaylist, LibraryAlbum, Lyrics, Queue, Status, Track } from '../lib/api'
+import type { ActivityEntry, AppPlaylist, LibraryAlbum, Lyrics, QuietHours, Queue, Status, Track } from '../lib/api'
 import fixtures from './fixtures.json'
 
 type Mode = 'full' | 'signedout' | 'signedout-slack' | 'signedout-google' | 'writes' | 'down'
@@ -11,7 +11,14 @@ declare global {
     __mockActivityUpdate: (id: number, patch: Record<string, unknown>) => void
     __mockActivitySilent: (action: string, detail?: Record<string, unknown>, who?: string, agoMs?: number) => number
     __mockReconnect: () => void
-    __mockLab: { next: () => void; pause: () => void; resume: () => void; seek: (ms: number) => void }
+    __mockLab: {
+      next: () => void
+      pause: () => void
+      resume: () => void
+      seek: (ms: number) => void
+      airplay: (on: boolean, resume?: boolean) => void
+      quiet: (phase: QuietHours['phase'], idle?: boolean) => void
+    }
   }
 }
 
@@ -115,14 +122,54 @@ const state: { status: Status; at: number } = {
 
 let queued: Track[] = [tracks[9]]
 
-function snapshot(): Status {
+const airplayTrack = {
+  uri: null,
+  id: null,
+  type: 'airplay',
+  name: 'Clair de Lune',
+  artists: [{ uri: null, name: 'Claude Debussy' }],
+  album: { uri: null, name: 'Suite bergamasque' },
+  duration_ms: 300000,
+  explicit: false,
+  artwork: tracks[4].artwork,
+} as unknown as Track
+let airplay: { since: number; resume: boolean } | null = null
+let quiet: QuietHours = { enabled: true, window: '21:00-08:00', phase: 'open', locked: false, grace_s: 300, until: '08:00' }
+
+function spotifySnapshot(): Status {
   const s = state.status
   const elapsed = s.state === 'playing' ? Date.now() - state.at : 0
   return { ...s, position_ms: Math.min(s.position_ms + elapsed, s.duration_ms ?? Infinity) }
 }
 
+function snapshot(): Status {
+  const base = { ...spotifySnapshot(), quiet_hours: quiet, airplay: null }
+  if (!airplay) return base
+  const pos = Math.min(Date.now() - airplay.since + 74000, airplayTrack.duration_ms)
+  return {
+    ...base,
+    source: 'airplay',
+    state: 'playing',
+    track: airplayTrack,
+    position_ms: pos,
+    duration_ms: airplayTrack.duration_ms,
+    context: null,
+    credit: null,
+    skip: null,
+    actions: [],
+    airplay: { sender: "Adam's iPhone", state: 'playing', started_at: airplay.since / 1000, resume_spotify: airplay.resume },
+  }
+}
+
+function refusal(): readonly [number, unknown] | null {
+  if (airplay)
+    return [409, { error: 'airplay_active', message: "AirPlay from Adam's iPhone is playing, so Spotify is paused until it ends", sender: "Adam's iPhone" }]
+  if (quiet.phase === 'locked') return [423, { error: 'quiet_hours', message: 'Quiet hours: the speakers are locked until 8:00 AM', until: '08:00' }]
+  return null
+}
+
 function setStatus(patch: Partial<Status>) {
-  state.status = { ...snapshot(), ...patch }
+  state.status = { ...spotifySnapshot(), ...patch }
   state.at = Date.now()
 }
 
@@ -350,6 +397,14 @@ function handle(method: string, url: URL, body: Record<string, unknown>): readon
     if (state.status.track?.uri !== tracks[0].uri) return fail(404, 'no lyrics found')
     return ok({ ...lyrics, position_ms: snapshot().position_ms, line: 0 })
   }
+  if (route === 'POST /api/airplay/stop') {
+    if (!airplay) return [409, { error: 'airplay_inactive', message: 'no AirPlay session' }] as const
+    if (airplay.resume) setStatus({ state: 'playing' })
+    airplay = null
+    return ok(snapshot())
+  }
+  const blocked = /^POST \/api\/(play|playpause|next|previous|back|queue\/jump|playlists\/[^/]+\/play)$/.test(route) ? refusal() : null
+  if (blocked && !(airplay === null && route === 'POST /api/playpause' && state.status.state === 'playing')) return blocked
   if (route === 'POST /api/play') {
     const target = tracks.find((t) => t.uri === body.uri) ?? tracks[Number(body.offset) || 0]
     playTrack(target)
@@ -567,6 +622,15 @@ export function installMock(param: string | null) {
     pause: () => setStatus({ state: 'paused' }),
     resume: () => setStatus({ state: 'playing' }),
     seek: (ms) => setStatus({ position_ms: ms }),
+    airplay: (on, resume = true) => {
+      airplay = on ? { since: Date.now(), resume } : null
+      if (on) setStatus({ state: 'paused' })
+    },
+    quiet: (phase, idle = false) => {
+      const now = Date.now() / 1000
+      quiet = { ...quiet, phase, locked: phase === 'locked', idle_since: idle ? now - 60 : null, locks_at: idle ? now + 240 : null }
+      if (phase === 'locked') setStatus({ state: 'paused' })
+    },
   }
   const realFetch = window.fetch.bind(window)
 
