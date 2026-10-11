@@ -25,7 +25,12 @@ if [ ! -f "$CONF/env" ]; then
 fi
 chmod 600 "$CONF/env"
 
-cp "$REPO"/deploy/systemd/music-api.service "$REPO"/deploy/systemd/music-display.service "$HOME/.config/systemd/user/"
+cp "$REPO"/deploy/systemd/music-api.service "$REPO"/deploy/systemd/music-display.service \
+  "$REPO"/deploy/systemd/airplay.service "$REPO"/deploy/systemd/quiet-hours.service \
+  "$REPO"/deploy/systemd/quiet-hours.timer "$HOME/.config/systemd/user/"
+if [ -z "${NO_AIRPLAY:-}" ]; then
+  sh "$REPO/deploy/install-airplay.sh"
+fi
 # HDMI display: free tty1 from getty, let the video group hide its cursor, silence kernel messages on the console
 sudo systemctl disable --now getty@tty1.service || true
 echo 'KERNEL=="tty1", GROUP="video", MODE="0660"' | sudo tee /etc/udev/rules.d/90-music-display.rules >/dev/null
@@ -43,6 +48,15 @@ if [ -z "${NO_SOLOIST:-}" ]; then
 fi
 systemctl --user enable music-api.service
 systemctl --user enable music-display.service
+systemctl --user enable --now quiet-hours.timer
+if [ -z "${NO_AIRPLAY:-}" ]; then
+  systemctl --user enable --now airplay.service
+fi
+TZ_NOW=$(timedatectl show -p Timezone --value 2>/dev/null || echo unknown)
+case "$TZ_NOW" in
+  UTC|Etc/UTC|unknown) echo "WARNING: timezone is $TZ_NOW; quiet hours use local time. Set it, e.g." \
+    "sudo timedatectl set-timezone America/Los_Angeles" >&2 ;;
+esac
 
 cat <<MSG
 
@@ -52,7 +66,9 @@ Installed. Next:
   3. In the Spotify app (same Wi-Fi), pick "\$DEVICE_NAME" once to pair Soloist.
   4. HDMI display: create a token (POST /api/tokens {"name": "pi display"}) into $CONF/display-token (mode 600), then
      systemctl --user start music-display
-  5. Log in to the Web API: python3 $APP/server.py auth   (or open http://<this-host>:8765/auth/login?token=...)
+  5. AirPlay: the receiver advertises as "\$AIRPLAY_NAME" (default Pinewood Music); quiet hours: QUIET_HOURS.
+     Both live in $CONF/env; restart music-api and airplay after changing them.
+  6. Log in to the Web API: python3 $APP/server.py auth   (or open http://<this-host>:8765/auth/login?token=...)
 Your first API token is written to ~/.local/share/music-api/token when the API first starts
 (cat it once, then manage tokens with /api/tokens; you can delete that file afterwards).
 MSG

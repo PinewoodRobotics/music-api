@@ -143,9 +143,16 @@ class StateTest(unittest.TestCase):
         a.tick()
         self.assertEqual(events, ["start", "end"])
 
-    def test_missing_pipe_is_fine(self):
-        a, _, _ = self.make()
-        self.assertFalse(os.path.exists(a.pipe))
+    def test_heartbeat_picks_up_a_session_already_playing(self):
+        a, c, events = self.make()
+        self.feed(a, raw_item("ssnc", "phbt", b"1/2"))
+        self.assertEqual((events, a.snapshot()["state"]), (["start"], "playing"))
+        a.end_session()
+        self.feed(a, raw_item("ssnc", "phbt", b"1/2"))
+        self.assertIsNone(a.snapshot())
+        c.t += 6
+        self.feed(a, raw_item("ssnc", "phbt", b"1/2"))
+        self.assertEqual(events, ["start", "end", "start"])
 
 
 class FakeSoloist:

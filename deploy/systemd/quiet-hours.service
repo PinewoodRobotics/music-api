@@ -1,0 +1,8 @@
+[Unit]
+Description=Quiet hours enforcement (AirPlay receiver off and outputs muted while locked)
+After=pipewire-pulse.service
+
+[Service]
+Type=oneshot
+EnvironmentFile=-%h/.config/music-api/env
+ExecStart=/usr/bin/python3 %h/.local/share/music-api-v2/quiet_hours.py sync

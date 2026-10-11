@@ -7,7 +7,8 @@ shairport-sync writes items like
 where type and code are four ASCII characters in hex ("core" "minm" = title) and data is base64. Codes used here:
 core minm/asar/asal/astm (title, artist, album, length in ms); ssnc pbeg/pend (play session begin/end),
 abeg/aend (active state begin/end), paus/pres/prsm/pfls (pause, resume, flush), prgr ("start/current/end" RTP
-frames), phbt (heartbeat while frames play), snam (sender name), PICT (cover art bytes), mdst/mden (bundle markers).
+frames), phbt (heartbeat while frames play; also starts a session we missed the beginning of, e.g. after
+a server restart), snam (sender name), PICT (cover art bytes), mdst/mden (bundle markers).
 """
 import base64
 import hashlib
@@ -79,6 +80,7 @@ class AirPlay:
         self.on_end = None     # ...and when it ends
         self.on_change = None  # any visible change
         self.art = None
+        self._ignore_until = 0
         self._clear()
 
     def _clear(self):
@@ -133,6 +135,9 @@ class AirPlay:
                     self._set_playing(False, now)
                 elif code in ("pres", "prsm", "phb0", "phbt"):
                     was = self.playing
+                    if code in ("phb0", "phbt") and not self.active and now >= self._ignore_until:
+                        self.active, self.started_at = True, now
+                        events.append("start")
                     if self.active:
                         self._set_playing(True, now)
                         if code == "phbt":
@@ -203,6 +208,8 @@ class AirPlay:
         with self.lock:
             was = self.active
             self._clear()
+            # heartbeats still sitting in the pipe from before the restart must not revive the session
+            self._ignore_until = self.clock() + 5
         if was:
             self._fire(["end"])
         return was
