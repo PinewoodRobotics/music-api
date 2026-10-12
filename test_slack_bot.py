@@ -4,7 +4,9 @@ import json
 import time
 import unittest
 import urllib.parse
+from unittest import mock
 
+import links
 import slack_bot as sb
 from accounts import Credits
 
@@ -485,6 +487,30 @@ class ThreadCards(unittest.TestCase):
         self.bot.importer = lambda u, user: {"kind": "album", "album": {"id": "A1", "name": "Disc"}}
         sent = self.click(sb.link_blocks(AP_ALBUM_NOMATCH), "link", "import_playlist", AP_ALBUM_NOMATCH["url"])
         self.assertIn("Added", sent[-1][1]["text"])
+
+    def test_unmatched_youtube_track_still_gets_a_card(self):
+        yt_track = dict(APPLE_TRACK, source="youtube", url="https://youtu.be/KdOD0fZs_XU", name="Mice on Venus", subtitle="C418",
+                        spotify_uri=None, matched=0, tracks=[dict(song(1), uri=None)])
+        self.bot.resolve = lambda u: yt_track
+        post = self.post([yt_track["url"]])
+        self.assertIn("YouTube, not found on Spotify", post["blocks"][1]["elements"][0]["text"])
+        self.assertEqual(buttons(post["blocks"]), [])
+
+    def test_nothing_resolved_is_logged(self):
+        def boom(u):
+            raise links.LinkError("nope")
+        self.bot.resolve = boom
+        with mock.patch.object(sb, "log") as lg:
+            self.shared(["https://youtu.be/KdOD0fZs_XU"])
+        self.assertEqual(self.bot.sent, [])
+        self.assertTrue(any("no card" in c.args[0] for c in lg.call_args_list))
+
+    def test_retried_delivery_is_handled_when_the_first_never_arrived(self):
+        self.bot.sent.clear()
+        self.bot.on_event({"team_id": self.bot.team, "event_id": "E7", "event": {
+            "type": "link_shared", "channel": MUSIC, "message_ts": "8.8", "user": "U9",
+            "links": [{"url": SP_TRACK["url"]}]}}, {"X-Slack-Retry-Num": "1"})
+        self.assertTrue(self.bot.sent[-1][0].endswith("chat.postMessage"))
 
 
 class Events(unittest.TestCase):

@@ -156,6 +156,9 @@ class CleanTitle(unittest.TestCase):
             ("Artist – Track Official Video", None, ("Track", ["Artist"])),
             ("Simon & Garfunkel - The Sound of Silence", "c", ("The Sound of Silence", ["Simon", "Garfunkel"])),
             ("Song (Live)", "Band", ("Song (Live)", ["Band"])),
+            ("Minecraft Volume Alpha - 11 - Mice on Venus", "Daniel Rosenfeld", ("Mice on Venus", ["Daniel Rosenfeld"])),
+            ("Album \u2013 03. Track Name (Official Audio)", "Chan", ("Track Name", ["Chan"])),
+            ("Artist - 99 Problems", "c", ("99 Problems", ["Artist"])),
         ]:
             self.assertEqual(yt.clean_title(title, channel), want, title)
 
@@ -190,6 +193,50 @@ class Extract(unittest.TestCase):
         resp = next_resp(panel("abcdefghijk", "Billie Eilish - bad guy (Official Video)", [("Some Channel VEVO", "UCx")], "3:15", UGC))
         row = self.track(resp, "abcdefghijk")
         self.assertEqual((row["name"], row["artists"], row["duration_ms"], row["loose"]), ("bad guy", ["Billie Eilish"], 195000, True))
+
+    def test_numbered_album_upload_is_cleaned_even_when_omv(self):
+        resp = next_resp(panel("abcdefghijk", "Minecraft Volume Alpha - 11 - Mice on Venus", [("Daniel Rosenfeld", "UCd")], "4:42", OMV))
+        row = self.track(resp, "abcdefghijk")
+        self.assertEqual((row["name"], row["artists"], row["album"], row["loose"]), ("Mice on Venus", ["Daniel Rosenfeld"], None, True))
+
+    def olak(self, vid="abcdefghijk", in_list=True):
+        title = "Minecraft Volume Alpha - 11 - Mice on Venus"
+        items = [row("zzzzzzzzzzz", "Key", "C418", ("Minecraft - Volume Alpha", "MPREb_vol")),
+                 row(vid if in_list else "yyyyyyyyyyy", title, "Daniel Rosenfeld", None, "4:42", OMV)]
+        songs = [row("zzzzzzzzzzz", "Key", "C418", ("Minecraft - Volume Alpha", "MPREb_vol"))]
+        art = "https://yt3.googleusercontent.com/cover=w544-h544-l90-rj"
+        return {vid: next_resp(panel(vid, title, [("Daniel Rosenfeld", "UCd")], "4:42", OMV)),
+                "VLOLAK5uy_x": browse_resp(items),
+                "MPREb_vol": album_resp("Minecraft - Volume Alpha", "C418", songs)}, art
+
+    def test_album_playlist_context_gives_clean_artist_and_album(self):
+        responses, _ = self.olak()
+        ctx, _ = serve(responses)
+        with ctx:
+            row = yt.track("abcdefghijk", "OLAK5uy_x")
+        self.assertEqual((row["name"], row["artists"], row["album"], row["duration_ms"]),
+                         ("Mice on Venus", ["C418"], "Minecraft - Volume Alpha", 282000))
+
+    def test_album_context_ignored_when_video_not_in_that_list(self):
+        responses, _ = self.olak(in_list=False)
+        ctx, _ = serve(responses)
+        with ctx:
+            row = yt.track("abcdefghijk", "OLAK5uy_x")
+        self.assertEqual((row["name"], row["artists"], row["album"]), ("Mice on Venus", ["Daniel Rosenfeld"], None))
+
+    def test_album_context_failure_keeps_the_plain_row(self):
+        responses, _ = self.olak()
+        responses["VLOLAK5uy_x"] = links.LinkError("HTTP 500", 502)
+        ctx, _ = serve(responses)
+        with ctx:
+            row = yt.track("abcdefghijk", "OLAK5uy_x")
+        self.assertEqual(row["artists"], ["Daniel Rosenfeld"])
+
+    def test_list_id(self):
+        for url, want in [("https://youtu.be/KdOD0fZs_XU?list=OLAK5uy_lNoj", "OLAK5uy_lNoj"),
+                          ("https://youtu.be/KdOD0fZs_XU?list=PLabc", None), ("https://youtu.be/KdOD0fZs_XU", None),
+                          ("<https://youtu.be/KdOD0fZs_XU?list=OLAK5uy_a|x>", "OLAK5uy_a")]:
+            self.assertEqual(yt.list_id(url), want, url)
 
     def test_panel_for_another_video_is_ignored(self):
         resp = next_resp(panel("zzzzzzzzzzz", "Other", [("A", "UC")], "1:00", ATV))
@@ -336,6 +383,19 @@ class Resolve(unittest.TestCase):
             ctx, _ = serve({VID: resp})
             with ctx:
                 self.assertEqual(links.resolve(FakeApi(tracks=[cand]), f"https://youtu.be/{VID}")["matched"], matched)
+
+    def test_olak_watch_link_resolves_to_clean_track(self):
+        title = "Minecraft Volume Alpha - 11 - Mice on Venus"
+        key = [row("zzzzzzzzzzz", "Key", "C418", ("Minecraft - Volume Alpha", "MPREb_vol"))]
+        ctx, _ = serve({"abcdefghijk": next_resp(panel("abcdefghijk", title, [("Daniel Rosenfeld", "UCd")], "4:42", OMV)),
+                        "VLOLAK5uy_x": browse_resp(key + [row("abcdefghijk", title, "Daniel Rosenfeld", None, "4:42", OMV)]),
+                        "MPREb_vol": album_resp("Minecraft - Volume Alpha", "C418", key)})
+        api = FakeApi(tracks=[sp_track("Mice on Venus", "C418", 281000)])
+        with ctx:
+            r = links.resolve(api, "https://youtu.be/abcdefghijk?list=OLAK5uy_x")
+        self.assertEqual((r["name"], r["subtitle"], r["matched"]), ("Mice on Venus", "C418", 1))
+        self.assertEqual(r["tracks"][0]["album"], "Minecraft - Volume Alpha")
+        self.assertIn('artist:"C418"', api.queries[0][1]["q"])
 
     def test_unmatched_track_keeps_thumbnail(self):
         ctx, _ = serve({VID: next_resp(panel(VID, "Obscure", [("Nobody", "UC")], "1:00", OMV))})

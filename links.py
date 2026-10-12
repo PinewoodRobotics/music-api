@@ -214,9 +214,9 @@ def _apple(api, country, kind, aid, song_id):
             "tracks": _match_all(api, songs[:500])}
 
 
-def _youtube(api, kind, yid):
+def _youtube(api, kind, yid, album_id=None):
     if kind == "track":
-        row = _match_all(api, [yt.track(yid)])[0]
+        row = _match_all(api, [yt.track(yid, album_id)])[0]
         return {"kind": "track", "name": row["name"], "subtitle": ", ".join(row["artists"]),
                 "artwork": row["artwork"] or yt.thumbnail(yid), "spotify_uri": row["uri"], "tracks": [row]}
     if kind == "album":
@@ -262,7 +262,7 @@ def resolve(api, url):
         out = {"source": "apple", **_apple(api, country, kind, aid, song_id)}
     elif yt.YT_RX.search(url):
         kind, yid = yt.parse(url)
-        out = {"source": "youtube", **_youtube(api, kind, yid)}
+        out = {"source": "youtube", **_youtube(api, kind, yid, yt.list_id(url))}
     else:
         uri = to_uri(url) if "spotify" in url else None
         if not uri:

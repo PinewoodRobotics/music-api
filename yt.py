@@ -24,6 +24,7 @@ NOISE_RX = re.compile(rf"\s*[\(\[]\s*(?:(?:{NOISE})\b[^\)\]]*)[\)\]]", re.I)
 TRAIL_RX = re.compile(r"\s+(?:official\s+(?:music\s+)?(?:video|audio)|lyric video|lyrics)$", re.I)
 FEAT_TAIL_RX = re.compile(r"\s+(?:feat|ft|featuring)\.?\s+(.+)$", re.I)
 DASH_RX = re.compile(r"\s+[-\u2013\u2014]\s+")
+ALBUM_NUM_RX = re.compile(r"^.+?\s+[-\u2013\u2014]\s+\d{1,3}\s*[-\u2013\u2014.]\s+(.+)$")
 
 
 def _find(o, key):
@@ -65,6 +66,16 @@ def _innertube(endpoint, body):
         raise links.LinkError(f"couldn't reach music.youtube.com: {e.reason}", 502)
     except ValueError:
         raise links.LinkError("music.youtube.com sent something unreadable", 502)
+
+
+def list_id(url):
+    """The OLAK album playlist id a watch link was opened from, or None."""
+    try:
+        q = urllib.parse.parse_qs(urllib.parse.urlsplit(url.strip().lstrip("<").split("|")[0].rstrip(">")).query)
+    except ValueError:
+        return None
+    lst = (q.get("list") or [""])[0]
+    return lst if lst.startswith("OLAK5uy_") else None
 
 
 def parse(url):
@@ -123,8 +134,12 @@ def clean_title(title, channel=None):
     name = NOISE_RX.sub("", title or "")
     name = TRAIL_RX.sub("", re.sub(r"\s*[|\u2502].*$", "", name).strip())
     artists, guests = [], []
+    numbered = ALBUM_NUM_RX.match(name)
     parts = DASH_RX.split(name, maxsplit=1)
-    if len(parts) == 2 and parts[0].strip() and parts[1].strip():
+    if numbered:
+        name = numbered.group(1).strip()
+        artists = [_clean_channel(channel)] if channel else []
+    elif len(parts) == 2 and parts[0].strip() and parts[1].strip():
         artists, name = links._artists(parts[0]), parts[1].strip()
     elif channel:
         artists = [_clean_channel(channel)]
@@ -170,7 +185,7 @@ def _album_run(runs):
 
 
 def _clean_row(title, artists, album, duration_ms, art, vtype):
-    if vtype in ("MUSIC_VIDEO_TYPE_ATV", "MUSIC_VIDEO_TYPE_OMV"):
+    if vtype in ("MUSIC_VIDEO_TYPE_ATV", "MUSIC_VIDEO_TYPE_OMV") and not ALBUM_NUM_RX.match(title):
         row = links._song(title, artists, album, duration_ms, art if vtype.endswith("ATV") else None)
     else:
         name, who = clean_title(title, ", ".join(artists))
@@ -238,8 +253,31 @@ def _browse_rows(browse_id, limit):
     return resp, items, songs, bool(token) or len(songs) > limit
 
 
-def track(vid):
-    """The song row for a video id, or a LinkError."""
+def _in_album(album_id, vid):
+    _, items, _, _ = _browse_rows("VL" + album_id, PLAYLIST_LIMIT)
+    return any(_get(it, "musicResponsiveListItemRenderer", "playlistItemData", "videoId") == vid for it in items if isinstance(it, dict))
+
+
+def _with_album(row, album_id, vid):
+    """A user-uploaded track opened from an album playlist takes the album's artist, name and cover."""
+    try:
+        if not _in_album(album_id, vid):
+            return row
+        meta = album(album_id)
+    except links.LinkError:
+        return row
+    if not meta["artist"]:
+        return row
+    return {**row, "artists": links._artists(meta["artist"]), "album": meta["name"], "artwork": meta["artwork"]}
+
+
+def track(vid, album_id=None):
+    """The song row for a video id, or a LinkError. `album_id` is the OLAK playlist the link was opened from."""
+    row = _track(vid)
+    return _with_album(row, album_id, vid) if album_id and row.get("loose") else row
+
+
+def _track(vid):
     try:
         resp = _innertube("next", {"videoId": vid})
         # unknown ids still get HTTP 200, just without any renderers
