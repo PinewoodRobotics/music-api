@@ -99,6 +99,12 @@ credited to whoever made them (`<data-dir>/app-playlists.json`); only they or an
 anyone can add or remove tracks. Importing copies a *public* playlist into a new private playlist on the account. Spotify
 only exposes the first 100 tracks of playlists the account doesn't own (through the public embed page), so that's the cap.
 
+Apple Music and YouTube links are read for titles, artists and lengths only (`links.py`, `yt.py`) and matched to Spotify songs; nothing plays from them.
+YouTube / YouTube Music songs, albums and public or unlisted playlists (up to 500 songs) work from `youtube.com`, `music.youtube.com`,
+`youtu.be`, Shorts and embed links. Metadata comes from YouTube Music's public InnerTube endpoints (the client version lives in
+`yt.CLIENT_VERSION`; bump it if YouTube starts rejecting requests) with oEmbed as the fallback for single videos. Plain uploads
+get their "Artist - Title (Official Video)" noise cleaned up first. Private lists, mixes and channel links are refused.
+
 Setup: create a Slack app from this manifest at api.slack.com/apps, install it to the workspace, and put
 `SLACK_CLIENT_ID`, `SLACK_CLIENT_SECRET`, `SLACK_BOT_TOKEN` (`xoxb-…`) and `SLACK_REDIRECT_URI` in `~/.config/music-api/env`.
 The bot token is used for `users.info` (display names), `auth.test` (the workspace ID sign-ins must match), and the Slack bot below.
@@ -120,8 +126,8 @@ admin rights and personal token are identical to signing in with Slack. Accounts
 - `/music <query>` searches (Add to queue / Play buttons), `/music now`, `/music queue`, `/music play|pause|skip`, `/music help`.
   Pasting a Spotify link after `/music` works too. Skips, pauses and plays are announced in the channel with who did them.
 - Tracks queued from Slack are credited to that person, so the web app's Up Next shows "Added by".
-- Spotify and Apple Music song, album and playlist links shared in Slack (or after `/music`) unfurl with Add to queue / Play / Import as playlist buttons.
-- A Spotify or Apple Music link posted in the music channel gets one threaded reply (also sent to the channel) with a card per link (up to 3): Play now, Queue, and Add to Library / Import to Library. Clicks update that same message with who did what.
+- Spotify, Apple Music and YouTube / YouTube Music song, album and playlist links shared in Slack (or after `/music`) unfurl with Add to queue / Play / Import as playlist buttons.
+- A Spotify, Apple Music or YouTube link posted in the music channel gets one threaded reply (also sent to the channel) with a card per link (up to 3): Play now, Queue, and Add to Library / Import to Library. Clicks update that same message with who did what.
 - `/slack/*` requests are verified with the signing secret (v0 HMAC, 5 minute window) and only accepted from the workspace.
 
 ```yaml
@@ -141,6 +147,9 @@ features:
   unfurl_domains:
     - open.spotify.com
     - music.apple.com
+    - youtube.com
+    - music.youtube.com
+    - youtu.be
 oauth_config:
   redirect_urls:
     - https://music.pinewoodrobotics.org/auth/slack/callback
@@ -159,6 +168,7 @@ settings:
   token_rotation_enabled: false
 ```
 After changing scopes, reinstall the app to the workspace so the bot token picks them up.
+For an app that already exists, add `youtube.com`, `music.youtube.com` and `youtu.be` under *Event Subscriptions > App Unfurl Domains* in the Slack app settings (the manifest above only applies to new apps); without them YouTube links won't unfurl or get channel cards.
 
 ### Web API limits (development-mode apps, 2026 rules)
 

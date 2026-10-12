@@ -242,6 +242,7 @@ def track(vid):
     """The song row for a video id, or a LinkError."""
     try:
         resp = _innertube("next", {"videoId": vid})
+        # unknown ids still get HTTP 200, just without any renderers
         panel = next((p for p in _find(resp, "playlistPanelVideoRenderer") if isinstance(p, dict) and p.get("videoId") == vid), None)
         if panel:
             groups, cur = [], []
