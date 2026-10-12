@@ -195,7 +195,7 @@ export function SearchPage() {
             spellCheck={false}
             value={text}
             onChange={(e) => setText(e.target.value)}
-            placeholder="Search, or paste a Spotify or Apple Music link"
+            placeholder="Search, or paste a Spotify, Apple Music or YouTube link"
             aria-label="Search"
             className="min-w-0 flex-1 bg-transparent text-base text-fg outline-none placeholder:text-faint"
           />
@@ -219,7 +219,7 @@ export function SearchPage() {
         <Message
           icon={<Search className="size-10" />}
           title="Search Spotify"
-          body="Find songs, albums, artists and playlists, or paste a Spotify or Apple Music link."
+          body="Find songs, albums, artists and playlists, or paste a Spotify, Apple Music or YouTube link."
         />
       )}
       {link && (
@@ -231,7 +231,7 @@ export function SearchPage() {
         <Message
           icon={<Link2 className="size-10" />}
           title="That link isn't supported"
-          body="Paste a Spotify or Apple Music link to a song, album or playlist."
+          body="Paste a Spotify, Apple Music or YouTube link to a song, album or playlist."
         />
       )}
       {searching && failure != null && <ErrorState title="Search didn't load" error={failure} onRetry={retry} />}

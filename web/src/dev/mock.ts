@@ -215,7 +215,7 @@ function resolve(link: string): readonly [number, unknown] {
   }
   if (/open\.spotify\.com\/playlist/.test(link))
     return ok({ ...base, source: 'spotify', kind: 'playlist', name: 'Robot-Themed Songs', subtitle: 'Daniel Costa Ramos', artwork: tracks[5].artwork, spotify_uri: 'spotify:playlist:5SLCReZBKclNPPJ0n1bBkp', tracks: tracks.map(asResolved), total: 12, matched: 12, truncated: false })
-  if (/music\.apple\.com\/.*playlist/.test(link)) {
+  if (/music\.apple\.com\/.*playlist|youtube\.com\/playlist\?list=PL/.test(link)) {
     const list = [
       ...tracks.slice(0, 4).map(asResolved),
       { ...unmatchedSongs[0], album: null, duration_ms: 241000, artwork: null, uri: null },
@@ -223,7 +223,7 @@ function resolve(link: string): readonly [number, unknown] {
       { ...unmatchedSongs[1], album: 'Pit Stop', duration_ms: 182000, artwork: null, uri: null },
       { ...unmatchedSongs[2], album: null, duration_ms: 64000, artwork: null, uri: null },
     ]
-    return ok({ ...base, source: 'apple', kind: 'playlist', name: 'Shop Floor Favorites', subtitle: 'Maya', artwork: tracks[3].artwork, spotify_uri: null, tracks: list, total: list.length, matched: 9 })
+    return ok({ ...base, source: link.includes('youtube') ? 'youtube' : 'apple', kind: 'playlist', name: 'Shop Floor Favorites', subtitle: 'Maya', artwork: tracks[3].artwork, spotify_uri: null, tracks: list, total: list.length, matched: 9 })
   }
   return fail(400, "That link isn't a song, album or playlist we can open.")
 }
@@ -274,9 +274,9 @@ function trackByUri(uri: string) {
 }
 
 function addAlbum(link: string, viaImport = false): readonly [number, unknown] {
-  if (/music\.apple\.com/.test(link) && /nomatch/.test(link)) return fail(422, "that album isn't on Spotify as a whole album; use Import as playlist to copy its songs")
+  if (/music\.apple\.com|youtube\.com/.test(link) && /nomatch/.test(link)) return fail(422, "that album isn't on Spotify as a whole album; use Import as playlist to copy its songs")
   const id = link.match(/album[:/]([A-Za-z0-9]+)/)?.[1]
-  if (!id) return fail(400, 'paste a Spotify or Apple Music album link (use Import as playlist for playlists and songs)')
+  if (!id) return fail(400, 'paste a Spotify, Apple Music or YouTube Music album link (use Import as playlist for playlists and songs)')
   const existing = libraryAlbums.find((a) => a.id === id)
   const source = tracks.find((t) => t.album?.uri.endsWith(id)) ?? tracks[5]
   const album = existing ? { ...existing, already: true } : albumOf(source, { id: 'U01', name: 'Adam Xu', avatar: null }, new Date().toISOString(), true)
@@ -500,7 +500,7 @@ function handle(method: string, url: URL, body: Record<string, unknown>): readon
     }
     playlists.unshift(created)
     items[created.id] = tracks
-    const apple = String(body.url).includes('music.apple.com')
+    const apple = /music\.apple\.com|youtube\.com|youtu\.be/.test(String(body.url))
     return ok({
       playlist: created,
       imported: apple ? 9 : 100,
@@ -643,7 +643,7 @@ export function installMock(param: string | null) {
     if (method !== 'GET') window.__mockCalls.push({ method, path: url.pathname + url.search, body, origin })
     if (mode === 'writes' && (method === 'GET' || url.pathname === '/api/resolve')) return realFetch(input, init)
     const slow = url.pathname.endsWith('/import') || url.pathname === '/api/resolve'
-    await new Promise((r) => setTimeout(r, slow ? (String(body.url ?? '').includes('apple') ? 3500 : 1500) : 120))
+    await new Promise((r) => setTimeout(r, slow ? (/apple|youtu/.test(String(body.url ?? '')) ? 3500 : 1500) : 120))
     const down = mode === 'down' && method === 'GET' && /^\/api\/(search|app\/playlists|albums|artists|playlists)/.test(url.pathname)
     if (url.pathname === '/auth/methods')
       return new Response(JSON.stringify({ slack: mode !== 'signedout-google', google: mode !== 'signedout-slack' }), { status: 200, headers: { 'Content-Type': 'application/json' } })

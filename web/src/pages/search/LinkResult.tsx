@@ -2,7 +2,7 @@ import { Download, ListEnd, ListPlus, MoreHorizontal, Play } from 'lucide-react'
 import { useEffect, useState, type MouseEvent } from 'react'
 import { api, ApiError, type Resolved, type ResolvedTrack, type Track } from '../../lib/api'
 import { formatTime, idFromUri, plural } from '../../lib/format'
-import type { DetectedLink } from '../../lib/links'
+import { sourceName, type DetectedLink } from '../../lib/links'
 import { useElapsed } from '../../lib/useElapsed'
 import { Artwork } from '../../components/Artwork'
 import { BigPlayButton } from '../../components/CollectionHeader'
@@ -16,7 +16,6 @@ import { usePlayer } from '../../state/player'
 import { useUI } from '../../state/ui'
 import { ErrorState, Message } from '../Message'
 
-const SOURCE = { spotify: 'Spotify', apple: 'Apple Music' }
 const NOUN = { track: 'song', album: 'album', playlist: 'playlist' }
 
 function toTrack(t: ResolvedTrack & { uri: string }): Track {
@@ -69,7 +68,7 @@ function useResolve(url: string) {
 
 function Resolving({ link }: { link: DetectedLink }) {
   const seconds = useElapsed(true)
-  const slow = link.source === 'apple' && (link.kind === 'playlist' || link.kind === 'album')
+  const slow = link.source !== 'spotify' && (link.kind === 'playlist' || link.kind === 'album')
   return (
     <div className="px-3 max-sm:px-2">
       <div className="flex items-center gap-6 rounded-lg bg-white/[0.04] p-5 max-sm:flex-col max-sm:items-start">
@@ -79,7 +78,7 @@ function Resolving({ link }: { link: DetectedLink }) {
         <div className="w-full min-w-0 flex-1 space-y-3" aria-live="polite">
           <p className="text-sm font-medium text-dim">{link.label}</p>
           <p className="font-display text-2xl font-bold tracking-tight">
-            {slow ? 'Matching songs from Apple Music…' : `Looking up this ${link.label}…`}
+            {slow ? `Matching songs from ${link.name}…` : `Looking up this ${link.label}…`}
           </p>
           <div className="h-1 max-w-md overflow-hidden rounded-full bg-white/10">
             <div className="h-full w-1/3 animate-[indeterminate_1.2s_ease-in-out_infinite] rounded-full bg-accent" />
@@ -120,7 +119,7 @@ function Header({ data }: { data: Resolved }) {
       <div className="min-w-0 flex-1">
         <p className="flex items-center gap-2 text-sm font-medium text-white/80">
           <SourceIcon source={data.source} className="size-4" />
-          {SOURCE[data.source]} {NOUN[data.kind]}
+          {sourceName(data.source, data.url)} {NOUN[data.kind]}
         </p>
         <h2 className="mt-2 line-clamp-2 font-display text-[clamp(1.75rem,3.4vw,2.75rem)] font-extrabold leading-tight tracking-tight">
           {data.name}

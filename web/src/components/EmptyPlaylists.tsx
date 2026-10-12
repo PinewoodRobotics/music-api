@@ -10,7 +10,7 @@ export function EmptyPlaylists() {
         <ListMusic className="size-7" />
       </div>
       <h3 className="font-display text-xl font-bold tracking-tight">No playlists yet</h3>
-      <p className="mt-1.5 max-w-xs text-sm text-dim">Create one for the lab, or import one from Spotify or Apple Music.</p>
+      <p className="mt-1.5 max-w-xs text-sm text-dim">Create one for the lab, or import one from Spotify, Apple Music or YouTube.</p>
       <div className="mt-6 flex flex-wrap justify-center gap-2">
         <Button onClick={() => openDialog({ kind: 'new' })}>
           <Plus className="size-4" />

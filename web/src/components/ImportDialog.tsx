@@ -16,7 +16,7 @@ function LinkBadge({ link, text }: { link: DetectedLink | null; text: string }) 
     return (
       <p className="flex items-center gap-2 text-xs text-dim">
         <Link2 className="size-4" />
-        Paste a Spotify or Apple Music link.
+        Paste a Spotify, Apple Music or YouTube link.
       </p>
     )
   return (
@@ -28,7 +28,7 @@ function LinkBadge({ link, text }: { link: DetectedLink | null; text: string }) 
 }
 
 function workingMessage(link: DetectedLink | null) {
-  if (link?.source === 'apple') return 'Matching songs from Apple Music…'
+  if (link && link.source !== 'spotify') return `Matching songs from ${link.name}…`
   return link?.kind === 'album' ? 'Adding the album…' : 'Copying songs from Spotify…'
 }
 
@@ -143,7 +143,7 @@ export function ImportDialog({ onClose, initialUrl, asPlaylist = false }: { onCl
 
   const submit = (e: FormEvent) => {
     e.preventDefault()
-    if (!link?.importable) return setError('Paste a link to a Spotify or Apple Music playlist or album.')
+    if (!link?.importable) return setError('Paste a link to a Spotify, Apple Music or YouTube playlist or album.')
     void run(url)
   }
 
@@ -171,7 +171,7 @@ export function ImportDialog({ onClose, initialUrl, asPlaylist = false }: { onCl
       <form onSubmit={submit} className="space-y-4">
         <div className="space-y-2 text-sm leading-relaxed text-dim">
           <p>
-            Paste a public playlist or album link from Spotify or Apple Music. Playlists are copied into a new shared playlist
+            Paste a public playlist or album link from Spotify, Apple Music or YouTube. Playlists are copied into a new shared playlist
             credited to you; albums are added to the Library as albums.
           </p>
           <ul className="space-y-1 text-[13px]">
@@ -183,6 +183,11 @@ export function ImportDialog({ onClose, initialUrl, asPlaylist = false }: { onCl
               <SourceIcon source="apple" className="mt-0.5 size-4 shrink-0" />
               Apple Music songs are matched to Spotify by title, artist and length. Songs that aren't on Spotify are skipped.
               Playlists must be shared publicly.
+            </li>
+            <li className="flex gap-2">
+              <SourceIcon source="youtube" className="mt-0.5 size-4 shrink-0" />
+              YouTube and YouTube Music links are matched to Spotify the same way; nothing plays from YouTube. Playlists copy their
+              first 500 songs and must be public or unlisted.
             </li>
           </ul>
         </div>
@@ -204,7 +209,7 @@ export function ImportDialog({ onClose, initialUrl, asPlaylist = false }: { onCl
           <ProgressNote
             message={workingMessage(link)}
             seconds={seconds}
-            hint={link?.source === 'apple' ? 'This can take up to 30 seconds.' : 'This takes a few seconds.'}
+            hint={link && link.source !== 'spotify' ? 'This can take up to 30 seconds.' : 'This takes a few seconds.'}
           />
         )}
         {error && <p className="text-sm text-danger">{error}</p>}

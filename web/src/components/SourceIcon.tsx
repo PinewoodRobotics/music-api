@@ -8,6 +8,13 @@ export function SourceIcon({ source, className = 'size-5' }: { source: LinkSourc
         <path d="M6.2 9.4c3.9-1.2 8.3-.8 11.6 1.1M6.9 12.5c3.2-.9 6.6-.6 9.4 1M7.5 15.4c2.5-.7 5-.5 7.2.8" stroke="#000" strokeWidth="1.6" strokeLinecap="round" fill="none" />
       </svg>
     )
+  if (source === 'youtube')
+    return (
+      <svg viewBox="0 0 24 24" className={className} aria-hidden>
+        <rect y="3.5" width="24" height="17" rx="5" fill="#ff0033" />
+        <path d="M9.8 8.6v6.8l5.9-3.4Z" fill="#fff" />
+      </svg>
+    )
   return (
     <svg viewBox="0 0 24 24" className={className} aria-hidden>
       <defs>

@@ -201,7 +201,7 @@ export type ResolvedTrack = {
 }
 
 export type Resolved = {
-  source: 'spotify' | 'apple'
+  source: 'spotify' | 'apple' | 'youtube'
   kind: 'track' | 'album' | 'playlist'
   name: string
   subtitle: string | null
