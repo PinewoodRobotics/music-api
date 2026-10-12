@@ -189,10 +189,10 @@ def quiet_locked(st):
 
 
 def quiet_note(st):
-    """Small line for the grace period: when the speakers will lock if nothing plays."""
+    """Grace period, paused: when the speakers will lock. Nothing is shown while audio plays."""
     q = (st or {}).get("quiet_hours") or {}
     if q.get("phase") == "grace" and q.get("locks_at") and st.get("state") != "playing":
-        return f"QUIET HOURS LOCK AT {clock(q['locks_at'])}"
+        return f"PAUSED. LOCKS AT {clock(q['locks_at'])} UNLESS SOMETHING PLAYS"
     return None
 
 
