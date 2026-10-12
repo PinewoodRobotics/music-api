@@ -17,11 +17,11 @@ Path `{id}`s are bare 22-character Spotify IDs. `uri`/`uris`/`context` fields ta
 | `GET` | `/api/sleep` | Sleep timer state |
 | `POST` | `/api/sleep` | Body {minutes, fade?: seconds}: pause after N minutes, fading out over the last `fade` seconds (default 30) |
 | `DELETE` | `/api/sleep` | Cancel the sleep timer |
-| `POST` | `/api/play` | Play/resume. Body optional: {uri} (track, album, playlist, artist, episode, show; URI or open.spotify.com link), {uris: [...]}, {context, offset: index\|uri}, {position: seconds \| position_ms}, {shuffle?: bool} (set before playing) |
+| `POST` | `/api/play` | Play/resume. Body optional: {uri} (track, album, playlist, artist, episode, show; URI or open.spotify.com link), {uris: [...]}, {context, offset: index\|uri}, {position: seconds \| position_ms}, {shuffle?: bool} (set before playing). During AirPlay only the empty body works (resumes the sender); anything else is 409 airplay_active |
 | `POST` | `/api/play-url` | Body {url}: play any open.spotify.com / spotify: link |
-| `POST` | `/api/pause` | Pause |
-| `POST` | `/api/next` | Skip to next |
-| `POST` | `/api/previous` | Previous track (restarts the current one if it's past the first few seconds) |
+| `POST` | `/api/pause` | Pause. During AirPlay: pauses the sender |
+| `POST` | `/api/next` | Skip to next (the AirPlay sender's, during AirPlay) |
+| `POST` | `/api/previous` | Previous track (restarts the current one if it's past the first few seconds). During AirPlay: the sender's |
 | `POST` | `/api/back` | Alias of /api/previous (v1 compatibility) |
 | `POST` | `/api/seek` | Body {position: seconds} \| {position_ms} \| {delta: ±seconds} |
 | `POST` | `/api/volume` | Body {volume: 0-100} \| {delta: ±n} |
@@ -116,7 +116,7 @@ Tokens have no scopes: any token can do everything, including creating and revok
 | `GET` | `/api/airplay/artwork` | Cover art the AirPlay sender sent for the current song (bytes); 404 if none |
 | `POST` | `/api/airplay/stop` | End the AirPlay session (restarts the receiver, which disconnects the sender; it can reconnect a few seconds later). Spotify then resumes if it was playing when AirPlay took over. 409 airplay_inactive if there's none |
 | `GET` | `/api/quiet-hours` | Quiet hours: {enabled, window: "21:00-08:00", phase: open\|grace\|locked, locked, idle_since, locks_at, until: "08:00", until_ts, starts_at, grace_s}. After the window starts the speakers lock once nothing has played for grace_s seconds; while locked, play/resume/skip are refused with 423 {"error": "quiet_hours", "until"} |
-| `POST` | `/api/playpause` | Toggle play/pause |
+| `POST` | `/api/playpause` | Toggle play/pause (the AirPlay sender's, during AirPlay) |
 | `GET` | `/api/app/me` | Who's signed in: {id, name, avatar, admin, kind: slack\|token}. API tokens show as Admin |
 | `GET` | `/api/app/token` | Your personal API token {token, created, docs}: same permissions as you; created on first request |
 | `POST` | `/api/app/token/regenerate` | Replace your personal API token; the old one stops working immediately |

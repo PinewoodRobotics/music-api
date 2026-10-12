@@ -1,19 +1,21 @@
 """What may make sound: the quiet-hours lock and the AirPlay override, layered over the Spotify player.
 
 - Quiet hours (see quiet_hours.py): while locked, anything that would start playback is refused with 423.
-- AirPlay: a session pauses Spotify (queue, track and position stay put) and Spotify transport is refused with 409
-  until it ends. When it ends, Spotify resumes if it was playing when AirPlay took over (unless quiet hours locked).
+- AirPlay: a session pauses Spotify (queue, track and position stay put). Play (without a track), pause, next and
+  previous then control the AirPlay sender; the rest of Spotify transport is refused with 409 until it ends. When it ends, Spotify resumes if it was playing when AirPlay took over (unless quiet hours locked).
 """
 import sys
 import threading
 import time
 
+import airplay as airplay_mod
 from player import PlayerError
 from spotify import SpotifyError
 
 PLAYING = ("playing", "buffering")
 QUIET_BLOCKED = {"play", "next", "previous", "jump", "transfer_play"}
 AIRPLAY_BLOCKED = {"play", "pause", "next", "previous", "jump", "seek", "transfer", "transfer_play"}
+AIRPLAY_COMMANDS = {"play", "pause", "next", "previous"}
 HANDOFF = 20  # seconds after AirPlay ends during which a pending Spotify resume counts as playing
 
 
@@ -22,12 +24,13 @@ def log(msg):
 
 
 class Guard:
-    def __init__(self, player, quiet, airplay=None, enforce=None, receiver=None, clock=time.time):
+    def __init__(self, player, quiet, airplay=None, enforce=None, receiver=None, remote=None, clock=time.time):
         self.player = player
         self.quiet = quiet
         self.airplay = airplay
         self.enforce = enforce or (lambda locked: None)
         self.receiver = receiver or (lambda action: False)
+        self.remote = remote or (lambda action: None)
         self.clock = clock
         self.lock = threading.Lock()
         self.resume_after = False
@@ -35,6 +38,7 @@ class Guard:
         self._phase = None
         player.guard = self.check
         player.overlay = self.overlay
+        player.redirect = self.redirect
         if airplay:
             airplay.on_start = self.airplay_started
             airplay.on_end = self.airplay_ended
@@ -44,15 +48,28 @@ class Guard:
         return self.airplay.snapshot() if self.airplay else None
 
     def check(self, action):
-        if action in QUIET_BLOCKED and self.quiet.locked():
-            q = self.quiet.status()
-            raise PlayerError(f"Quiet hours: the speakers are locked until {self.quiet.until_text()}", 423,
-                              "quiet_hours", until=q["until"], until_ts=q["until_ts"])
+        self._check_quiet(action)
         ap = self._airplay()
         if ap and action in AIRPLAY_BLOCKED:
             sender = ap.get("sender")
             raise PlayerError(f"AirPlay{' from ' + sender if sender else ''} is playing, so Spotify is paused "
                               "until it ends (POST /api/airplay/stop ends it)", 409, "airplay_active", sender=sender)
+
+    def _check_quiet(self, action):
+        if action in QUIET_BLOCKED and self.quiet.locked():
+            q = self.quiet.status()
+            raise PlayerError(f"Quiet hours: the speakers are locked until {self.quiet.until_text()}", 423,
+                              "quiet_hours", until=q["until"], until_ts=q["until_ts"])
+
+    def redirect(self, action, body):
+        if action not in AIRPLAY_COMMANDS or not self._airplay() or (action == "play" and body):
+            return None
+        self._check_quiet(action)
+        try:
+            self.remote(action)
+        except airplay_mod.RemoteError as e:
+            raise PlayerError(str(e), e.status, e.code)
+        return self.player.status()
 
     def overlay(self, st):
         st = {**st, "quiet_hours": self.quiet.status(), "airplay": None}

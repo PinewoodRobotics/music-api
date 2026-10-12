@@ -66,7 +66,7 @@ Installed. Next:
   3. In the Spotify app (same Wi-Fi), pick "\$DEVICE_NAME" once to pair Soloist.
   4. HDMI display: create a token (POST /api/tokens {"name": "pi display"}) into $CONF/display-token (mode 600), then
      systemctl --user start music-display
-  5. AirPlay: the receiver advertises as "\$AIRPLAY_NAME" (default Pinewood Music); quiet hours: QUIET_HOURS.
+  5. AirPlay: the receiver advertises as "\$AIRPLAY_NAME" (default PEARL Speakers); quiet hours: QUIET_HOURS.
      Both live in $CONF/env; restart music-api and airplay after changing them.
   6. Log in to the Web API: python3 $APP/server.py auth   (or open http://<this-host>:8765/auth/login?token=...)
 Your first API token is written to ~/.local/share/music-api/token when the API first starts

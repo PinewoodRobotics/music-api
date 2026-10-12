@@ -1,4 +1,4 @@
-"""AirPlay now-playing from shairport-sync's metadata pipe.
+"""AirPlay now-playing from shairport-sync's metadata pipe, and remote control of the sender over its D-Bus interface.
 
 shairport-sync writes items like
     <item><type>636f7265</type><code>6d696e6d</code><length>5</length>
@@ -16,20 +16,62 @@ import os
 import re
 import select
 import stat
+import subprocess
 import sys
 import threading
 import time
 
 DEFAULT_PIPE = "/tmp/shairport-sync-metadata"
-RTP_RATE = 44100  # shairport-sync 4.x reports AirPlay 2 progress in 44.1 kHz RTP frames
+RTP_RATE = 44100
 END_AFTER_PEND = 15
 MAX_BUFFER = 16 << 20
 ITEM = re.compile(rb"<item><type>([0-9a-fA-F]{8})</type><code>([0-9a-fA-F]{8})</code><length>(\d+)</length>"
                   rb"(?:\s*<data encoding=\"base64\">([A-Za-z0-9+/=\s]*)</data>)?\s*</item>")
 
 
+BUS_NAME = "org.gnome.ShairportSync"
+BUS_PATH = "/org/gnome/ShairportSync"
+BUS_INTERFACE = "org.gnome.ShairportSync.RemoteControl"
+REMOTE_METHODS = {"play": "Play", "pause": "Pause", "next": "Next", "previous": "Previous"}
+
+
 def log(msg):
     sys.stderr.write(f"airplay: {msg}\n")
+
+
+class RemoteError(Exception):
+    def __init__(self, message, status=502, code="airplay_remote_failed"):
+        super().__init__(message)
+        self.status, self.code = status, code
+
+
+def remote(action, run=subprocess.run):
+    """Send play/pause/next/previous to the AirPlay sender through shairport-sync's own RemoteControl interface on the
+    session bus (dbus_service_bus = "session"). shairport-sync finds the sender's DACP service and holds its
+    Active-Remote token, so none of that is reimplemented here. Needs busctl (systemd)."""
+    method = REMOTE_METHODS[action]
+    base = ["busctl", "--user", "--timeout=3"]
+    env = {**os.environ}
+    env.setdefault("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
+
+    def busctl(*args):
+        try:
+            r = run(base + list(args), capture_output=True, text=True, timeout=6, env=env)
+        except FileNotFoundError:
+            raise RemoteError("busctl isn't installed, so AirPlay can't be controlled from here", 503,
+                              "airplay_remote_unavailable")
+        except subprocess.TimeoutExpired:
+            raise RemoteError("the AirPlay receiver didn't answer", 504)
+        if r.returncode != 0:
+            raise RemoteError("couldn't reach the AirPlay receiver's D-Bus interface (is it built with D-Bus and "
+                              f"dbus_service_bus = \"session\"?): {(r.stderr or '').strip()}", 503,
+                              "airplay_remote_unavailable")
+        return r.stdout
+
+    if "false" in busctl("get-property", BUS_NAME, BUS_PATH, BUS_INTERFACE, "Available").lower():
+        raise RemoteError("the device playing over AirPlay doesn't accept remote control", 409,
+                          "airplay_remote_unavailable")
+    busctl("call", BUS_NAME, BUS_PATH, BUS_INTERFACE, method)
 
 
 class Parser:

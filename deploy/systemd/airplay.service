@@ -1,5 +1,5 @@
 [Unit]
-Description=AirPlay 2 receiver (shairport-sync)
+Description=AirPlay receiver (shairport-sync)
 After=pipewire-pulse.service network-online.target
 Wants=pipewire-pulse.service
 

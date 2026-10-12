@@ -89,6 +89,11 @@ def _log(action, detail=None):
     return activity.record(_req.user, action, detail, _req.origin)
 
 
+def _credit_skip():
+    if not (airplay and airplay.snapshot()):
+        credits.skipped(_req.user)
+
+
 def _playing_name():
     try:
         return (player.status().get("track") or {}).get("name")
@@ -243,7 +248,8 @@ def _set_sys_output(q, b):
 @route("POST", "/api/play")
 def _play(q, b):
     """Play/resume. Body optional: {uri} (track, album, playlist, artist, episode, show; URI or open.spotify.com link),
-    {uris: [...]}, {context, offset: index|uri}, {position: seconds | position_ms}, {shuffle?: bool} (set before playing)"""
+    {uris: [...]}, {context, offset: index|uri}, {position: seconds | position_ms}, {shuffle?: bool} (set before playing).
+    During AirPlay only the empty body works (resumes the sender); anything else is 409 airplay_active"""
     if b.get("shuffle") is not None:
         player.shuffle({"enabled": bool(b["shuffle"])})
     res = player.play({k: v for k, v in b.items() if k != "shuffle"})
@@ -267,7 +273,7 @@ def _play_url(q, b):
 
 @route("POST", "/api/pause")
 def _pause(q, b):
-    """Pause"""
+    """Pause. During AirPlay: pauses the sender"""
     res = player.pause()
     _log("pause")
     return res
@@ -275,7 +281,7 @@ def _pause(q, b):
 
 @route("POST", "/api/playpause")
 def _playpause(q, b):
-    """Toggle play/pause"""
+    """Toggle play/pause (the AirPlay sender's, during AirPlay)"""
     was_playing = player.status().get("state") in ("playing", "buffering")
     res = player.playpause()
     _log("pause" if was_playing else "play")
@@ -284,8 +290,8 @@ def _playpause(q, b):
 
 @route("POST", "/api/next")
 def _next(q, b):
-    """Skip to next"""
-    credits.skipped(_req.user)
+    """Skip to next (the AirPlay sender's, during AirPlay)"""
+    _credit_skip()
     name = _playing_name()
     res = player.next()
     _log("next", {"from": name} if name else {})
@@ -294,8 +300,8 @@ def _next(q, b):
 
 @route("POST", "/api/previous")
 def _previous(q, b):
-    """Previous track (restarts the current one if it's past the first few seconds)"""
-    credits.skipped(_req.user)
+    """Previous track (restarts the current one if it's past the first few seconds). During AirPlay: the sender's"""
+    _credit_skip()
     name = _playing_name()
     res = player.previous()
     _log("previous", {"from": name} if name else {})
@@ -1344,7 +1350,7 @@ def main():
     quiet = quiet_hours.QuietHours(window, os.path.join(a.data_dir, quiet_hours.STATE_FILE))
     airplay = airplay_mod.AirPlay(a.airplay_pipe)
     guard = Guard(player, quiet, airplay, enforce=lambda locked: quiet_hours.enforce(locked, a.data_dir),
-                  receiver=quiet_hours.receiver)
+                  receiver=quiet_hours.receiver, remote=airplay_mod.remote)
     threading.Thread(target=airplay.loop, daemon=True).start()
     threading.Thread(target=guard.loop, args=(5 if backend == "soloist" else 15,), daemon=True).start()
     threading.Thread(target=player.loop, daemon=True).start()

@@ -356,7 +356,7 @@ Body `{device, play?}`: move playback to a device. `device` is a device `id` or 
 {"backend": "connect",
  "web_api": {"configured": true, "logged_in": true, "scope": "...", "redirect_uri": "...", "expires_at": 1760000000},
  "soloist": {"connected": true, "endpoint": ["127.0.0.1", 9999], "data_dir": "...", "error": null,
-             "logged_in": true, "is_active": true, "device_name": "Lab Speakers"}}
+             "logged_in": true, "is_active": true, "device_name": "PEARL Speakers"}}
 ```
 `soloist` is present only with the Soloist backend.
 
@@ -728,7 +728,7 @@ Default window 21:00-08:00, local time on the server. Music that's playing when 
 
 ### AirPlay
 
-People can play to the speakers from an iPhone or Mac over AirPlay 2. That pauses Spotify; while it lasts, Spotify transport (`play`, `pause`, `playpause`, `next`, `previous`, `back`, `seek`, `queue/jump`, `devices/transfer`, `/api/spotify/me/player/...`) returns `409 airplay_active` with `sender`. Queueing, removing from the queue, search, playlists and the Library work. Don't stop someone's AirPlay session (`POST /api/airplay/stop`) unless the user asks.
+People can play to the speakers from an iPhone or Mac over AirPlay. That pauses Spotify; while it lasts, `play` (no body), `pause`, `playpause`, `next`, `previous` and `back` control the AirPlay sender instead (`409 airplay_remote_unavailable` if the sender can't be remote controlled), and the rest of Spotify transport (`play` with a track, `seek`, `queue/jump`, `devices/transfer`, `/api/spotify/me/player/...`) returns `409 airplay_active` with `sender`. Queueing, removing from the queue, search, playlists and the Library work. Don't stop someone's AirPlay session (`POST /api/airplay/stop`) unless the user asks.
 
 ### Other gotchas
 

@@ -30,8 +30,9 @@ All of these are served without a token, so you can point an LLM agent straight 
  phone / web remote / scripts ──HTTP+SSE──► server.py (this) ──┬─ WebSocket (127.0.0.1) ─► Spotify Soloist ─► PipeWire ─► USB speakers
                                                                ├─ HTTPS ─► Spotify Web API  (search, library, playlists,   ▲
                                                                │                             history, any Connect device) │
- iPhone / Mac ──AirPlay 2──► shairport-sync ──────────────────────────────────────────────────────────────────────────────┘
-                                   └─ metadata pipe ─► server.py (now playing, pauses Spotify while AirPlay plays)
+ iPhone / Mac ──AirPlay──► shairport-sync ────────────────────────────────────────────────────────────────────────────────────┘
+                                   ├─ metadata pipe ─► server.py (now playing, pauses Spotify while AirPlay plays)
+                                   └─ D-Bus RemoteControl ◄─ server.py (play/pause/next/previous back to the sender)
 ```
 
 There are two playback backends, chosen with `--backend auto|soloist|connect`:
@@ -234,7 +235,7 @@ subnet from the Pi but can reach it by IP, relay Soloist's pairing port through 
 
 ```
 ssh -N -g -L 0.0.0.0:<port>:127.0.0.1:<port> ubuntu@<pi-ip> &
-dns-sd -R "Lab Speakers" _spotify-connect._tcp local <port> Stack=SP VERSION=1.0 CPath=/zc
+dns-sd -R "PEARL Speakers" _spotify-connect._tcp local <port> Stack=SP VERSION=1.0 CPath=/zc
 ```
 
 Restart the Spotify desktop app, pick the device, then stop both commands. Advertising the Pi's own address
@@ -251,7 +252,7 @@ Restart the Spotify desktop app, pick the device, then stop both commands. Adver
 - **USB speakers.** Soloist outputs through PipeWire (falling back to PulseAudio). Find the speakers with `wpctl status`.
   Then either set `SOLOIST_PIPEWIRE_DEVICE` in the env file, or make them the default with `POST /api/system/outputs {id}`.
 - **Install.** On the Pi, run `sh deploy/install-linux.sh`. It installs PipeWire, enables lingering so user services run
-  without a login, builds the AirPlay 2 receiver, installs systemd user units for Soloist, the API, AirPlay, the
+  without a login, installs the AirPlay receiver (the distro `shairport-sync` package), installs systemd user units for Soloist, the API, AirPlay, the
   quiet-hours timer and a daily Soloist update, and creates `~/.config/music-api/env`.
 - **Build expiry.** Soloist builds expire 90 days after they're built (exit code 10).
   [`deploy/update-soloist.sh`](deploy/update-soloist.sh) runs daily and pulls the current build from Spotify's CDN.
@@ -280,30 +281,36 @@ From `QUIET_HOURS` (env file or `--quiet-hours`, default `21:00-08:00`, local ti
   `ExecCondition`, so it can't come back while locked (boot, crash restart or a manual start).
 - Set the Pi's timezone (`sudo timedatectl set-timezone America/Los_Angeles`); the installer warns if it's UTC.
 
-### AirPlay 2 receiver
+### AirPlay receiver
 
-The Pi also shows up as an AirPlay 2 speaker named `AIRPLAY_NAME` (default "Pinewood Music"). AirPlay completely
-overrides Spotify:
+The Pi also shows up as an AirPlay speaker named `AIRPLAY_NAME` (default "PEARL Speakers"), using classic AirPlay (no
+multi-room, no AirPlay 2). AirPlay completely overrides Spotify:
 
 - A session starting pauses Soloist (track, position and queue stay put) and remembers whether it was playing.
 - While it lasts, `/api/status` shows the AirPlay song (`source: "airplay"`, title, artist, album, art at
-  `/api/airplay/artwork`, progress, `airplay.sender`), and Spotify transport (play, pause, skip, seek, jump,
-  transfer) is refused with `409 {"error": "airplay_active", "sender": ...}`. Queue and library editing still work.
-  AirPlay doesn't carry the sender's queue, so there's no Up Next for it.
+  `/api/airplay/artwork`, progress, `airplay.sender`). Queue and library editing still work. AirPlay doesn't carry
+  the sender's queue, so there's no Up Next for it.
+- Play, pause, play/pause, next and previous (`/api/play` with no body, `/api/pause`, `/api/playpause`, `/api/next`,
+  `/api/previous`, the web app and the Slack bot) control the AirPlay sender instead of Spotify. They go through
+  shairport-sync's D-Bus `RemoteControl` interface, which finds the sender's DACP service and uses its Active-Remote
+  token. If the sender has no remote control (some apps and Android senders) they fail with
+  `409 airplay_remote_unavailable`. Everything else in Spotify transport (play a track, seek, jump, transfer) is refused
+  with `409 {"error": "airplay_active", "sender": ...}`.
 - When it ends (the sender stops or disconnects, or someone presses Stop AirPlay / `POST /api/airplay/stop`, which
   restarts the receiver to drop the sender, who can reconnect a few seconds later), Spotify resumes right where it
   left off if it was playing before, and stays paused otherwise. It doesn't resume if quiet hours have locked.
-- Remote control of the AirPlay sender (pause/next from the web app) isn't implemented: shairport-sync only offers it
-  through D-Bus/MPRIS, which is unreliable with AirPlay 2 senders. Control AirPlay from the sending device.
 
-How it's installed (`deploy/install-airplay.sh`, run by `install-linux.sh`; `NO_AIRPLAY=1` skips it): the Ubuntu and
-Debian packages are classic AirPlay only, so it builds pinned NQPTP 1.2.4 (system service, PTP ports 319/320) and
-shairport-sync 4.3.7 with `--with-airplay-2 --with-pa --with-metadata` from source (about 15 minutes on a Pi 3), and
-disables any distro shairport-sync service. shairport-sync runs as the `airplay.service` user unit (it has to, to reach
-the user's PipeWire), with [`deploy/shairport-sync.conf`](deploy/shairport-sync.conf): PulseAudio output, metadata and
-cover art to `/tmp/shairport-sync-metadata`, progress every second. The server reads that pipe (`--airplay-pipe`); a
-missing pipe (macOS, receiver not installed) is fine, and shairport-sync restarts are picked up.
-Logs: `journalctl --user-unit airplay -f`, `journalctl -u nqptp`.
+How it's installed (`deploy/install-airplay.sh`, run by `install-linux.sh`; `NO_AIRPLAY=1` skips it): the distro
+`shairport-sync` package (Ubuntu 24.04: 3.3.8, Debian 13: 4.3.7) is classic AirPlay and is built with PulseAudio
+output, the metadata pipe, D-Bus/MPRIS and MQTT. The script installs it, disables the package's system service,
+checks those features, and removes the AirPlay 2 build (NQPTP, `/usr/local/bin/shairport-sync`) an earlier version of
+the script installed. shairport-sync runs as the `airplay.service` user unit (it has to, to reach the user's
+PipeWire and session bus), with [`deploy/shairport-sync.conf`](deploy/shairport-sync.conf): PulseAudio output,
+metadata and cover art to `/tmp/shairport-sync-metadata`, D-Bus on the session bus. The server reads that pipe
+(`--airplay-pipe`); a missing pipe (macOS, receiver not installed) is fine, and shairport-sync restarts are picked up.
+Remote control needs `busctl` (systemd) and `dbus-user-session`. A server restart mid-song loses the session until the
+next song starts (classic AirPlay has no heartbeat to rejoin it).
+Logs: `journalctl --user-unit airplay -f`.
 
 ### HDMI now-playing display
 

@@ -83,6 +83,7 @@ class Player:
         self._sleep = None  # {"ends_at", "fade", "cancel": Event}
         self.guard = None    # guard(action) raises PlayerError when quiet hours or AirPlay forbid it
         self.overlay = None  # overlay(status) -> status with quiet hours / AirPlay folded in
+        self.redirect = None  # redirect(action, body) -> status when AirPlay takes the command, else None
 
     # ---------- events ----------
 
@@ -160,6 +161,9 @@ class Player:
         return self.api.req(method, path, query, body)
 
     # ---------- status ----------
+
+    def _redirect(self, action, body, force):
+        return self.redirect(action, body) if self.redirect and not force else None
 
     def _check(self, action, force):
         if self.guard and not force:
@@ -265,6 +269,9 @@ class Player:
     def play(self, b, force=False):
         """Body (all optional): {uri} track/episode/album/playlist/artist/show URI or link,
         {uris: [...]}, {context, offset: n|uri}, {position_ms | position}."""
+        redirected = self._redirect("play", b, force)
+        if redirected:
+            return redirected
         self._check("play", force)
         uri = to_uri(b["uri"]) if b.get("uri") else None
         uris = [to_uri(u, "track") for u in b.get("uris", [])]
@@ -298,6 +305,9 @@ class Player:
         return self.status(fresh=True)
 
     def pause(self, force=False):
+        redirected = self._redirect("pause", {}, force)
+        if redirected:
+            return redirected
         self._check("pause", force)
         if self.backend == "soloist":
             self._sol("pause")
@@ -306,9 +316,12 @@ class Player:
         return self.status(fresh=True)
 
     def playpause(self):
-        return self.pause() if self.spotify_status(fresh=True)["state"] in ("playing", "buffering") else self.play({})
+        return self.pause() if self.status(fresh=True)["state"] in ("playing", "buffering") else self.play({})
 
     def next(self, force=False):
+        redirected = self._redirect("next", {}, force)
+        if redirected:
+            return redirected
         self._check("next", force)
         if self.backend == "soloist":
             self._sol("skip_next")
@@ -341,6 +354,9 @@ class Player:
         return self.status(fresh=True)
 
     def previous(self, force=False):
+        redirected = self._redirect("previous", {}, force)
+        if redirected:
+            return redirected
         self._check("previous", force)
         if self.backend == "soloist":
             self._sol("skip_prev")

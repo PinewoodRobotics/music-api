@@ -155,6 +155,42 @@ class StateTest(unittest.TestCase):
         self.assertEqual(events, ["start", "end", "start"])
 
 
+class RemoteTest(unittest.TestCase):
+    def runner(self, available="b true\n", code=0):
+        calls = []
+
+        def run(cmd, **kw):
+            calls.append(cmd)
+            out = available if "get-property" in cmd else ""
+            return type("R", (), {"returncode": code, "stdout": out, "stderr": "boom"})()
+        return calls, run
+
+    def test_calls_the_remote_control_method(self):
+        calls, run = self.runner()
+        ap.remote("next", run)
+        self.assertEqual(calls[-1][1:3], ["--user", "--timeout=3"])
+        self.assertEqual(calls[-1][3:], ["call", ap.BUS_NAME, ap.BUS_PATH, ap.BUS_INTERFACE, "Next"])
+
+    def test_sender_without_remote_control(self):
+        calls, run = self.runner("b false\n")
+        with self.assertRaises(ap.RemoteError) as e:
+            ap.remote("pause", run)
+        self.assertEqual((e.exception.status, e.exception.code), (409, "airplay_remote_unavailable"))
+        self.assertEqual(len(calls), 1)
+
+    def test_bus_unreachable_and_busctl_missing(self):
+        _, run = self.runner(code=1)
+        with self.assertRaises(ap.RemoteError) as e:
+            ap.remote("play", run)
+        self.assertEqual(e.exception.status, 503)
+
+        def missing(*a, **kw):
+            raise FileNotFoundError
+        with self.assertRaises(ap.RemoteError) as e:
+            ap.remote("play", missing)
+        self.assertEqual(e.exception.code, "airplay_remote_unavailable")
+
+
 class FakeSoloist:
     def __init__(self, status="playing"):
         self.playback = {"status": status, "position_ms": 42000, "options": {},
@@ -192,9 +228,15 @@ class Rig:
         self.player = Player("soloist", None, self.sol)
         self.quiet = qh.QuietHours(qh.parse_window("21:00-08:00"), clock=self.clock)
         self.air = ap.AirPlay("/nonexistent", clock=self.clock)
-        self.enforced, self.receiver_calls = [], []
+        self.enforced, self.receiver_calls, self.remote_calls, self.remote_error = [], [], [], None
         self.guard = Guard(self.player, self.quiet, self.air, enforce=self.enforced.append,
-                           receiver=lambda action: self.receiver_calls.append(action) or True, clock=self.clock)
+                           receiver=lambda action: self.receiver_calls.append(action) or True,
+                           remote=self.remote, clock=self.clock)
+
+    def remote(self, action):
+        if self.remote_error:
+            raise self.remote_error
+        self.remote_calls.append(action)
 
     def start_airplay(self):
         for item in ap.Parser().feed(SESSION):
@@ -230,7 +272,7 @@ class LifecycleTest(unittest.TestCase):
     def test_spotify_controls_refused_during_airplay(self):
         r = Rig("playing")
         r.start_airplay()
-        for call in (lambda: r.player.play({}), r.player.pause, r.player.next, r.player.previous,
+        for call in (lambda: r.player.play({"uri": "spotify:track:6rqhFgbbKwnb9MLmUQDhG6"}),
                      lambda: r.player.seek({"position": 3}), lambda: r.player.jump({"index": 0})):
             with self.assertRaises(PlayerError) as e:
                 call()
@@ -238,6 +280,40 @@ class LifecycleTest(unittest.TestCase):
             self.assertEqual(e.exception.body()["sender"], "Adam's iPhone")
         r.player.enqueue({"uri": "spotify:track:6rqhFgbbKwnb9MLmUQDhG6"})
         self.assertIn("add_to_queue", r.sol.calls)
+
+    def test_transport_controls_the_airplay_sender(self):
+        r = Rig("playing")
+        r.start_airplay()
+        r.player.pause()
+        r.player.play({})
+        r.player.next()
+        r.player.previous()
+        r.player.playpause()
+        self.assertEqual(r.remote_calls, ["pause", "play", "next", "previous", "pause"])
+        self.assertEqual(r.sol.calls, ["pause"])
+
+    def test_playpause_resumes_a_paused_sender(self):
+        r = Rig("playing")
+        r.start_airplay()
+        r.air.handle("ssnc", "pfls", b"")
+        self.assertEqual(r.player.status()["state"], "paused")
+        r.player.playpause()
+        self.assertEqual(r.remote_calls, ["play"])
+
+    def test_remote_failure_is_reported(self):
+        r = Rig("playing")
+        r.start_airplay()
+        r.remote_error = ap.RemoteError("no remote", 409, "airplay_remote_unavailable")
+        with self.assertRaises(PlayerError) as e:
+            r.player.pause()
+        self.assertEqual((e.exception.status, e.exception.body()["error"]), (409, "airplay_remote_unavailable"))
+
+    def test_without_airplay_transport_stays_with_spotify(self):
+        r = Rig("playing")
+        r.player.pause()
+        r.player.next()
+        self.assertEqual(r.remote_calls, [])
+        self.assertEqual(r.sol.calls, ["pause", "skip_next"])
 
     def test_stop_from_web_restarts_receiver_and_resumes(self):
         r = Rig("playing")
@@ -394,9 +470,15 @@ class RoutesTest(unittest.TestCase):
 
     def test_airplay_refuses_transport_and_serves_status_and_art(self):
         self.r.start_airplay()
-        for path in ("/api/play", "/api/pause", "/api/next", "/api/seek", "/api/spotify/me/player/pause"):
+        for path in ("/api/seek", "/api/spotify/me/player/pause"):
             code, res = self.call("POST", path, {"position": 1})
             self.assertEqual((code, res["error"]), (409, "airplay_active"), path)
+        code, res = self.call("POST", "/api/play", {"uri": "spotify:track:6rqhFgbbKwnb9MLmUQDhG6"})
+        self.assertEqual((code, res["error"]), (409, "airplay_active"))
+        for path in ("/api/play", "/api/pause", "/api/playpause", "/api/next", "/api/previous"):
+            code, res = self.call("POST", path)
+            self.assertEqual((code, res["result"]["source"]), (200, "airplay"), path)
+        self.assertEqual(self.r.remote_calls, ["play", "pause", "pause", "next", "previous"])
         code, res = self.call("POST", "/api/queue", {"uri": "spotify:track:6rqhFgbbKwnb9MLmUQDhG6"})
         self.assertEqual(code, 200)
         code, res = self.call("GET", "/api/status")
