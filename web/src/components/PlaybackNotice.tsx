@@ -20,14 +20,29 @@ function noticeFor(status: Status | null): Notice | null {
   const until = clockLabel(q.until ?? '08:00')
   if (q.phase === 'locked')
     return { kind: 'quiet', title: `Quiet hours until ${until}`, detail: 'Playback is off for the night. Search, playlists, the library and the queue still work.' }
+  if (isAudible(status)) return null
   const minutes = Math.round((q.grace_s ?? 300) / 60)
   return {
     kind: 'quiet',
-    title: q.locks_at ? `Quiet hours: locks at ${timeLabel(q.locks_at)}` : `Quiet hours: locks after ${minutes} min idle`,
-    detail: q.locks_at
-      ? `Play something before then to keep going. Once locked, playback stays off until ${until}.`
-      : `Music can keep going. Once nothing has played for ${minutes} minutes, playback locks until ${until}.`,
+    title: q.locks_at ? `Paused. Playback locks at ${timeLabel(q.locks_at)} unless something plays.` : `Paused. Playback locks after ${minutes} min unless something plays.`,
+    detail: `Quiet hours until ${until}. Once locked, playback stays off until then.`,
   }
+}
+
+function isAudible(status: Status | null) {
+  return status?.state === 'playing' || status?.state === 'buffering'
+}
+
+export function QuietMoon({ className = '' }: { className?: string }) {
+  const { status } = usePlayer()
+  const q = status?.quiet_hours
+  if (!q?.enabled || q.phase !== 'grace' || !isAudible(status)) return null
+  const label = `Quiet hours: locks ${Math.round((q.grace_s ?? 300) / 60)} min after music stops`
+  return (
+    <span role="img" aria-label={label} title={label} className={`inline-grid shrink-0 place-items-center ${className}`}>
+      <Moon className="size-3.5" aria-hidden />
+    </span>
+  )
 }
 
 export function StopAirPlayButton({ tone }: { tone: 'glass' | 'panel' }) {
@@ -83,7 +98,7 @@ export function PlaybackBanner() {
 export function SheetNotice({ className = '' }: { className?: string }) {
   const { status } = usePlayer()
   const found = noticeFor(status)
-  if (!found || (found.kind === 'quiet' && status?.quiet_hours?.phase !== 'locked')) return null
+  if (!found) return null
   const notice =
     found.kind === 'airplay'
       ? {

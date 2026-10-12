@@ -29,15 +29,17 @@ export function airplayFrom(sender: string | null | undefined) {
   return sender ? `AirPlay from ${sender}` : 'AirPlay'
 }
 
+const AIRPLAY_ACTIONS = ['skip_next', 'skip_prev']
+
 export function allowed(status: Status | null | undefined, action: string) {
   if (!status?.track) return false
   const hold = playbackHold(status)
-  if (hold?.kind === 'airplay') return false
+  if (hold?.kind === 'airplay') return AIRPLAY_ACTIONS.includes(action)
   if (hold?.kind === 'quiet' && (action === 'skip_next' || action === 'skip_prev')) return false
   return status.actions.length === 0 || status.actions.includes(action)
 }
 
 export function playBlocked(status: Status | null | undefined, isPlaying: boolean) {
   const hold = playbackHold(status)
-  return hold?.kind === 'airplay' || (hold?.kind === 'quiet' && !isPlaying)
+  return hold?.kind === 'quiet' && !isPlaying
 }

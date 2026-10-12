@@ -252,8 +252,8 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         void send(() => (isPlaying ? api.pause() : api.play()), ['state'])
       },
       next: () => {
-        if (hold && refuse(hold)) return
-        const upcoming = queue?.upcoming.find((e) => e.item)?.item
+        if (hold && hold.kind !== 'airplay' && refuse(hold)) return
+        const upcoming = hold ? undefined : queue?.upcoming.find((e) => e.item)?.item
         const now = performance.now()
         const current = clockRef.current.status
         if (upcoming && current) {
@@ -263,9 +263,9 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         void send(api.next)
       },
       previous: () => {
-        if (hold && refuse(hold)) return
+        if (hold && hold.kind !== 'airplay' && refuse(hold)) return
         const current = clockRef.current
-        if (positionOf(current, performance.now()) > 3000 && current.status) {
+        if (!hold && positionOf(current, performance.now()) > 3000 && current.status) {
           pendingSeek.current = { ms: 0, at: performance.now(), until: Date.now() + 3000 }
           commit({ status: { ...current.status, position_ms: 0 }, at: performance.now() })
         }

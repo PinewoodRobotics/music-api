@@ -4,6 +4,7 @@ import { byline, formatTime } from '../../lib/format'
 import { airplayFrom, allowed, playBlocked } from '../../lib/playback'
 import { usePlayer, usePosition } from '../../state/player'
 import type { Panel } from '../../state/ui'
+import { QuietMoon } from '../PlaybackNotice'
 import { CreditOrSkip } from '../SkipNote'
 import type { AnchorRect } from '../Popover'
 import { Slider } from '../Slider'
@@ -176,7 +177,8 @@ export function DeviceIndicator() {
   return (
     <div className="flex min-w-0 items-center gap-1.5 text-[13px] font-medium text-white/70">
       <Icon className="size-4 shrink-0" />
-      <span className="truncate">{airplay ? airplayFrom(hold.sender) : status?.device?.name ?? 'Lab Speakers'}</span>
+      <span className="truncate">{airplay ? airplayFrom(hold.sender) : status?.device?.name ?? 'PEARL Speakers'}</span>
+      <QuietMoon />
     </div>
   )
 }

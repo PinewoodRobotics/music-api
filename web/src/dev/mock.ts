@@ -16,7 +16,7 @@ declare global {
       pause: () => void
       resume: () => void
       seek: (ms: number) => void
-      airplay: (on: boolean, resume?: boolean) => void
+      airplay: (on: boolean, resume?: boolean, playing?: boolean) => void
       quiet: (phase: QuietHours['phase'], idle?: boolean) => void
     }
   }
@@ -107,7 +107,7 @@ const state: { status: Status; at: number } = {
     backend: 'soloist',
     state: 'playing',
     active: true,
-    device: { name: 'Lab Speakers', type: 'Soloist', active: true },
+    device: { name: 'PEARL Speakers', type: 'Soloist', active: true },
     position_ms: 58000,
     duration_ms: tracks[0].duration_ms,
     volume: 62,
@@ -133,8 +133,23 @@ const airplayTrack = {
   explicit: false,
   artwork: tracks[4].artwork,
 } as unknown as Track
-let airplay: { since: number; resume: boolean } | null = null
+type AirPlaySession = { at: number; pos: number; playing: boolean; resume: boolean }
+let airplay: AirPlaySession | null = null
 let quiet: QuietHours = { enabled: true, window: '21:00-08:00', phase: 'open', locked: false, grace_s: 300, until: '08:00' }
+let quietIdleAt: number | null = null
+
+const airplayPos = (a: AirPlaySession) => Math.min(a.pos + (a.playing ? Date.now() - a.at : 0), airplayTrack.duration_ms ?? Infinity)
+
+function airplaySet(patch: Partial<AirPlaySession>) {
+  if (airplay) airplay = { ...airplay, pos: airplayPos(airplay), at: Date.now(), ...patch }
+}
+
+function quietSnapshot(playing: boolean): QuietHours {
+  if (quiet.phase !== 'grace') return { ...quiet, idle_since: null, locks_at: null }
+  const idleAt = playing ? null : (quietIdleAt ??= Date.now() / 1000 - 60)
+  if (playing) quietIdleAt = null
+  return { ...quiet, idle_since: idleAt, locks_at: idleAt ? Math.round(idleAt + (quiet.grace_s ?? 300)) : null }
+}
 
 function spotifySnapshot(): Status {
   const s = state.status
@@ -143,22 +158,35 @@ function spotifySnapshot(): Status {
 }
 
 function snapshot(): Status {
-  const base = { ...spotifySnapshot(), quiet_hours: quiet, airplay: null }
+  const spotify = spotifySnapshot()
+  const base = { ...spotify, quiet_hours: quietSnapshot(!airplay && spotify.state === 'playing'), airplay: null }
   if (!airplay) return base
-  const pos = Math.min(Date.now() - airplay.since + 74000, airplayTrack.duration_ms)
+  const state = airplay.playing ? 'playing' : 'paused'
   return {
     ...base,
+    quiet_hours: quietSnapshot(airplay.playing),
     source: 'airplay',
-    state: 'playing',
+    state,
     track: airplayTrack,
-    position_ms: pos,
+    position_ms: airplayPos(airplay),
     duration_ms: airplayTrack.duration_ms,
     context: null,
     credit: null,
     skip: null,
     actions: [],
-    airplay: { sender: "Adam's iPhone", state: 'playing', started_at: airplay.since / 1000, resume_spotify: airplay.resume },
+    airplay: { sender: "Adam's iPhone", state, started_at: airplay.at / 1000, resume_spotify: airplay.resume },
   }
+}
+
+function airplayControl(route: string, body: Record<string, unknown>): readonly [number, unknown] | null {
+  if (!airplay) return null
+  if (route === 'POST /api/play' && Object.keys(body).length) return refusal()
+  if (route === 'POST /api/play') airplaySet({ playing: true })
+  else if (route === 'POST /api/pause') airplaySet({ playing: false })
+  else if (route === 'POST /api/playpause') airplaySet({ playing: !airplay.playing })
+  else if (route === 'POST /api/next' || route === 'POST /api/previous') airplaySet({ pos: 0, playing: true })
+  else return null
+  return ok(snapshot())
 }
 
 function refusal(): readonly [number, unknown] | null {
@@ -403,6 +431,8 @@ function handle(method: string, url: URL, body: Record<string, unknown>): readon
     airplay = null
     return ok(snapshot())
   }
+  const controlled = airplayControl(route, body)
+  if (controlled) return controlled
   const blocked = /^POST \/api\/(play|playpause|next|previous|back|queue\/jump|playlists\/[^/]+\/play)$/.test(route) ? refusal() : null
   if (blocked && !(airplay === null && route === 'POST /api/playpause' && state.status.state === 'playing')) return blocked
   if (route === 'POST /api/play') {
@@ -622,14 +652,15 @@ export function installMock(param: string | null) {
     pause: () => setStatus({ state: 'paused' }),
     resume: () => setStatus({ state: 'playing' }),
     seek: (ms) => setStatus({ position_ms: ms }),
-    airplay: (on, resume = true) => {
-      airplay = on ? { since: Date.now(), resume } : null
+    airplay: (on, resume = true, playing = true) => {
+      airplay = on ? { at: Date.now(), pos: 74000, playing, resume } : null
       if (on) setStatus({ state: 'paused' })
     },
     quiet: (phase, idle = false) => {
-      const now = Date.now() / 1000
-      quiet = { ...quiet, phase, locked: phase === 'locked', idle_since: idle ? now - 60 : null, locks_at: idle ? now + 240 : null }
-      if (phase === 'locked') setStatus({ state: 'paused' })
+      quiet = { ...quiet, phase, locked: phase === 'locked' }
+      quietIdleAt = null
+      if (phase === 'locked' || (phase === 'grace' && idle)) setStatus({ state: 'paused' })
+      else if (phase === 'grace') setStatus({ state: 'playing' })
     },
   }
   const realFetch = window.fetch.bind(window)

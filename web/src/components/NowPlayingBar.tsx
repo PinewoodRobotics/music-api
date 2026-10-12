@@ -4,6 +4,7 @@ import { airplayFrom, allowed } from '../lib/playback'
 import { usePlayer, usePosition } from '../state/player'
 import { useUI } from '../state/ui'
 import { Artwork } from './Artwork'
+import { QuietMoon } from './PlaybackNotice'
 import { CreditOrSkip, SkipNote } from './SkipNote'
 import { useSkipNote } from '../lib/skipNote'
 import { IconButton } from './IconButton'
@@ -42,7 +43,7 @@ function DesktopBar() {
           </div>
           <div className="min-w-0">
             <div className="truncate text-sm font-medium text-fg group-hover:underline">{track?.name ?? 'Nothing playing'}</div>
-            <div className="truncate text-xs text-dim">{track ? byline(track) : status?.device?.name ?? 'Lab Speakers'}</div>
+            <div className="truncate text-xs text-dim">{track ? byline(track) : status?.device?.name ?? 'PEARL Speakers'}</div>
             {track?.type === 'airplay' ? (
               <div className="mt-1 flex min-w-0 items-center gap-1 text-[11px] text-faint">
                 <Airplay className="size-3 shrink-0" aria-hidden />
@@ -59,6 +60,7 @@ function DesktopBar() {
         <SeekBar />
       </div>
       <div className="flex items-center justify-end gap-1">
+        <QuietMoon className="mr-1 text-faint" />
         <IconButton label="Lyrics" active={panel === 'lyrics'} onClick={() => showPanel('lyrics')}>
           <MicVocal className="size-[18px]" />
         </IconButton>
