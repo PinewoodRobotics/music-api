@@ -26,7 +26,7 @@ API = "https://slack.com/api"
 DEFAULT_TEAM = "T09DBUR4YER"
 DEFAULT_CHANNEL = "C0C80T1DNBF"
 DEFAULT_REMOTE = "https://music.pinewoodrobotics.org/"
-LINK_RX = re.compile(r"https?://(?:open\.spotify\.com|music\.apple\.com)/\S+|spotify:(?:track|album|playlist):\w{22}")
+LINK_RX = re.compile(r"https?://(?:open\.spotify\.com|music\.apple\.com|(?:(?:music|www|m)\.)?youtube(?:-nocookie)?\.com|youtu\.be)/\S+|spotify:(?:track|album|playlist):\w{22}")
 CARD_LINKS = 3
 QUEUE_CAP = 50
 PLAY_CAP = 100
@@ -42,7 +42,7 @@ HELP = ("*Robotics Music* (`/music`) controls the lab speakers\n"
         "`/music <song, artist or album>` search and add to the queue\n"
         "`/music now`  what's playing   `/music queue`  what's next\n"
         "`/music play`  `/music pause`  `/music skip`\n"
-        "Paste a Spotify or Apple Music song, album or playlist link after `/music` to queue, play or import it.")
+        "Paste a Spotify, Apple Music or YouTube song, album or playlist link after `/music` to queue, play or import it.")
 
 
 def log(msg):
@@ -209,16 +209,26 @@ def queue_blocks(upcoming):
     return [{"type": "section", "text": {"type": "mrkdwn", "text": "*Up next*\n" + "\n".join(lines)}}]
 
 
+SOURCE_NAMES = {"apple": "Apple Music", "youtube": "YouTube"}
+
+
+def source_name(r):
+    """Where a resolved link came from when it isn't Spotify, else None."""
+    if r.get("source") == "youtube" and "music.youtube.com" in (r.get("url") or ""):
+        return "YouTube Music"
+    return SOURCE_NAMES.get(r.get("source"))
+
+
 def link_blocks(r):
-    kind, apple = r.get("kind"), r.get("source") == "apple"
+    kind, imported = r.get("kind"), source_name(r)
     name = esc(r.get("name") or "Untitled")
     head = f"*<{r['url']}|{name}>*" if r.get("url") else f"*{name}*"
     sec = {"type": "section", "text": {"type": "mrkdwn", "text": head + (f"\n{esc(r['subtitle'])}" if r.get("subtitle") else "")}}
     if r.get("artwork"):
         sec["accessory"] = {"type": "image", "image_url": r["artwork"], "alt_text": r.get("name") or "cover"}
     notes = []
-    if kind == "track" and apple:
-        notes.append("Matched from Apple Music" if r.get("spotify_uri") else "Not found on Spotify")
+    if kind == "track" and imported:
+        notes.append(f"Matched from {imported}" if r.get("spotify_uri") else "Not found on Spotify")
     elif kind != "track" and r.get("total"):
         n = f"{r['total']} songs"
         if r.get("matched") is not None:
@@ -233,7 +243,7 @@ def link_blocks(r):
                 else [button("Import as playlist", "import_playlist", r["url"])])
     elif kind == "playlist":
         btns = [button("Import as playlist", "import_playlist", r["url"], "primary")] + \
-               ([button("Play", "play_uri", uri)] if uri and not apple else [])
+               ([button("Play", "play_uri", uri)] if uri and not imported else [])
     blocks = [sec] + ([context(*notes)] if notes else [])
     return blocks + ([{"type": "actions", "block_id": "link", "elements": btns}] if btns else [])
 
@@ -248,15 +258,15 @@ def matched_uris(r):
 def reply_card(r, idx, poster):
     """The card the bot posts in the thread of a link shared in the music channel. Block IDs carry the card
     index so one reply can hold several cards: info<i>, rl<i> (buttons), out<i> (accumulated outcomes)."""
-    kind, apple, uri = r.get("kind"), r.get("source") == "apple", r.get("spotify_uri")
+    kind, imported, uri = r.get("kind"), source_name(r), r.get("spotify_uri")
     name = esc(r.get("name") or "Untitled")
     sec = {"type": "section", "text": {"type": "mrkdwn", "text": (f"*<{r['url']}|{name}>*" if r.get("url") else f"*{name}*")
                                        + (f"\n{esc(r['subtitle'])}" if r.get("subtitle") else "")}}
     if r.get("artwork"):
         sec["accessory"] = {"type": "image", "image_url": r["artwork"], "alt_text": r.get("name") or "cover"}
     label = KIND_LABEL.get(kind, "Link")
-    if apple:
-        label += " · Apple Music → matched on Spotify" if uri or matched_uris(r) else " · Apple Music, not found on Spotify"
+    if imported:
+        label += f" · {imported} → matched on Spotify" if uri or matched_uris(r) else f" · {imported}, not found on Spotify"
     info = [label]
     if kind != "track" and r.get("total"):
         n = f"{r['total']} songs"
@@ -279,7 +289,7 @@ def reply_card(r, idx, poster):
             info.append("No Spotify match, so it can only be imported as a playlist")
             btns = [button("Import as playlist", "rl_import", r["url"])]
     elif kind == "playlist":
-        if (uri and not apple) or (apple and queue_n):
+        if (uri and not imported) or (imported and queue_n):
             btns.append(button("▶ Play now", "rl_play", r["url"], "primary"))
         if queue_n:
             btns.append(button("＋ Queue songs", "rl_queue", r["url"]))
@@ -656,7 +666,7 @@ class SlackBot:
             names = [t.get("name") for t in r.get("tracks") or [] if t.get("uri")]
             drop, outcome = (), None
             if act == "rl_play":
-                if kind == "playlist" and r.get("source") == "apple":
+                if kind == "playlist" and source_name(r):
                     plan = {"uris": uris[:PLAY_CAP]}
                     self.player.play(plan)
                     self.credits.start(plan["uris"], u)
