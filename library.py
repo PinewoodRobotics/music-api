@@ -111,10 +111,10 @@ class Library:
         return {**self._album_out(api, album_id, user), "tracks": self.album_tracks(api, album_id)}
 
     def add_album(self, api, user, url, added_by=None, added=None):
-        """Add a Spotify album (link or URI) or an Apple Music album that has a Spotify match. Idempotent."""
+        """Add a Spotify album (link or URI) or an Apple Music or YouTube Music album that has a Spotify match. Idempotent."""
         ref = links.album_ref(url)
         if not ref:
-            raise AccountError("paste a Spotify or Apple Music album link (use Import as playlist for playlists and songs)")
+            raise AccountError("paste a Spotify, Apple Music or YouTube Music album link (use Import as playlist for playlists and songs)")
         uri = ref[1]
         if not uri:
             uri = links.resolve(api, url).get("spotify_uri")

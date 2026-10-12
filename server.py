@@ -697,10 +697,10 @@ def _app_create(q, b):
 
 @route("POST", "/api/app/playlists/import")
 def _app_import(q, b):
-    """Body {url}: copy a Spotify or Apple Music playlist/song link into a new playlist
+    """Body {url}: copy a Spotify, Apple Music or YouTube playlist/song link into a new playlist
     → {playlist, imported, total, truncated, source, unmatched: [{name, artists}]}.
     Album links are added to the Library as albums instead → {kind: "album", album: {...}}, unless
-    {as: "playlist"} (e.g. an Apple album with no Spotify match) copies its songs into a playlist"""
+    {as: "playlist"} (e.g. an Apple Music or YouTube album with no Spotify match) copies its songs into a playlist"""
     if b.get("as") == "playlist":
         res = app_playlists.import_link(api, _req.user, b.get("url"))
         library.invalidate()
@@ -725,7 +725,7 @@ def _app_duplicate(q, b, id):
 
 @route("POST", "/api/resolve")
 def _resolve(q, b):
-    """Body {url}: a Spotify or Apple Music song/album/playlist link → {source, kind, name, subtitle, artwork, url,
+    """Body {url}: a Spotify, Apple Music or YouTube song/album/playlist link → {source, kind, name, subtitle, artwork, url,
     spotify_uri, tracks: [{name, artists, album, duration_ms, artwork, uri}], total, matched, truncated}"""
     return links.resolve(api, b.get("url"))
 
@@ -768,7 +768,7 @@ def _app_library(q, b):
 
 @route("POST", "/api/app/library/albums")
 def _app_album_add(q, b):
-    """Body {url | uri}: a Spotify album URI/link or an Apple Music album link with a Spotify match (else 422: use Import as playlist).
+    """Body {url | uri}: a Spotify album URI/link or an Apple Music or YouTube Music album link with a Spotify match (else 422: use Import as playlist).
     Admins may also pass {added_by: {id, name, avatar}, added: ISO time}. Idempotent (existing → "already": true).
     → {kind: "album", id, uri, name, artists: [{uri, name}], artwork, total, year, duration_ms, added_by, added, source_url, can_edit}"""
     admin = _req.user.get("admin")

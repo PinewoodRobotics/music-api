@@ -343,7 +343,7 @@ class Playlists:
         return self._out(pl, user)
 
     def import_link(self, api, user, url):
-        """Copy the songs behind a Spotify or Apple Music playlist/album link into a new playlist credited to `user`."""
+        """Copy the songs behind a Spotify, Apple Music or YouTube playlist/album link into a new playlist credited to `user`."""
         src = links.resolve(api, url)
         if src["kind"] == "track":
             raise AccountError("that's a single song; paste a playlist or album link to import")
