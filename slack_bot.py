@@ -755,7 +755,7 @@ class SlackBot:
         now = time.time()
         self.seen_events = {k: t for k, t in self.seen_events.items() if now - t < 600}
         eid = ev.get("event_id")
-        if headers.get("X-Slack-Retry-Num") or eid in self.seen_events:
+        if eid in self.seen_events:
             return 200, None
         self.seen_events[eid] = now
         e = ev.get("event") or {}
@@ -791,7 +791,9 @@ class SlackBot:
                 continue
             cards += reply_card(r, len(names), poster)
             names.append(r.get("name") or "link")
-        if cards:
+        if not cards:
+            self._warn(("reply", "empty"), f"no card for {ts}: {len(e.get('links', []))} link(s), none resolved")
+        else:
             self.call("chat.postMessage", channel=self.channel, thread_ts=e.get("thread_ts") or ts, reply_broadcast=True,
                       text="Robotics Music: " + ", ".join(names), blocks=cards, unfurl_links=False, unfurl_media=False)
 
