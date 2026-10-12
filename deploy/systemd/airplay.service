@@ -5,6 +5,7 @@ Wants=pipewire-pulse.service
 
 [Service]
 EnvironmentFile=%h/.config/music-api/env
+ExecCondition=%h/.local/share/music-api-v2/deploy/wait-time-sync.sh
 # Refuses to start (boot, crash restart, manual start) while quiet hours are locked.
 ExecCondition=/usr/bin/python3 %h/.local/share/music-api-v2/quiet_hours.py receiver-allowed
 ExecStart=%h/.local/share/music-api-v2/deploy/run-airplay.sh

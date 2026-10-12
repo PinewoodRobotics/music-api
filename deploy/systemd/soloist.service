@@ -5,6 +5,7 @@ Wants=pipewire.service
 
 [Service]
 EnvironmentFile=%h/.config/music-api/env
+ExecStartPre=%h/.local/share/music-api-v2/deploy/wait-time-sync.sh
 ExecStart=%h/.local/share/music-api-v2/deploy/run-soloist.sh
 Restart=always
 RestartSec=5

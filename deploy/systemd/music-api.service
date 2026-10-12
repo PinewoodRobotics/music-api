@@ -4,6 +4,7 @@ After=soloist.service network-online.target
 
 [Service]
 EnvironmentFile=%h/.config/music-api/env
+ExecStartPre=%h/.local/share/music-api-v2/deploy/wait-time-sync.sh
 ExecStart=/usr/bin/python3 %h/.local/share/music-api-v2/server.py --host 0.0.0.0 --public
 Restart=always
 RestartSec=3
