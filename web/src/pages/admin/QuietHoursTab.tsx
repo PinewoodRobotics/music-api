@@ -19,10 +19,11 @@ function useNow(active: boolean) {
 
 function PhaseCard({ data, busy, onAction }: { data: QuietAdmin; busy: boolean; onAction: (a: 'unlock' | 'lock' | 'clear') => void }) {
   const { status } = data
-  const now = useNow(status.phase === 'grace')
+  const now = useNow(status.phase !== 'locked')
   const override = status.override
   const until = status.until ? clockLabel(status.until) : null
   const btn = 'h-9 px-4'
+  const inWindow = !!status.starts_at && !!status.until_ts && status.starts_at <= now && now < status.until_ts
 
   let banner
   if (!status.enabled) {
@@ -77,7 +78,13 @@ function PhaseCard({ data, busy, onAction }: { data: QuietAdmin; busy: boolean; 
               Lock now
             </Button>
           )}
-          {status.phase === 'open' && override?.kind === 'unlocked' && (
+          {(status.phase === 'grace' || (status.phase === 'open' && !override)) && (
+            <Button variant="ghost" className={`${btn} bg-white/10`} disabled={busy} onClick={() => onAction('unlock')}>
+              <Unlock className="size-4" />
+              {status.phase === 'grace' ? `Keep unlocked until ${until ?? 'morning'}` : 'Skip tonight'}
+            </Button>
+          )}
+          {status.phase === 'open' && override?.kind === 'unlocked' && inWindow && (
             <Button variant="ghost" className={`${btn} bg-white/10`} disabled={busy} onClick={() => onAction('lock')}>
               <Lock className="size-4" />
               Lock now
