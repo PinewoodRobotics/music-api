@@ -39,7 +39,6 @@ NOTES = {
     "deploy/install-linux.sh": "deploy/install-linux.sh changed: check it for new packages or setup steps and run them on the Pi by hand (they need sudo)",
     "deploy/install-airplay.sh": "The AirPlay installer changed: run sh ~/.local/share/music-api-v2/deploy/install-airplay.sh on the Pi",
     "deploy/update-soloist.sh": "The Soloist updater changed: it runs daily, or run ~/.local/share/music-api-v2/deploy/update-soloist.sh now",
-    "deploy/deploy-pi.sh": "deploy/deploy-pi.sh changed: check it for new install steps",
 }
 LATER = {"soloist": ("deploy/run-soloist.sh", "deploy/systemd/soloist.service"),
          "airplay": ("deploy/run-airplay.sh", "deploy/shairport-sync.conf", "deploy/systemd/airplay.service")}
