@@ -319,7 +319,8 @@ Logs: `journalctl --user-unit airplay -f`.
 
 `display/now_playing_display.py` draws a now-playing screen (blurred artwork background, big cover, title, progress, "Playing Next") straight into `/dev/fb0` on a Pi with no desktop. It needs only `python3-pil` and `fonts-inter`, follows `/api/events`, and redraws the progress bar at most every 2 s.
 
-- AirPlay sessions show the sender's art and song with "AirPlay from <sender>"; locked quiet hours show a dim "Quiet hours" screen; during the grace period it only says when it will lock while paused, never while music plays.
+- AirPlay sessions show the sender's art and song with "AirPlay from <sender>". After 30 s of continuous silence (paused, stopped, quiet-hours locked, logged out) it draws black and powers the HDMI output down with the `FBIOBLANK` ioctl on `/dev/fb0` (the DRM connector goes to DPMS Off so the monitor enters standby; the `video` group can do this, no udev rule or root needed). Anything playing wakes it at once and redraws the full scene; pauses or skips shorter than 30 s never flicker.
+- Future option: cutting USB power to the screen with `uhubctl` isn't viable on a Pi 3 B+ because its USB ports switch together and would also cut the USB speakers; it would need a per-port-switchable hub or a smart plug.
 - It reads the framebuffer size at runtime, so it works at any resolution (16 or 32 bpp). For 1080p add `video=HDMI-A-1:1920x1080@60` to `/boot/firmware/cmdline.txt`; `vt.global_cursor_default=0 consoleblank=0 quiet logo.nologo` keeps the text console quiet.
 - `install-linux.sh` disables `getty@tty1`, lets the `video` group hide the tty1 cursor, silences console kernel messages, and enables the `music-display` user unit. Create its token once: `POST /api/tokens {"name": "pi display"}` into `~/.config/music-api/display-token` (mode 600).
 - Preview without a framebuffer: `python3 display/now_playing_display.py --render-png /tmp/shot.png --size 1920x1080`.

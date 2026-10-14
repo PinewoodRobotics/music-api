@@ -2,6 +2,7 @@
 """Low-CPU "now playing" screen drawn straight into the Linux framebuffer."""
 import argparse
 import collections
+import fcntl
 import hashlib
 import http.client
 import io
@@ -22,6 +23,9 @@ CACHE_DIR = os.path.expanduser("~/.cache/music-display")
 CACHE_FILES = 50
 PROGRESS_EVERY = 2.0
 WATCHDOG = 45
+BLANK_AFTER = 30.0
+FBIOBLANK = 0x4611
+FB_BLANK_UNBLANK, FB_BLANK_POWERDOWN = 0, 4
 FONT_DIRS = ["/usr/share/fonts/opentype/inter", "/usr/share/fonts/truetype/dejavu"]
 FONT_FILES = {
     "inter": {400: "Inter-Regular.otf", 600: "Inter-SemiBold.otf", 700: "Inter-Bold.otf"},
@@ -183,17 +187,36 @@ def clock(unix=None, hhmm=None):
     return f"{(h % 12) or 12}:{m:02d} {'AM' if h < 12 else 'PM'}"
 
 
-def quiet_locked(st):
-    q = (st or {}).get("quiet_hours") or {}
-    return q.get("phase") == "locked" and (st or {}).get("state") != "playing"
+def is_playing(st):
+    return (st or {}).get("state") in ("playing", "buffering")
 
 
-def quiet_note(st):
-    """Grace period, paused: when the speakers will lock. Nothing is shown while audio plays."""
-    q = (st or {}).get("quiet_hours") or {}
-    if q.get("phase") == "grace" and q.get("locks_at") and st.get("state") != "playing":
-        return f"PAUSED. LOCKS AT {clock(q['locks_at'])} UNLESS SOMETHING PLAYS"
-    return None
+class Blanker:
+    """Idle debounce: blank only after BLANK_AFTER seconds of continuous silence, wake on the first sound."""
+
+    def __init__(self, delay=BLANK_AFTER, now=0.0):
+        self.delay = delay
+        self.blanked = False
+        self.since = now
+
+    def update(self, playing, now):
+        if playing:
+            self.since = None
+            if self.blanked:
+                self.blanked = False
+                return "wake"
+            return None
+        if self.since is None:
+            self.since = now
+        if not self.blanked and now - self.since >= self.delay:
+            self.blanked = True
+            return "blank"
+        return None
+
+    def remaining(self, now):
+        if self.blanked or self.since is None:
+            return None
+        return max(0.0, self.delay - (now - self.since))
 
 
 class Scene:
@@ -228,21 +251,6 @@ class Scene:
         cy = self.h // 2
         d.text((self.w // 2, cy - self.px(20)), name, font=big, fill=WHITE, anchor="ms")
         d.text((self.w // 2, cy + self.px(50)), url, font=small, fill=(140, 140, 150), anchor="ms")
-        return img, None
-
-    def quiet(self, st):
-        q = st.get("quiet_hours") or {}
-        img = Image.new("RGB", (self.w, self.h), (8, 8, 12))
-        d = ImageDraw.Draw(img)
-        cx, cy, r = self.w // 2, self.h // 2 - self.px(110), self.px(70)
-        moon = (150, 150, 175)
-        d.ellipse((cx - r, cy - r, cx + r, cy + r), fill=moon)
-        off = int(r * 0.55)
-        d.ellipse((cx - r + off, cy - r - off // 2, cx + r + off, cy + r - off // 2), fill=(8, 8, 12))
-        big, small = FONTS.get(self.px(72), 700), FONTS.get(self.px(32), 400)
-        d.text((cx, cy + r + self.px(110)), "Quiet hours", font=big, fill=(170, 170, 185), anchor="ms")
-        d.text((cx, cy + r + self.px(170)), f"Music is back at {clock(hhmm=q.get('until') or '08:00')}", font=small,
-               fill=(110, 110, 125), anchor="ms")
         return img, None
 
     def geometry(self):
@@ -289,7 +297,7 @@ class Scene:
         times_h = self.px(46)
         pad = self.px(44)
 
-        label = quiet_note(st) or ("PAUSED" if paused else None)
+        label = "PAUSED" if paused else None
 
         def column_height(rows):
             ht = 0
@@ -429,7 +437,7 @@ def pack(img, bpp):
 
 class Framebuffer:
     def __init__(self, path=FB):
-        self.fd = os.open(path, os.O_WRONLY)
+        self.fd = os.open(path, os.O_RDWR)
         self.geometry = None
         self.refresh()
 
@@ -449,6 +457,16 @@ class Framebuffer:
     @property
     def size(self):
         return self.geometry[:2]
+
+    def power(self, on):
+        try:
+            fcntl.ioctl(self.fd, FBIOBLANK, FB_BLANK_UNBLANK if on else FB_BLANK_POWERDOWN)
+        except OSError as e:
+            log("fb blank failed:", e)
+
+    def black(self):
+        w, h = self.size
+        self.write(Image.new("RGB", (w, h)))
 
     def write(self, img, x=0, y=0):
         _, _, bpp, stride = self.geometry
@@ -516,6 +534,7 @@ class Display:
         self.scene = None
         self.shown_key = None
         self.last_progress = 0.0
+        self.blanker = Blanker(now=time.monotonic())
 
     def position(self):
         st = self.status
@@ -527,8 +546,6 @@ class Display:
     @staticmethod
     def key(st, upcoming):
         tr = (st or {}).get("track")
-        if quiet_locked(st):
-            return ("quiet", (st.get("quiet_hours") or {}).get("until"))
         if not tr:
             return None
         credit = st.get("credit") or {}
@@ -536,16 +553,14 @@ class Display:
             return ("airplay", tr.get("name"), tr.get("artwork"), st.get("state") == "paused",
                     (st.get("airplay") or {}).get("sender"))
         return (tr["uri"], st.get("state") == "paused", credit.get("how"), (credit.get("by") or {}).get("name"),
-                tuple(i["item"]["uri"] for i in upcoming), quiet_note(st))
+                tuple(i["item"]["uri"] for i in upcoming))
 
     def render(self):
         w, h = self.fb.size
         if self.scene is None or (self.scene.w, self.scene.h) != (w, h):
             self.scene = Scene(w, h)
         st = self.status
-        if quiet_locked(st):
-            self.base, self.box = self.scene.quiet(st)
-        elif st and st.get("track"):
+        if st and st.get("track"):
             self.base, self.box = self.scene.track(st, self.upcoming, st.get("state") == "paused")
         else:
             self.base, self.box = self.scene.idle()
@@ -556,7 +571,7 @@ class Display:
     def draw_progress(self):
         self.last_progress = time.monotonic()
         st = self.status
-        if not self.box or not st or not st.get("track") or quiet_locked(st):
+        if not self.box or not st or not st.get("track"):
             return
         region = self.scene.progress(self.base, self.box, self.position(), st.get("duration_ms") or 0,
                                      st.get("state") == "paused")
@@ -567,10 +582,15 @@ class Display:
             ups = (data or {}).get("upcoming", [])[:3]
             if [i["item"]["uri"] for i in ups] != [i["item"]["uri"] for i in self.upcoming]:
                 self.upcoming = ups
+                if self.blanker.blanked and not is_playing(self.status):
+                    return
                 if self.key(self.status, ups) != self.shown_key:
                     self.render()
             return
         if data.get("removed"):
+            return
+        if self.blanker.blanked and not is_playing(data):
+            self.status = data
             return
         old_uri = ((self.status or {}).get("track") or {}).get("uri")
         new_uri = (data.get("track") or {}).get("uri")
@@ -587,20 +607,37 @@ class Display:
         elif drift > 2500:
             self.draw_progress()
 
+    def apply_blank(self, action):
+        if action == "blank":
+            self.base = None
+            self.fb.black()
+            self.fb.power(False)
+        elif action == "wake":
+            if self.base is None:
+                self.render()
+            self.fb.power(True)
+
     def run(self, events):
         while True:
-            playing = self.status and self.status.get("state") == "playing" and self.box
-            wait = max(0.05, self.last_progress + PROGRESS_EVERY - time.monotonic()) if playing else WATCHDOG
+            now = time.monotonic()
+            playing = is_playing(self.status) and self.box and not self.blanker.blanked
+            wait = max(0.05, self.last_progress + PROGRESS_EVERY - now) if playing else WATCHDOG
+            left = self.blanker.remaining(now)
+            if left is not None:
+                wait = min(wait, left + 0.01)
             try:
                 kind, data = events.get(timeout=wait)
             except queue.Empty:
                 kind = None
-            if self.fb.refresh():
-                self.base = None
-                self.render()
             if kind:
                 self.handle(kind, data)
-            if playing and time.monotonic() - self.last_progress >= PROGRESS_EVERY:
+            action = self.blanker.update(is_playing(self.status), time.monotonic())
+            if action:
+                self.apply_blank(action)
+            elif self.fb.refresh() and not self.blanker.blanked:
+                self.base = None
+                self.render()
+            if playing and not self.blanker.blanked and time.monotonic() - self.last_progress >= PROGRESS_EVERY:
                 self.draw_progress()
 
 
@@ -609,9 +646,7 @@ def render_png(api, path, size):
     st = api.get("/api/status")
     ups = api.get("/api/queue?limit=3").get("upcoming", [])[:3]
     scene = Scene(w, h)
-    if quiet_locked(st):
-        img, _ = scene.quiet(st)
-    elif st.get("track"):
+    if st.get("track"):
         img, box = scene.track(st, ups, st.get("state") == "paused")
         reg = scene.progress(img, box, st.get("position_ms") or 0, st.get("duration_ms") or 0, st.get("state") == "paused")
         img.paste(reg, box[:2])
