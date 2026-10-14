@@ -296,6 +296,9 @@ multi-room, no AirPlay 2). AirPlay completely overrides Spotify:
   token. If the sender has no remote control (some apps and Android senders) they fail with
   `409 airplay_remote_unavailable`. Everything else in Spotify transport (play a track, seek, jump, transfer) is refused
   with `409 {"error": "airplay_active", "sender": ...}`.
+- The Slack #music feed posts AirPlay songs too once they have a title, artist and cover art (no art usually means a video
+  or podcast, which isn't posted): same card, credited to the sender's device name, no Up next. The cover is served
+  without a token at `/airplay-art/<12-hex content hash>` (the last 8 covers are kept) so Slack can fetch it.
 - When it ends (the sender stops or disconnects, or someone presses Stop AirPlay / `POST /api/airplay/stop`, which
   restarts the receiver to drop the sender, who can reconnect a few seconds later), Spotify resumes right where it
   left off if it was playing before, and stays paused otherwise. It doesn't resume if quiet hours have locked.

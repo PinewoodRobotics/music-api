@@ -1089,6 +1089,12 @@ class Handler(BaseHTTPRequestHandler):
         if canonical and host != canonical and self.headers.get("Cf-Visitor") and not path.startswith("/slack/"):
             return self._send(308, b"", "text/plain", [("Location", self.canonical_url.rstrip("/") + self.path)])
 
+        m = re.fullmatch(r"/airplay-art/([0-9a-f]{12})", path)
+        if m and method == "GET":
+            art = airplay.artwork_by_hash(m.group(1)) if airplay else None
+            if not art:
+                return self._send(404, {"error": "not found"})
+            return self._send(200, art[0], art[1], [("Cache-Control", "public, max-age=31536000, immutable")])
         if method == "GET" and not path.startswith(("/api", "/auth")) and path not in DOC_FILES:
             return self._static(path)
         if path in DOC_FILES and method == "GET":

@@ -11,6 +11,7 @@ frames), phbt (heartbeat while frames play; also starts a session we missed the 
 a server restart), snam (sender name), PICT (cover art bytes), mdst/mden (bundle markers).
 """
 import base64
+import collections
 import hashlib
 import os
 import re
@@ -23,6 +24,7 @@ import time
 
 DEFAULT_PIPE = "/tmp/shairport-sync-metadata"
 RTP_RATE = 44100
+RECENT_ART = 8
 END_AFTER_PEND = 15
 MAX_BUFFER = 16 << 20
 ITEM = re.compile(rb"<item><type>([0-9a-fA-F]{8})</type><code>([0-9a-fA-F]{8})</code><length>(\d+)</length>"
@@ -122,6 +124,7 @@ class AirPlay:
         self.on_end = None
         self.on_change = None
         self.art = None
+        self.recent_art = collections.OrderedDict()
         self._ignore_until = 0
         self._clear()
 
@@ -194,6 +197,10 @@ class AirPlay:
                     self.sender = text or None
                 elif code == "PICT":
                     self.art = (data, image_type(data), hashlib.sha1(data).hexdigest()[:12]) if data else None
+                    if self.art:
+                        self.recent_art[self.art[2]] = self.art[:2]
+                        while len(self.recent_art) > RECENT_ART:
+                            self.recent_art.popitem(last=False)
                 else:
                     return
             else:
@@ -289,6 +296,10 @@ class AirPlay:
     def artwork(self):
         with self.lock:
             return self.art[:2] if self.art and self.active else None
+
+    def artwork_by_hash(self, key):
+        with self.lock:
+            return self.recent_art.get(key)
 
     # ---------- pipe reader ----------
 

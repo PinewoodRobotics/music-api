@@ -277,6 +277,9 @@ Lyrics for the current song, from lrclib.net. Optional `?track=<id|uri|link>` fo
 #### GET /api/airplay/artwork
 Cover art the sender sent for the current AirPlay song (image bytes). `404` if there's none.
 
+#### GET /airplay-art/{hash}
+No token: one of the last 8 AirPlay covers by its 12-hex content hash (the `v` in the track's `artwork`), for Slack's image fetcher. `404` otherwise. The Slack #music feed posts an AirPlay song once it has title, artist and art, credited to the sender.
+
 #### POST /api/airplay/stop
 Ends the AirPlay session by restarting the receiver (the sender is disconnected and can reconnect a few seconds later). Spotify then resumes where it left off if it was playing when AirPlay took over (not if quiet hours have locked). Returns the status. `409 airplay_inactive` if no session is on; `503` if the receiver couldn't be restarted.
 

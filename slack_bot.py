@@ -81,6 +81,18 @@ def subtitle(t):
     return " · ".join(x for x in (esc(artists_of(t)), esc((t.get("album") or {}).get("name"))) if x)
 
 
+AIRPLAY_ART = re.compile(r"/api/airplay/artwork\?v=([0-9a-f]{12})$")
+
+
+def airplay_track(st, remote):
+    t, ap = st.get("track"), st.get("airplay") or {}
+    art = AIRPLAY_ART.search((t or {}).get("artwork") or "")
+    if not (t and art and t.get("name") and t.get("type") == "airplay" and artists_of(t)):
+        return None
+    ident = "\x1f".join([ap.get("sender") or "", t["name"], artists_of(t), (t.get("album") or {}).get("name") or ""])
+    return {**t, "uri": "airplay:" + ident, "artwork": f"{remote.rstrip('/')}/airplay-art/{art.group(1)}"}
+
+
 def verify_signature(secret, timestamp, signature, body, now=None):
     try:
         ts = int(timestamp)
@@ -546,8 +558,10 @@ class SlackBot:
         """Do play/pause/skip for a Slack user (the feed card itself is the channel's feedback)."""
         if verb == "skip":
             user = self.user(uid)
-            self.credits.skipped(user)
-            name = ((self.player.status().get("track") or {}).get("name")) if self.activity else None
+            st = self.player.status()
+            if st.get("source") != "airplay":
+                self.credits.skipped(user)
+            name = (st.get("track") or {}).get("name") if self.activity else None
             self.player.next()
             self.log(user, "next", {"from": name} if name else {})
             return "Skipped."
@@ -846,18 +860,26 @@ class SlackBot:
     def step(self, now):
         if now < self.pause_until:
             return
-        t = None if self.st.get("removed") or self.st.get("source") == "airplay" else self.st.get("track")
+        airplay = self.st.get("source") == "airplay"
+        if airplay:
+            t = airplay_track(self.st, self.remote)
+        else:
+            t = None if self.st.get("removed") else self.st.get("track")
         uri = t.get("uri") if t else None
         playing = self.st.get("state") in PLAYING
         if uri != self.cand[0]:
             self.cand = (uri, now)
         cur = self.cur
+        if airplay and t and (not cur or cur["uri"] != uri) and now - self.cand[1] < SETTLE:
+            return
         if cur and not t and now - self.cand[1] >= SETTLE:
             self.finish(cur)
             self.cur = None
         elif t and playing and (not cur or cur["uri"] != uri):
             self.rotate(t, now)
         elif cur and cur["uri"] == uri:
+            if airplay:
+                cur["track"] = t
             self.refresh(cur, playing, now)
 
     def finish(self, cur):
@@ -867,12 +889,16 @@ class SlackBot:
                   blocks=played_blocks(cur["track"], cur.get("credit"), skipped_by))
 
     def rotate(self, t, now):
-        try:
-            up = self.credits.annotate(self.player.queue(4)).get("upcoming", [])
-        except (PlayerError, SpotifyError):
-            up = self.upcoming
+        if self.st.get("source") == "airplay":
+            up, credit = [], {"by": {"name": (self.st.get("airplay") or {}).get("sender")}, "how": "airplay"}
+        else:
+            try:
+                up = self.credits.annotate(self.player.queue(4)).get("upcoming", [])
+            except (PlayerError, SpotifyError):
+                up = self.upcoming
+            credit = self.st.get("credit")
         cur = {"uri": t["uri"], "track": t, "playing": True, "upcoming": up[:3],
-               "credit": self.st.get("credit"), "ts": None, "sig": None, "sent": now, "posted": now}
+               "credit": credit, "ts": None, "sig": None, "sent": now, "posted": now}
         old = self.cur
         if old and old.get("ts") and now - old.get("posted", 0) < REUSE:
             cur.update(ts=old["ts"], posted=old.get("posted", now))
@@ -894,13 +920,14 @@ class SlackBot:
 
     @staticmethod
     def sig(cur):
-        return (cur["playing"], tuple((e.get("item") or e).get("uri") for e in cur["upcoming"]))
+        return (cur["playing"], cur["track"].get("artwork"),
+                tuple((e.get("item") or e).get("uri") for e in cur["upcoming"]))
 
     def refresh(self, cur, playing, now):
         if not cur["ts"]:
             return
         cur["playing"] = playing
-        if self.upcoming:
+        if self.upcoming and cur["track"].get("type") != "airplay":
             cur["upcoming"] = self.upcoming[:3]
         if self.sig(cur) == cur["sig"] or now - cur["sent"] < UPDATE_EVERY:
             return

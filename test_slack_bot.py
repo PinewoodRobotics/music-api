@@ -705,6 +705,7 @@ class Feed(unittest.TestCase):
 
 AIR = {"uri": None, "type": "airplay", "name": "Clair de Lune", "artists": [{"uri": None, "name": "Debussy"}],
        "album": None, "artwork": "/api/airplay/artwork?v=1"}
+AIR_ART = dict(AIR, artwork="/api/airplay/artwork?v=abcabcabcabc")
 
 
 class AirPlayTest(unittest.TestCase):
@@ -716,12 +717,79 @@ class AirPlayTest(unittest.TestCase):
         self.assertEqual(text, "AirPlay from Adam's iPhone: Clair de Lune by Debussy")
         self.assertNotIn("image", str(blocks))
 
-    def test_feed_ignores_airplay(self):
+    def feed(self, bot, track, state="playing", sender="John's iPhone", dt=0):
+        bot.clock = getattr(bot, "clock", 1000.0) + dt
+        bot.st = {"state": state, "source": "airplay", "track": track, "airplay": {"sender": sender}}
+        bot.tick(bot.clock)
+
+    def calls(self, bot, method):
+        return [p for u, p in bot.sent if u.endswith(method)]
+
+    def test_posts_only_with_title_artist_and_art(self):
         bot = make()
-        bot.st = {"state": "playing", "source": "airplay", "track": AIR}
-        bot.step(time.time())
-        self.assertIsNone(bot.cur)
+        for track in (dict(AIR, artwork=None), dict(AIR, artists=[]), dict(AIR, name="AirPlay", artists=[])):
+            self.feed(bot, track, dt=sb.SETTLE + 1)
+            self.feed(bot, track, dt=sb.SETTLE + 1)
         self.assertEqual(bot.sent, [])
+        self.feed(bot, AIR_ART, dt=1)
+        self.assertEqual(bot.sent, [])
+        self.feed(bot, AIR_ART, dt=sb.SETTLE)
+        self.assertEqual(len(self.calls(bot, "chat.postMessage")), 1)
+
+    def test_card_credits_sender_without_up_next_or_spotify_links(self):
+        bot = make()
+        self.feed(bot, AIR_ART)
+        self.feed(bot, AIR_ART, dt=sb.SETTLE)
+        blocks = self.calls(bot, "chat.postMessage")[0]["blocks"]
+        text = json.dumps(blocks)
+        self.assertIn("\\nJohn's iPhone", text)
+        self.assertNotIn("Up next", text)
+        self.assertNotIn("spotify.com", text)
+        self.assertIn("https://music.pinewoodrobotics.org/airplay-art/abcabcabcabc", text)
+
+    def test_song_change_rotates_and_finishes_previous(self):
+        bot = make()
+        self.feed(bot, AIR_ART)
+        self.feed(bot, AIR_ART, dt=sb.SETTLE)
+        nxt = dict(AIR_ART, name="Arabesque")
+        self.feed(bot, nxt, dt=sb.REUSE + 1)
+        self.assertEqual(len(self.calls(bot, "chat.postMessage")), 1)
+        self.feed(bot, nxt, dt=sb.SETTLE)
+        self.assertEqual(len(self.calls(bot, "chat.postMessage")), 2)
+        played = self.calls(bot, "chat.update")
+        self.assertEqual(played[-1]["text"], "Played: Clair de Lune")
+        self.assertIn(" · John's iPhone", json.dumps(played[-1]["blocks"], ensure_ascii=False))
+
+    def test_late_art_posts_then_changed_art_updates(self):
+        bot = make()
+        self.feed(bot, dict(AIR, artwork=None))
+        self.feed(bot, dict(AIR, artwork=None), dt=sb.SETTLE + 1)
+        self.assertEqual(bot.sent, [])
+        self.feed(bot, AIR_ART, dt=1)
+        self.feed(bot, AIR_ART, dt=sb.SETTLE)
+        self.assertEqual(len(self.calls(bot, "chat.postMessage")), 1)
+        self.feed(bot, dict(AIR_ART, artwork="/api/airplay/artwork?v=defdefdefdef"), dt=sb.UPDATE_EVERY + 1)
+        self.assertEqual(len(self.calls(bot, "chat.postMessage")), 1)
+        self.assertIn("defdefdefdef", json.dumps(self.calls(bot, "chat.update")[-1]["blocks"]))
+
+    def test_metadata_refresh_of_same_song_does_not_repost(self):
+        bot = make()
+        self.feed(bot, AIR_ART)
+        self.feed(bot, AIR_ART, dt=sb.SETTLE)
+        self.feed(bot, dict(AIR_ART, duration_ms=1), state="paused", dt=sb.UPDATE_EVERY + 1)
+        self.assertEqual(len(self.calls(bot, "chat.postMessage")), 1)
+        self.assertIn("Play", json.dumps(self.calls(bot, "chat.update")[-1]["blocks"]))
+
+    def test_handoff_to_spotify_continues_the_feed(self):
+        bot = make()
+        self.feed(bot, AIR_ART)
+        self.feed(bot, AIR_ART, dt=sb.SETTLE)
+        bot.clock += sb.REUSE + 1
+        bot.st = {"state": "playing", "track": TRACK, "credit": None}
+        bot.tick(bot.clock)
+        self.assertEqual(self.calls(bot, "chat.update")[-1]["text"], "Played: Clair de Lune")
+        self.assertEqual(len(self.calls(bot, "chat.postMessage")), 2)
+        self.assertIn("One &lt;More&gt; Time", json.dumps(self.calls(bot, "chat.postMessage")[-1]["blocks"]))
 
 
 if __name__ == "__main__":
