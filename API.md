@@ -99,6 +99,19 @@ Path `{id}`s are bare 22-character Spotify IDs. `uri`/`uris`/`context` fields ta
 
 Tokens have no scopes: any token can do everything, including creating and revoking tokens. Only SHA-256 hashes are stored (`<data-dir>/api-tokens.json`, mode 600). New tokens look like `mapi_…`. A `--token` / `$MUSIC_API_TOKEN` static token also works but isn't listed and can't be revoked here. Revoking the last listed token is refused (409) unless a static token is configured.
 
+## Sound effects
+
+| Method | Path | Notes |
+|---|---|---|
+| `GET` | `/api/effects` | Registered sound effects: [{name, title, volume, duration_ms, size, source, created, updated, playing}] |
+| `POST` | `/api/effects` | Register a sound effect (admins only). Send the audio as the raw body (Content-Type audio/* or application/octet-stream) with ?name=slug, or multipart/form-data with `name` and a `file` part, or JSON {name, url} to fetch it. wav, mp3, ogg or flac, max 25 MB and 120 s; converted once to 48 kHz stereo wav (mp3/ogg/flac need ffmpeg on the server). Optional title, volume (0-100, the default play volume) and overwrite. 409 exists if the name is taken |
+| `GET` | `/api/effects/playing` | Effects playing right now: [{id, name, volume, duck, started_at, elapsed_ms, duration_ms}] |
+| `POST` | `/api/effects/stop` | Stop every playing effect (or only those called `name`). Music is not touched. Returns {stopped: n} |
+| `GET` | `/api/effects/{name}` | One sound effect's metadata; 404 unknown_effect |
+| `PATCH` | `/api/effects/{name}` | Body {name?, title?, volume?} (admins only): rename or change the default play volume (0-100) |
+| `DELETE` | `/api/effects/{name}` | Delete a sound effect (admins only); stops it if it is playing |
+| `POST` | `/api/effects/{name}/play` | Play a sound effect now, over whatever is playing (its own PipeWire stream; music is not paused). Returns at once with {id, name, volume, duck, duration_ms, started_at}. Body/query optional: volume (0-100, default the effect's own), duck (bool: lower the other streams while it plays, to duck_level % of their volume, default 30). Plays may overlap. 423 quiet_hours while the speakers are locked |
+
 ## System audio
 
 | Method | Path | Notes |

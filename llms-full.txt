@@ -577,6 +577,52 @@ Revoke immediately. Any token can revoke any token, including itself. Returns `{
 
 Also: a static token given with `--token` / `$MUSIC_API_TOKEN` at server start is accepted too, but it is not listed and can't be revoked through the API.
 
+### Sound effects (short clips played over the music)
+
+Register a clip once under a name, then play it by name with one low-latency call. A play is a separate PipeWire stream (`pw-play`) that mixes with whatever is going on, Spotify or AirPlay: the music is not paused, skipped or interrupted. Clips are converted once at registration to 48 kHz stereo 16-bit WAV (PipeWire's rate), so playing never transcodes. Plays may overlap. Registering, renaming and deleting are admin-only (API tokens are admins); listing, playing and stopping are open to every signed-in user. Files are in `<data-dir>/effects/`. Plays are not recorded in the activity feed.
+
+Names are slugs: lowercase letters, digits, `-` and `_`, 1-48 characters (input is lowercased and spaces become `-`); `stop` and `playing` are reserved. Effect object: `{"name": "match-start", "title": "Match start", "volume": 100, "duration_ms": 1850, "rate": 48000, "channels": 2, "size": 355244, "source": null|"<url>", "created": <unix s>, "updated": <unix s>, "playing": 0}`. `volume` (0-100) is the default play volume.
+
+#### GET /api/effects
+All effects, sorted by name. `playing` is how many copies are playing now.
+
+#### POST /api/effects
+Register a clip: wav, mp3, ogg or flac, at most 25 MB and 120 s. Three ways to send it:
+- Raw body with `Content-Type: audio/wav` (or any `audio/*`, or `application/octet-stream`) and `?name=...`, optionally `&title=`, `&volume=`, `&overwrite=true`.
+- `multipart/form-data` with a `file` part and `name` (optional `title`, `volume`, `overwrite`) fields.
+- JSON `{"name", "url", "title"?, "volume"?, "overwrite"?}`: the server fetches the public http(s) URL (private and local addresses are refused).
+
+The format is detected from the bytes, not the content type. Returns the effect. `409 exists` if the name is taken (pass `overwrite=true` to replace it, which keeps `created`). `415 unsupported_format` / `undecodable`, `413 too_large` / `too_long`, `400 bad_name` / `bad_url` / `no_audio`. `501 ffmpeg_missing`: the server has no ffmpeg, so only PCM wav uploads work.
+```sh
+curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: audio/wav" --data-binary @horn.wav \
+  "$API/api/effects?name=match-start&title=Match%20start&volume=90"
+curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"name": "buzzer", "url": "https://example.com/buzzer.mp3"}' $API/api/effects
+```
+
+#### GET /api/effects/{name}
+One effect. `404 unknown_effect`.
+
+#### PATCH /api/effects/{name}
+Body `{name?, title?, volume?}`: rename (`409 exists` if the new name is taken) or change title and default volume. Returns the effect.
+
+#### DELETE /api/effects/{name}
+Deletes the clip (and stops it if it is playing). Returns `{"deleted": name}`.
+
+#### POST /api/effects/{name}/play
+Starts the clip and returns at once (it does not wait for it to finish): `{"id", "name", "volume", "duck", "started_at", "duration_ms"}`. Options in the JSON body or the query: `volume` (0-100; default the effect's own), `duck` (bool, default false) and `duck_level` (0-100, default 30). With `duck`, every other audio stream (Spotify, AirPlay) is lowered to `duck_level` percent of its own volume while the effect plays, and put back when the last ducking effect ends (restored on the next server start too if the server died mid-duck). Streams that start during a duck aren't lowered. Up to 16 plays at once (`429 too_many`). `404 unknown_effect`; `423 quiet_hours` while the speakers are locked; `501 no_player` if the host has no pw-play/paplay/afplay.
+```sh
+curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"volume": 80, "duck": true}' $API/api/effects/match-start/play
+```
+Latency is the time to start one `pw-play` process on the Pi (roughly 100-200 ms), so schedule a start sound slightly early if it has to line up with a clock.
+
+#### GET /api/effects/playing
+`[{"id", "name", "volume", "duck", "started_at", "elapsed_ms", "duration_ms"}]` for plays still running.
+
+#### POST /api/effects/stop
+Stops every playing effect, or with `name` (body or query) only copies of that effect. Music is untouched. Returns `{"stopped": n}`.
+
 ### System audio (the host machine's mixer, not Spotify)
 
 #### GET /api/system/volume
@@ -727,7 +773,7 @@ The server uses one of two backends; `GET /api/backend` says which.
 
 ### Quiet hours
 
-Default window 21:00-08:00, local time on the server. Music that's playing when it starts keeps going, and playback works normally (grace) until no audio has played from any source for 5 continuous minutes; then the speakers lock until the window ends. While locked, `POST /api/play`, `/api/play-url`, `/api/playpause` (when it would play), `/api/next`, `/api/previous`, `/api/back`, `/api/queue/jump`, `/api/playlists/{id}/play`, `/api/app/library/songs/play`, `/api/devices/transfer` with `play: true`, the Slack bot and `/api/spotify/me/player/{play,next,previous}` return `423 quiet_hours` with `until`. Pause, volume, search, playlists, the Library and queue editing still work. Tell the user it's quiet hours until `until`; don't retry. The lock also turns the AirPlay receiver off and mutes the speakers at the OS level.
+Default window 21:00-08:00, local time on the server. Music that's playing when it starts keeps going, and playback works normally (grace) until no audio has played from any source for 5 continuous minutes; then the speakers lock until the window ends. While locked, `POST /api/play`, `/api/play-url`, `/api/playpause` (when it would play), `/api/next`, `/api/previous`, `/api/back`, `/api/queue/jump`, `/api/playlists/{id}/play`, `/api/app/library/songs/play`, `/api/devices/transfer` with `play: true`, the Slack bot and `/api/spotify/me/player/{play,next,previous}` return `423 quiet_hours` with `until`. Pause, volume, search, playlists, the Library and queue editing still work. Sound effects (`POST /api/effects/{name}/play`) are refused the same way while locked but play normally during the grace phase; managing effects and `POST /api/effects/stop` always work. There is no override: the lock mutes the speakers at the OS level. Tell the user it's quiet hours until `until`; don't retry. The lock also turns the AirPlay receiver off and mutes the speakers at the OS level.
 
 ### AirPlay
 
@@ -756,11 +802,11 @@ People can play to the speakers from an iPhone or Mac over AirPlay. That pauses 
 | 403 | `Spotify 403: ...` | Spotify refused: e.g. Premium required, playlist not yours, user not on the app's allowlist |
 | 404 | `not found`, `nothing playing`, `no lyrics found`, `device '...' not found`, `Spotify 404: ... (NO_ACTIVE_DEVICE)` | Missing thing; for no active device, transfer playback first |
 | 405 | `method not allowed` | Path exists, wrong method |
-| 409 | `refusing to revoke the last token ...`, Soloist auth errors, `airplay_active`, `airplay_inactive` | Conflict; see message. `airplay_active`: someone is playing over AirPlay, Spotify control is held until it ends |
-| 423 | `quiet_hours` | Quiet hours are locked until `until`; playback can't start. Library, search, playlists and the queue still work |
+| 409 | `refusing to revoke the last token ...`, Soloist auth errors, `airplay_active`, `airplay_inactive`, `exists` (sound effect name taken) | Conflict; see message. `airplay_active`: someone is playing over AirPlay, Spotify control is held until it ends |
+| 423 | `quiet_hours` | Quiet hours are locked until `until`; playback (and sound effects) can't start. Library, search, playlists and the queue still work |
 | 412 | `... needs the Spotify Web API; log in at /auth/login`, `no Spotify Client ID ...` | Feature needs the Web API login, which isn't set up |
 | 429 | `Spotify 429: ...` | Spotify rate limit; wait and retry |
-| 501 | `no supported system mixer ...`, `output switching needs PipeWire or PulseAudio` | Not supported on this host |
+| 501 | `no supported system mixer ...`, `output switching needs PipeWire or PulseAudio`, `ffmpeg_missing`, `no_player` | Not supported on this host |
 | 502 | `Spotify 5xx: ...`, `cannot reach Spotify: ...`, `lrclib: ...` | Upstream failure; retry later |
 | 503 / 504 | `Soloist not connected`, `Soloist did not answer ...` | Soloist daemon down or slow |
 
@@ -775,7 +821,8 @@ Other Spotify 4xx errors are passed through with their status and a message of t
 - Quiet hours: `QUIET_HOURS=21:00-08:00` in the env file (or `off`); state in `<data-dir>/quiet-hours.json`.
 - System service `cloudflared` (config `/etc/cloudflared/config.yml`) maps `music.pinewoodrobotics.org` to `http://127.0.0.1:8765`.
 - Restart: `systemctl --user restart music-api`. Logs: `journalctl --user-unit soloist --user-unit music-api -f`.
-- Data directory `~/.local/share/music-api`: `spotify-tokens.json` (Spotify login), `api-tokens.json` (hashed API tokens), `token` (bootstrap token file).
+- Data directory `~/.local/share/music-api`: `spotify-tokens.json` (Spotify login), `api-tokens.json` (hashed API tokens), `token` (bootstrap token file), `effects/` (sound effect WAVs and `index.json`).
+- Sound effects need `pw-play` (apt `pipewire-bin`) to play and `ffmpeg` to accept mp3/ogg/flac; `deploy/deploy-pi.sh` and `deploy/install-linux.sh` install both.
 - First start with auth required and no tokens yet: if `<data-dir>/token` exists (the v1 token was migrated there) it's imported as a token named "v1 token" and the plaintext file is deleted; otherwise a new token is generated and written to `<data-dir>/token` (mode 600) for the admin to read.
 - Spotify login through the public URL needs `https://music.pinewoodrobotics.org/auth/callback` listed as a Redirect URI in the Spotify app and the server started with `--redirect-uri` set to it; otherwise use the paste flow.
 - v1 (Music.app-based, `~/Developer/music-api`) is retired.

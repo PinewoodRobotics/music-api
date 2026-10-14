@@ -315,6 +315,17 @@ Remote control needs `busctl` (systemd) and `dbus-user-session`. A server restar
 next song starts (classic AirPlay has no heartbeat to rejoin it).
 Logs: `journalctl --user-unit airplay -f`.
 
+### Sound effects
+
+Register short clips by name and play them over whatever else is playing, e.g. for the practice field's match timer (`/api/effects`; reference in [API.md](API.md) and `llms-full.txt`).
+
+- `POST /api/effects?name=match-start` with the audio as the body (`Content-Type: audio/wav`, mp3, ogg or flac, or multipart, or JSON `{name, url}`) registers a clip; `GET/PATCH/DELETE /api/effects/{name}` read, rename and delete it. Registering and deleting are admin-only.
+- `POST /api/effects/{name}/play {volume?, duck?, duck_level?}` returns immediately. `POST /api/effects/stop` stops every playing effect.
+- Playing is one `pw-play` process per play: its own PipeWire stream, mixed with Spotify and AirPlay, which keep playing untouched. Plays may overlap (16 at most). Nothing is transcoded at play time: at registration ffmpeg converts the upload to 48 kHz stereo 16-bit WAV (PipeWire's rate) and it is stored as `<data-dir>/effects/<name>.wav` with `index.json`. Without ffmpeg only PCM WAV uploads are accepted, as they are.
+- `duck: true` lowers the other PipeWire streams (`pactl set-sink-input-volume`) to `duck_level` % (default 30) while the effect plays and restores them when the last ducking effect ends, or at the next server start if it died mid-duck. Streams that begin during the duck aren't lowered, and the music's own volume setting is not touched.
+- Quiet hours: effects are refused with `423 quiet_hours` while the speakers are locked, exactly like play, and allowed during the grace phase and outside the window. There is no force override, because the lock mutes every sink at the OS level. Managing and stopping effects always works.
+- The Pi needs `pw-play` (`pipewire-bin`) and `ffmpeg`; `install-linux.sh` and `deploy-pi.sh` install them if missing. Plays are not written to the activity feed.
+
 ### HDMI now-playing display
 
 `display/now_playing_display.py` draws a now-playing screen (blurred artwork background, big cover, title, progress, "Playing Next") straight into `/dev/fb0` on a Pi with no desktop. It needs only `python3-pil` and `fonts-inter`, follows `/api/events`, and redraws the progress bar at most every 2 s.
@@ -356,6 +367,7 @@ v1 (Music.app) lived in `~/Developer/music-api` and is retired.
 - `ANY /api/spotify/{path}`: raw Web API passthrough using the stored login, for anything not wrapped yet.
 - `GET /api/airplay`, `GET /api/airplay/artwork`, `POST /api/airplay/stop`: the AirPlay receiver (see above).
 - `GET /api/quiet-hours`: the quiet-hours window and lock state.
+- `/api/effects`: named sound effects played over the music (see [Sound effects](#sound-effects)).
 
 ## Status
 

@@ -9,6 +9,7 @@ SECTIONS = [("Playback", "/api/status /api/now-playing /api/artwork /api/play /a
             ("Playlists", "/api/playlists"),
             ("Library & history", "/api/library /api/recent /api/top /api/me"),
             ("Tokens", "/api/tokens"),
+            ("Sound effects", "/api/effects"),
             ("System audio", "/api/system")]
 
 
