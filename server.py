@@ -23,11 +23,13 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import activity as activity_log
 import airplay as airplay_mod
+import effects as effects_mod
 import extras
 import quiet_hours
 import links
 import slack_bot
 from accounts import ADMIN, SESSION_COOKIE_AGE, AccountError, Credits, PersonalTokens, Google, Playlists, Sessions, Slack
+from effects import EffectsError
 from extras import ExtrasError
 from guard import Guard
 from library import Library
@@ -42,15 +44,17 @@ SEARCH_TYPES = "track,album,artist,playlist,show,episode,audiobook"
 
 auth = api = player = soloist = tokens = slack = google = sessions = app_playlists = bot = personal = library = None
 credits = activity = None
-guard = airplay = quiet = None
+guard = airplay = quiet = effects = None
 _req = threading.local()  # per-request context: the token entry and the user that authenticated it
 WEB_DIST = os.path.join(HERE, "web", "dist")
 SESSION_COOKIE = "mapi_session"
-APP_ERRORS = (SpotifyError, PlayerError, ExtrasError, TokenError, AccountError, links.LinkError)
+APP_ERRORS = (SpotifyError, PlayerError, ExtrasError, TokenError, AccountError, links.LinkError, EffectsError)
 # Slack users (non-admins) get playback, search and the app's playlists, not the account's private data or admin routes
 ADMIN_ONLY = re.compile(r"^/(api$|api/(tokens|spotify|backend/soloist|library|recent|top|me$|devices/transfer)"
                         r"|auth(/login|/paste|/logout|$))")
-ADMIN_ONLY_METHODS = {("GET", "/api/playlists"), ("POST", "/api/playlists"), ("POST", "/api/system/outputs")}
+ADMIN_ONLY_METHODS = {("GET", "/api/playlists"), ("POST", "/api/playlists"), ("POST", "/api/system/outputs"),
+                      ("POST", "/api/effects")}
+EFFECT_PATH = re.compile(r"^/api/effects/[^/]+$")
 DOC_FILES = {"/llms.txt": ("llms.txt", "text/plain"), "/llms-full.txt": ("llms-full.txt", "text/plain"),
              "/LLMS.md": ("llms-full.txt", "text/markdown"), "/API.md": ("API.md", "text/markdown"),
              "/README.md": ("README.md", "text/markdown")}
@@ -243,6 +247,80 @@ def _sys_outputs(q, b):
 def _set_sys_output(q, b):
     """Body {id}: make that output the default (Linux)"""
     return extras.set_system_output(b)
+
+
+# ---------- sound effects ----------
+
+def _flag(v):
+    return v is True or str(v).lower() in ("1", "true", "yes", "on")
+
+
+def _effect_fields(q, b):
+    return {k: b.get(k) if b.get(k) is not None else q.get(k) for k in ("title", "volume")}
+
+
+@route("GET", "/api/effects")
+def _effects(q, b):
+    """Registered sound effects: [{name, title, volume, duration_ms, size, source, created, updated, playing}]"""
+    return effects.list()
+
+
+@route("POST", "/api/effects")
+def _register_effect(q, b):
+    """Register a sound effect (admins only). Send the audio as the raw body (Content-Type audio/* or
+    application/octet-stream) with ?name=slug, or multipart/form-data with `name` and a `file` part, or JSON
+    {name, url} to fetch it. wav, mp3, ogg or flac, max 25 MB and 120 s; converted once to 48 kHz stereo wav
+    (mp3/ogg/flac need ffmpeg on the server). Optional title, volume (0-100, the default play volume) and overwrite.
+    409 exists if the name is taken"""
+    name = b.get("name") or q.get("name")
+    fields = {**_effect_fields(q, b), "overwrite": _flag(b.get("overwrite", q.get("overwrite")))}
+    audio = b.get("audio")
+    if isinstance(audio, bytes):
+        return effects.register(name, audio, **fields)
+    if b.get("url") or q.get("url"):
+        return effects.register_url(name, b.get("url") or q.get("url"), **fields)
+    raise EffectsError("send audio as the request body (or multipart `file`), or JSON {name, url}", 400, "no_audio")
+
+
+@route("GET", "/api/effects/playing")
+def _effects_playing(q, b):
+    """Effects playing right now: [{id, name, volume, duck, started_at, elapsed_ms, duration_ms}]"""
+    return effects.playing()
+
+
+@route("POST", "/api/effects/stop")
+def _effects_stop(q, b):
+    """Stop every playing effect (or only those called `name`). Music is not touched. Returns {stopped: n}"""
+    return effects.stop(b.get("name") or q.get("name"))
+
+
+@route("GET", "/api/effects/{name}")
+def _effect(q, b, name):
+    """One sound effect's metadata; 404 unknown_effect"""
+    return effects.get(name)
+
+
+@route("PATCH", "/api/effects/{name}")
+def _patch_effect(q, b, name):
+    """Body {name?, title?, volume?} (admins only): rename or change the default play volume (0-100)"""
+    return effects.update(name, b)
+
+
+@route("DELETE", "/api/effects/{name}")
+def _delete_effect(q, b, name):
+    """Delete a sound effect (admins only); stops it if it is playing"""
+    return effects.delete(name)
+
+
+@route("POST", "/api/effects/{name}/play")
+def _play_effect(q, b, name):
+    """Play a sound effect now, over whatever is playing (its own PipeWire stream; music is not paused). Returns at
+    once with {id, name, volume, duck, duration_ms, started_at}. Body/query optional: volume (0-100, default the
+    effect's own), duck (bool: lower the other streams while it plays, to duck_level % of their volume, default 30).
+    Plays may overlap. 423 quiet_hours while the speakers are locked"""
+    guard.check("effect")
+    opts = {**q, **b}
+    return effects.play(name, opts.get("volume"), _flag(opts.get("duck")), opts.get("duck_level"))
 
 
 @route("POST", "/api/play")
@@ -1032,6 +1110,8 @@ class Handler(BaseHTTPRequestHandler):
                 return "cross-site request refused"
         if ADMIN_ONLY.match(path) or (method, path) in ADMIN_ONLY_METHODS:
             return "admins only"
+        if EFFECT_PATH.match(path) and method in ("PATCH", "DELETE"):
+            return "admins only"
         m = re.match(r"^/api/playlists/([^/]+)(/.*)?$", path)
         if m and (app_playlists.is_hidden(m.group(1)) or (m.group(2) is None and method != "GET")
                   or m.group(2) == "/image" and method != "GET"):
@@ -1068,8 +1148,14 @@ class Handler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length") or 0)
         if not length:
             return {}
+        ctype = self.headers.get("Content-Type", "")
+        if ctype.startswith(("audio/", "video/ogg", "application/ogg", "application/octet-stream", "multipart/form-data")):
+            if length > effects_mod.MAX_UPLOAD + (1 << 20):
+                raise EffectsError(f"upload is larger than {effects_mod.MAX_UPLOAD >> 20} MB", 413, "too_large")
+            raw = self.rfile.read(length)
+            return effects_mod.parse_multipart(ctype, raw) if ctype.startswith("multipart/") else {"audio": raw}
         raw = self.rfile.read(length)
-        if self.headers.get("Content-Type", "").startswith("application/x-www-form-urlencoded"):
+        if ctype.startswith("application/x-www-form-urlencoded"):
             return dict(urllib.parse.parse_qsl(raw.decode()))
         return json.loads(raw or b"{}")
 
@@ -1150,6 +1236,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(e.status, {"error": str(e)})
         except SpotifyError as e:
             return self._send(e.status, {"error": str(e)})
+        except EffectsError as e:
+            return self._send(e.status, _error_body(e))
         except json.JSONDecodeError:
             return self._send(400, {"error": "invalid JSON body"})
 
@@ -1305,7 +1393,7 @@ def main():
         ap.error(str(e))
 
     global auth, api, player, soloist, tokens, slack, google, sessions, app_playlists, bot, personal, credits, activity, library
-    global guard, airplay, quiet
+    global guard, airplay, quiet, effects
     os.makedirs(a.data_dir, mode=0o700, exist_ok=True)
     auth = Auth(a.data_dir, a.client_id, a.redirect_uri or f"http://127.0.0.1:{a.port}/auth/callback")
     api = WebAPI(auth)
@@ -1358,6 +1446,7 @@ def main():
     guard = Guard(player, quiet, airplay, enforce=lambda locked: quiet_hours.enforce(locked, a.data_dir),
                   receiver=quiet_hours.receiver, remote=airplay_mod.remote,
                   resume_path=os.path.join(a.data_dir, "airplay-resume"))
+    effects = effects_mod.Effects(a.data_dir)
     threading.Thread(target=airplay.loop, daemon=True).start()
     threading.Thread(target=airplay.watch, daemon=True).start()
     threading.Thread(target=guard.loop, args=(5 if backend == "soloist" else 15,), daemon=True).start()

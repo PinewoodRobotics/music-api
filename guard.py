@@ -1,6 +1,6 @@
 """What may make sound: the quiet-hours lock and the AirPlay override, layered over the Spotify player.
 
-- Quiet hours (see quiet_hours.py): while locked, anything that would start playback is refused with 423.
+- Quiet hours (see quiet_hours.py): while locked, anything that would start playback (including sound effects) is refused with 423.
 - AirPlay: a session pauses Spotify (queue, track and position stay put). Play (without a track), pause, next and
   previous then control the AirPlay sender; the rest of Spotify transport is refused with 409 until it ends. When it ends, Spotify resumes if it was playing when AirPlay took over (unless quiet hours locked).
 """
@@ -14,7 +14,7 @@ from player import PlayerError
 from spotify import SpotifyError
 
 PLAYING = ("playing", "buffering")
-QUIET_BLOCKED = {"play", "next", "previous", "jump", "transfer_play"}
+QUIET_BLOCKED = {"play", "next", "previous", "jump", "transfer_play", "effect"}
 AIRPLAY_BLOCKED = {"play", "pause", "next", "previous", "jump", "seek", "transfer", "transfer_play"}
 AIRPLAY_COMMANDS = {"play", "pause", "next", "previous"}
 HANDOFF = 20  # seconds after AirPlay ends during which a pending Spotify resume counts as playing
