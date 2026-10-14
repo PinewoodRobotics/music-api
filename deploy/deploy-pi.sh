@@ -8,6 +8,8 @@ APP=.local/share/music-api-v2
 
 (cd "$REPO/web" && npm ci --silent && npm run build --silent)
 rsync -a "$REPO"/*.py "$REPO"/*.html "$REPO"/*.md "$REPO"/*.txt "$HOST:$APP/"
+# sound effects: pw-play plays them, ffmpeg normalizes mp3/ogg/flac uploads (wav works without it)
+ssh "$HOST" 'command -v pw-play >/dev/null && command -v ffmpeg >/dev/null || sudo -n apt-get install -y --no-install-recommends pipewire-bin ffmpeg || echo "WARNING: could not install pw-play/ffmpeg; sound effects need them (sh deploy/install-linux.sh)" >&2'
 ssh "$HOST" "mkdir -p $APP/web/dist"
 rsync -a --delete "$REPO/web/dist/" "$HOST:$APP/web/dist/"
 rsync -a "$REPO/deploy/" "$HOST:$APP/deploy/"

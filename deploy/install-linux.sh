@@ -12,7 +12,7 @@ if [ "$(uname -m)" = armv6l ]; then
 fi
 
 sudo apt-get update
-sudo apt-get install -y python3 curl pipewire pipewire-pulse wireplumber pulseaudio-utils python3-pil fonts-inter
+sudo apt-get install -y python3 curl pipewire pipewire-bin pipewire-pulse wireplumber pulseaudio-utils ffmpeg python3-pil fonts-inter
 # user services (PipeWire, Soloist, the API) keep running with nobody logged in
 sudo loginctl enable-linger "$USER"
 
