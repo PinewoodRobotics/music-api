@@ -1,8 +1,12 @@
+import contextlib
 import datetime
+import io
 import json
 import os
 import tempfile
+import time
 import unittest
+from unittest import mock
 
 import quiet_hours as qh
 
@@ -170,6 +174,135 @@ class Lock(unittest.TestCase):
             q2.observe(False, heartbeat=False)
             with open(path) as f:
                 self.assertEqual(json.load(f)["heartbeat"], at(12, 22))
+
+
+class Override(unittest.TestCase):
+    def make(self, t, path=None):
+        c = Clock(t)
+        return qh.QuietHours(qh.parse_window("21:00-08:00"), path, clock=c), c
+
+    def test_unlock_until_morning_then_normal_rules(self):
+        q, c = self.make(at(12, 22))
+        q.observe(False)
+        c.t = at(12, 22, 5)
+        self.assertEqual(q.observe(False), "locked")
+        q.set_override("unlock", {"id": "U1", "name": "Ada"})
+        self.assertFalse(q.locked())
+        st = q.status()
+        self.assertEqual((st["phase"], st["override"]["kind"], st["override"]["until_ts"]), ("open", "unlocked", round(at(13, 8))))
+        c.t = at(13, 3)
+        self.assertIsNone(q.observe(False))
+        self.assertFalse(q.locked())
+        c.t = at(13, 8)
+        q.observe(False)
+        self.assertIsNone(q.override)
+        c.t = at(13, 21, 5)
+        self.assertEqual(q.observe(False), "locked")
+
+    def test_unlock_outside_window_covers_tonight(self):
+        q, c = self.make(at(12, 15))
+        q.set_override("unlock")
+        c.t = at(12, 23)
+        self.assertIsNone(q.observe(False))
+        self.assertEqual(q.status()["override"]["until_ts"], round(at(13, 8)))
+
+    def test_lock_now_only_inside_window(self):
+        q, c = self.make(at(12, 15))
+        with self.assertRaises(ValueError):
+            q.set_override("lock")
+        c.t = at(12, 21, 1)
+        q.observe(True)
+        q.set_override("lock", {"id": "U1", "name": "Ada"})
+        self.assertTrue(q.locked())
+        st = q.status()
+        self.assertEqual((st["phase"], st["override"]["kind"], st["override"]["by"]["name"]), ("locked", "locked", "Ada"))
+        c.t = at(13, 8)
+        self.assertEqual(q.observe(False), "unlocked")
+        self.assertIsNone(q.status()["override"])
+
+    def test_clear_lock_restarts_idle_clock(self):
+        q, c = self.make(at(12, 22))
+        q.observe(False)
+        q.set_override("lock")
+        c.t = at(12, 23)
+        q.set_override("clear")
+        self.assertFalse(q.locked())
+        self.assertIsNone(q.observe(False))
+        c.t = at(12, 23, 5)
+        self.assertEqual(q.observe(False), "locked")
+
+    def test_bad_action(self):
+        q, _ = self.make(at(12, 22))
+        with self.assertRaises(ValueError):
+            q.set_override("explode")
+
+    def test_override_is_shared_with_the_watchdog(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, qh.STATE_FILE)
+            q, c = self.make(at(12, 22), path)
+            q.observe(False)
+            q.set_override("unlock")
+            q2, c2 = self.make(at(12, 23), path)
+            self.assertIsNone(q2.observe(False, heartbeat=False))
+            self.assertFalse(q2.locked())
+
+    def test_configure_changes_window_and_grace(self):
+        q, c = self.make(at(12, 22))
+        q.observe(False)
+        q.configure(qh.parse_window("23:00-06:00"), 60)
+        self.assertEqual(q.status()["phase"], "open")
+        c.t = at(12, 23, 1)
+        self.assertEqual(q.observe(False), "locked")
+        q.configure(None, 60)
+        self.assertEqual(q.observe(False), "unlocked")
+
+
+class Settings(unittest.TestCase):
+    def test_env_default_then_admin_settings(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = qh.settings(d, "22:00-07:00")
+            self.assertEqual((cfg["window"], cfg["grace"], cfg["source"]), ((22 * 60, 7 * 60), qh.GRACE, "env"))
+            qh.save_settings(d, qh.parse_window("20:30-06:15"), 600, {"id": "U1", "name": "Ada"}, now=5)
+            cfg = qh.settings(d, "22:00-07:00")
+            self.assertEqual((cfg["window"], cfg["grace"], cfg["source"], cfg["updated_by"]["name"], cfg["updated_at"]),
+                             ((20 * 60 + 30, 6 * 60 + 15), 600, "admin", "Ada", 5))
+            qh.save_settings(d, None, 600, times=qh.parse_window("20:30-06:15"))
+            cfg = qh.settings(d, "22:00-07:00")
+            self.assertEqual((cfg["window"], cfg["times"]), (None, (20 * 60 + 30, 6 * 60 + 15)))
+            qh.reset_settings(d)
+            qh.reset_settings(d)
+            self.assertEqual(qh.settings(d, "22:00-07:00")["source"], "env")
+
+    def test_bad_files_fall_back(self):
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, qh.SETTINGS_FILE), "w") as f:
+                json.dump({"window": "nonsense"}, f)
+            with contextlib.redirect_stderr(io.StringIO()):
+                cfg = qh.settings(d, "bad")
+            self.assertEqual((cfg["window"], cfg["source"]), (qh.parse_window(qh.DEFAULT_WINDOW), "env"))
+
+    def test_watchdog_cli_reads_admin_settings(self):
+        with tempfile.TemporaryDirectory() as d:
+            qh.save_settings(d, qh.parse_window("01:00-02:00"), 120)
+            out = io.StringIO()
+            with mock.patch.dict(os.environ, {"MUSIC_API_DATA_DIR": d, "QUIET_HOURS": "21:00-08:00"}), \
+                    contextlib.redirect_stdout(out):
+                self.assertEqual(qh.main(["quiet_hours.py", "status"]), 0)
+            st = json.loads(out.getvalue())
+            self.assertEqual((st["window"], st["grace_s"]), ("01:00-02:00", 120))
+
+    def test_receiver_allowed_follows_lock(self):
+        with tempfile.TemporaryDirectory() as d:
+            now = time.time()
+            with open(os.path.join(d, qh.STATE_FILE), "w") as f:
+                json.dump({"locked_until": now + 3600, "idle_since": now - 600, "heartbeat": now}, f)
+            minute = datetime.datetime.fromtimestamp(now)
+            start = (minute.hour * 60 + minute.minute - 10) % 1440
+            qh.save_settings(d, (start, (start + 120) % 1440), 300)
+            with mock.patch.dict(os.environ, {"MUSIC_API_DATA_DIR": d}):
+                self.assertEqual(qh.main(["quiet_hours.py", "receiver-allowed"]), 1)
+                qh.save_settings(d, None, 300)
+                self.assertEqual(qh.main(["quiet_hours.py", "receiver-allowed"]), 0)
 
 
 if __name__ == "__main__":

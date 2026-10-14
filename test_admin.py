@@ -1,0 +1,266 @@
+import contextlib
+import datetime
+import io
+import json
+import os
+import tempfile
+import threading
+import unittest
+import urllib.error
+import urllib.parse
+import urllib.request
+from http.server import ThreadingHTTPServer
+
+import quiet_hours as qh
+import server
+import system_stats
+import test_system_stats as fake
+import updater
+from accounts import AccountError, Admins, PersonalTokens, Sessions, Slack
+from guard import Guard
+from quiet_hours import QuietHours, parse_window
+from tokens import Tokens
+
+ADA = {"id": "U1", "name": "Ada", "avatar": None, "admin": False, "kind": "slack", "email": "ada@pinewood.edu"}
+BOB = {"id": "U2", "name": "Bob", "avatar": "http://b", "admin": False, "kind": "slack", "email": "bob@pinewood.edu"}
+OLD = {"id": "U3", "name": "Old", "avatar": None, "admin": True, "kind": "slack"}
+
+
+class AdminsTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_config_and_runtime_merge(self):
+        a = Admins(self.tmp.name, ["U9", " Ada@Pinewood.edu ", ""])
+        self.assertTrue(a.is_admin(ADA))
+        self.assertFalse(a.is_admin(BOB))
+        a.add(ADA, id="u2", name="Bob")
+        self.assertTrue(a.is_admin(BOB))
+        self.assertTrue(Admins(self.tmp.name, []).is_admin(BOB))
+        entries = a.entries()
+        self.assertEqual([(e["key"], e["source"]) for e in entries],
+                         [("u9", "config"), ("ada@pinewood.edu", "config"), ("u2", "admin")])
+        self.assertEqual((entries[0]["id"], entries[1]["email"], entries[2]["added_by"]["name"]), ("U9", "ada@pinewood.edu", "Ada"))
+
+    def test_add_validation_and_duplicates(self):
+        a = Admins(self.tmp.name, ["u9"])
+        for kw in ({}, {"email": "nope"}, {"id": "U1; rm"}):
+            with self.assertRaises(AccountError):
+                a.add(ADA, **kw)
+        with self.assertRaises(AccountError) as e:
+            a.add(ADA, id="U9")
+        self.assertEqual(e.exception.status, 409)
+        a.add(ADA, email="BOB@pinewood.edu")
+        with self.assertRaises(AccountError) as e:
+            a.add(ADA, email="bob@pinewood.edu")
+        self.assertEqual(e.exception.status, 409)
+        self.assertTrue(a.is_admin(BOB))
+
+    def test_remove_rules(self):
+        a = Admins(self.tmp.name, [])
+        a.add(ADA, id="U1")
+        with self.assertRaises(AccountError) as e:
+            a.remove("u1", ADA)
+        self.assertIn("last admin", str(e.exception))
+        a.add(ADA, email="bob@pinewood.edu")
+        a.remove("U1", ADA)
+        self.assertFalse(a.is_admin(ADA))
+        with self.assertRaises(AccountError) as e:
+            a.remove("u1", BOB)
+        self.assertEqual(e.exception.status, 404)
+        c = Admins(self.tmp.name, ["u9"])
+        with self.assertRaises(AccountError) as e:
+            c.remove("U9", ADA)
+        self.assertEqual(e.exception.status, 409)
+        c.remove("bob@pinewood.edu", BOB)
+        self.assertEqual([e["key"] for e in c.entries()], ["u9"])
+
+    def test_resolve(self):
+        a = Admins(self.tmp.name, [])
+        self.assertFalse(a.resolve({**ADA, "admin": True})["admin"])
+        self.assertTrue(a.resolve(OLD)["admin"])
+        self.assertIs(a.resolve(server.ADMIN), server.ADMIN)
+        a.add(BOB, id="U1")
+        self.assertTrue(a.resolve(ADA)["admin"])
+
+    def test_session_user_records_email(self):
+        s = Slack("c", "s", "b", "r", "T1", ["ada@pinewood.edu"])
+        u = s.session_user("U1", extra={"profile": {"display_name": "Ada", "email": "Ada@Pinewood.edu"}})
+        self.assertEqual((u["email"], u["admin"]), ("ada@pinewood.edu", True))
+
+
+class Player:
+    def spotify_status(self):
+        return {"state": "paused"}
+
+    def _emit_status(self):
+        pass
+
+    def pause(self, force=False):
+        pass
+
+
+class RoutesTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        d = cls.tmp.name
+        server.tokens, server.sessions, server.personal = Tokens(d), Sessions(d), PersonalTokens(d)
+        server.slack = Slack(None, None, None, "r")
+        server.DATA_DIR, server.QUIET_DEFAULT = d, "21:00-08:00"
+        cls.now = [datetime.datetime(2026, 10, 13, 12).timestamp()]
+        server.quiet = cls.quiet = QuietHours(parse_window("21:00-08:00"), os.path.join(d, qh.STATE_FILE),
+                                              clock=lambda: cls.now[0])
+        cls.enforced = []
+        server.guard = Guard(Player(), cls.quiet, enforce=cls.enforced.append, clock=lambda: cls.now[0])
+        root = os.path.join(d, "root")
+        for path, text in {"proc/stat": fake.STAT_1, "proc/meminfo": fake.MEMINFO, "proc/uptime": "100 1\n",
+                           "proc/loadavg": "0.5 0.4 0.3 1/2 3\n"}.items():
+            os.makedirs(os.path.dirname(os.path.join(root, path)), exist_ok=True)
+            with open(os.path.join(root, path), "w") as f:
+                f.write(text)
+        cls.runner = fake.Runner({"systemctl --user show": (0, fake.SHOW_USER), "systemctl --user restart": (0, ""),
+                                  "journalctl --user": (0, "a\nb\n")})
+        server.stats = system_stats.Stats(root=root, run=cls.runner)
+        server.updates = updater.Updater(app_dir=d, data_dir=d, repo_dir=os.path.join(d, "missing.git"),
+                                         remote="git@github.com:x/y.git", key_path=os.path.join(d, "nokey"))
+        cls.logs = contextlib.redirect_stderr(io.StringIO())
+        cls.logs.__enter__()
+        cls.srv = ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
+        threading.Thread(target=cls.srv.serve_forever, daemon=True).start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.srv.shutdown()
+        cls.srv.server_close()
+        cls.logs.__exit__(None, None, None)
+        server.admins = None
+        cls.tmp.cleanup()
+
+    def setUp(self):
+        server.admins = Admins(self.tmp.name, ["u9"])
+        for f in ("admins.json", qh.SETTINGS_FILE):
+            try:
+                os.remove(os.path.join(self.tmp.name, f))
+            except FileNotFoundError:
+                pass
+        server.admins.added = []
+        self.quiet.configure(parse_window("21:00-08:00"), qh.GRACE)
+        self.quiet.locked_until = self.quiet.override = None
+        self.now[0] = datetime.datetime(2026, 10, 13, 12).timestamp()
+        self.ada = server.sessions.create(ADA)
+        self.bob = server.sessions.create(BOB)
+
+    def call(self, method, path, body=None, sid=None):
+        data = json.dumps(body).encode() if body is not None else None
+        headers = {"Content-Type": "application/json"}
+        if sid:
+            headers["Cookie"] = f"mapi_session={sid}"
+        req = urllib.request.Request(f"http://127.0.0.1:{self.srv.server_address[1]}{path}", data=data, method=method,
+                                     headers=headers)
+        try:
+            with urllib.request.urlopen(req) as res:
+                return res.status, json.loads(res.read())
+        except urllib.error.HTTPError as e:
+            return e.code, json.loads(e.read())
+
+    def test_non_admins_get_403_everywhere(self):
+        routes = [(m, p.replace("{name}", "soloist").replace("{key}", "u9")) for m, _, p, _, _ in server.ROUTES
+                  if p.startswith("/api/admin")]
+        self.assertGreaterEqual(len(routes), 12)
+        for method, path in routes:
+            code, res = self.call(method, path, {} if method != "GET" else None, sid=self.bob)
+            self.assertEqual((method, path, code, res), (method, path, 403, {"error": "admins only"}))
+
+    def test_runtime_admin_takes_effect_on_existing_sessions(self):
+        self.assertEqual(self.call("GET", "/api/admin/system", sid=self.ada)[0], 403)
+        self.assertFalse(self.call("GET", "/api/app/me", sid=self.ada)[1]["result"]["admin"])
+        server.admins.add(BOB, id="U1")
+        self.assertTrue(self.call("GET", "/api/app/me", sid=self.ada)[1]["result"]["admin"])
+        self.assertEqual(self.call("GET", "/api/admin/system", sid=self.ada)[0], 200)
+
+    def test_admins_routes(self):
+        server.admins.add(ADA, id="U1")
+        code, res = self.call("GET", "/api/admin/admins", sid=self.ada)
+        self.assertEqual(code, 200)
+        admins = res["result"]["admins"]
+        self.assertEqual([(a["key"], a["source"], a["you"]) for a in admins], [("u9", "config", False), ("u1", "admin", True)])
+        self.assertEqual(admins[1]["name"], "Ada")
+        known = {k["id"]: k for k in res["result"]["known"]}
+        self.assertEqual((known["U1"]["admin"], known["U2"]["admin"], known["U2"]["email"]), (True, False, "bob@pinewood.edu"))
+        code, res = self.call("POST", "/api/admin/admins", {"id": "bob@pinewood.edu"}, sid=self.ada)
+        self.assertEqual(code, 200)
+        added = res["result"]["admins"][-1]
+        self.assertEqual((added["key"], added["name"], added["avatar"], added["added_by"]["name"]),
+                         ("bob@pinewood.edu", "Bob", "http://b", "Ada"))
+        self.assertEqual(self.call("POST", "/api/admin/admins", {"email": "bob@pinewood.edu"}, sid=self.ada)[0], 409)
+        self.assertEqual(self.call("DELETE", "/api/admin/admins/u9", sid=self.ada)[0], 409)
+        self.assertEqual(self.call("GET", "/api/admin/system", sid=self.bob)[0], 200)
+        code, res = self.call("DELETE", "/api/admin/admins/" + urllib.parse.quote("bob@pinewood.edu"), sid=self.ada)
+        self.assertEqual((code, [a["key"] for a in res["result"]["admins"]]), (200, ["u9", "u1"]))
+        self.assertEqual(self.call("GET", "/api/admin/system", sid=self.bob)[0], 403)
+
+    def test_cant_remove_yourself_as_last_admin(self):
+        server.admins = Admins(self.tmp.name, [])
+        server.admins.add(ADA, id="U1")
+        code, res = self.call("DELETE", "/api/admin/admins/U1", sid=self.ada)
+        self.assertEqual(code, 409)
+        self.assertIn("last admin", res["error"])
+
+    def test_quiet_hours_settings_persist_and_reach_the_watchdog(self):
+        code, res = self.call("GET", "/api/admin/quiet-hours")
+        self.assertEqual((code, res["result"]["settings"]["source"], res["result"]["settings"]["grace_min"]), (200, "env", 5))
+        code, res = self.call("PUT", "/api/admin/quiet-hours", {"start": "22:30", "end": "06:00", "grace_min": 10})
+        s = res["result"]["settings"]
+        self.assertEqual((code, s["start"], s["end"], s["grace_min"], s["source"], s["updated_by"]["name"]),
+                         (200, "22:30", "06:00", 10, "admin", "Admin"))
+        self.assertEqual((res["result"]["status"]["window"], self.quiet.grace), ("22:30-06:00", 600))
+        cfg = qh.settings(self.tmp.name, "21:00-08:00")
+        self.assertEqual((cfg["window"], cfg["grace"]), (parse_window("22:30-06:00"), 600))
+        code, res = self.call("PUT", "/api/admin/quiet-hours", {"enabled": False})
+        self.assertEqual((res["result"]["settings"]["enabled"], res["result"]["settings"]["start"]), (False, "22:30"))
+        self.assertIsNone(qh.settings(self.tmp.name, "21:00-08:00")["window"])
+        self.assertFalse(res["result"]["status"]["enabled"])
+        self.assertEqual(self.call("PUT", "/api/admin/quiet-hours", {"enabled": True})[1]["result"]["status"]["window"], "22:30-06:00")
+        self.assertEqual(self.call("PUT", "/api/admin/quiet-hours", {"start": "25:00"})[0], 400)
+        self.assertEqual(self.call("PUT", "/api/admin/quiet-hours", {"grace_min": 999})[0], 400)
+        code, res = self.call("PUT", "/api/admin/quiet-hours", {"reset": True})
+        self.assertEqual((res["result"]["settings"]["source"], res["result"]["status"]["window"]), ("env", "21:00-08:00"))
+
+    def test_override_locks_and_unlocks_now(self):
+        self.assertEqual(self.call("POST", "/api/admin/quiet-hours/override", {"action": "lock"})[0], 409)
+        self.now[0] = datetime.datetime(2026, 10, 13, 22).timestamp()
+        self.enforced.clear()
+        code, res = self.call("POST", "/api/admin/quiet-hours/override", {"action": "lock"})
+        self.assertEqual((code, res["result"]["status"]["phase"], res["result"]["status"]["override"]["kind"]), (200, "locked", "locked"))
+        self.assertTrue(self.enforced[0])
+        self.assertEqual(self.call("GET", "/api/quiet-hours")[1]["result"]["locked"], True)
+        code, res = self.call("POST", "/api/admin/quiet-hours/override", {"action": "unlock"})
+        self.assertEqual((res["result"]["status"]["phase"], res["result"]["status"]["override"]["kind"]), ("open", "unlocked"))
+        self.assertFalse(self.enforced[-1])
+        self.assertEqual(self.call("POST", "/api/admin/quiet-hours/override", {"action": "bogus"})[0], 409)
+
+    def test_system_services_and_logs(self):
+        code, res = self.call("GET", "/api/admin/system")
+        r = res["result"]
+        self.assertEqual((code, r["memory"]["percent"], r["load"]), (200, 50.0, [0.5, 0.4, 0.3]))
+        self.assertEqual([s["name"] for s in r["services"]][:3], ["soloist", "music-api", "airplay"])
+        self.assertNotIn("history", self.call("GET", "/api/admin/system?history=0")[1]["result"])
+        self.assertEqual(self.call("POST", "/api/admin/services/soloist/restart")[1]["result"], {"name": "soloist", "state": "active"})
+        self.assertEqual(self.call("POST", "/api/admin/services/music-api/restart")[0], 403)
+        self.assertEqual(self.call("POST", "/api/admin/services/nope/restart")[0], 404)
+        self.assertEqual(self.call("GET", "/api/admin/logs/soloist?lines=5")[1]["result"]["lines"], ["a", "b"])
+
+    def test_update_routes_without_setup(self):
+        code, res = self.call("GET", "/api/admin/update")
+        self.assertEqual((code, res["result"]["configured"]), (200, False))
+        self.assertIn("updater.py setup", res["result"]["setup_hint"])
+        self.assertEqual(self.call("POST", "/api/admin/update")[0], 503)
+        self.assertEqual(self.call("POST", "/api/admin/update/check")[1]["result"]["configured"], False)
+
+
+if __name__ == "__main__":
+    unittest.main()

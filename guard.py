@@ -182,6 +182,15 @@ class Guard:
             self._phase = phase
             self.changed()
 
+    def quiet_changed(self):
+        """Apply an admin's quiet-hours change (settings or override) now instead of on the next tick."""
+        locked = self.quiet.locked()
+        self.enforce(locked)
+        if locked and self._airplay():
+            self.airplay.end_session()
+        self.tick()
+        self.changed()
+
     def loop(self, interval=5):
         self.enforce(self.quiet.locked())
         while True:

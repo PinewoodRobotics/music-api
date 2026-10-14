@@ -10,7 +10,8 @@ SECTIONS = [("Playback", "/api/status /api/now-playing /api/artwork /api/play /a
             ("Library & history", "/api/library /api/recent /api/top /api/me"),
             ("Tokens", "/api/tokens"),
             ("Sound effects", "/api/effects"),
-            ("System audio", "/api/system")]
+            ("System audio", "/api/system"),
+            ("Admin", "/api/admin")]
 
 
 def doc(d):
@@ -41,6 +42,9 @@ for title, prefixes in SECTIONS:
             continue
         seen.add((m, path))
         row(m, path, doc(d))
+    if title == "Admin":
+        print("\nAdmins only (403 for everyone else): API tokens, and Slack users listed in `SLACK_ADMINS` or added on the admin page "
+              "(`<data-dir>/admins.json`). The web app's admin page (`/admin`, account menu > Admin) is built on these.")
     if title == "Tokens":
         print("\nTokens have no scopes: any token can do everything, including creating and revoking tokens. "
               "Only SHA-256 hashes are stored (`<data-dir>/api-tokens.json`, mode 600). New tokens look like `mapi_…`. "

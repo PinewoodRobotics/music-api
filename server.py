@@ -28,7 +28,9 @@ import extras
 import quiet_hours
 import links
 import slack_bot
-from accounts import ADMIN, SESSION_COOKIE_AGE, AccountError, Credits, PersonalTokens, Google, Playlists, Sessions, Slack
+import system_stats
+import updater as updater_mod
+from accounts import ADMIN, SESSION_COOKIE_AGE, AccountError, Admins, Credits, PersonalTokens, Google, Playlists, Sessions, Slack
 from effects import EffectsError
 from extras import ExtrasError
 from guard import Guard
@@ -45,12 +47,16 @@ SEARCH_TYPES = "track,album,artist,playlist,show,episode,audiobook"
 auth = api = player = soloist = tokens = slack = google = sessions = app_playlists = bot = personal = library = None
 credits = activity = None
 guard = airplay = quiet = effects = None
+admins = stats = updates = None
+DATA_DIR = None
+QUIET_DEFAULT = quiet_hours.DEFAULT_WINDOW
 _req = threading.local()  # per-request context: the token entry and the user that authenticated it
 WEB_DIST = os.path.join(HERE, "web", "dist")
 SESSION_COOKIE = "mapi_session"
-APP_ERRORS = (SpotifyError, PlayerError, ExtrasError, TokenError, AccountError, links.LinkError, EffectsError)
+APP_ERRORS = (SpotifyError, PlayerError, ExtrasError, TokenError, AccountError, links.LinkError, EffectsError,
+              system_stats.StatsError, updater_mod.UpdateError)
 # Slack users (non-admins) get playback, search and the app's playlists, not the account's private data or admin routes
-ADMIN_ONLY = re.compile(r"^/(api$|api/(tokens|spotify|backend/soloist|library|recent|top|me$|devices/transfer)"
+ADMIN_ONLY = re.compile(r"^/(api$|api/(tokens|spotify|backend/soloist|library|recent|top|me$|devices/transfer|admin)"
                         r"|auth(/login|/paste|/logout|$))")
 ADMIN_ONLY_METHODS = {("GET", "/api/playlists"), ("POST", "/api/playlists"), ("POST", "/api/system/outputs"),
                       ("POST", "/api/effects")}
@@ -993,6 +999,188 @@ def _revoke_token(q, b, id):
     return tokens.revoke(id)
 
 
+# ---------- admin ----------
+
+def _by():
+    return {"id": _req.user.get("id"), "name": _req.user.get("name")}
+
+
+@route("GET", "/api/admin/system")
+def _admin_system(q, b):
+    """System health (admins only): {sampled_at, hostname, model, uptime_s, cpu {percent, cores: [%], count, freq_mhz,
+    max_mhz}, load [1, 5, 15 min], temp_c, power {source: vcgencmd|sysfs|hwmon, raw, now {under_voltage, freq_capped,
+    throttled, soft_temp_limit}, since_boot {same}, events (under-voltage kernel messages this boot), last_event_at},
+    memory {total, available, used, percent, swap_total, swap_used} (bytes), disk {path, total, used, free, percent},
+    network {interface, ip, ssid, bssid, signal_dbm, quality 0-100, bitrate_mbps, freq_mhz}, services [{name, unit,
+    scope: user|system, state, sub, since, enabled, restartable}], versions {commit, commit_short, subject, built_at,
+    python, soloist, shairport_sync, kernel, os}, history [{t, cpu, temp}] (every 5 s, last 10 min)}.
+    ?history=0 leaves out the history. Unknown values are null"""
+    return stats.snapshot(history=q.get("history") != "0")
+
+
+@route("POST", "/api/admin/services/{name}/restart")
+def _admin_restart(q, b, name):
+    """Restart soloist, airplay or music-display (admins only) → {name, state}. Restarting soloist interrupts the
+    music for a few seconds; restarting airplay disconnects the AirPlay sender"""
+    return stats.restart(name)
+
+
+@route("GET", "/api/admin/logs/{name}")
+def _admin_logs(q, b, name):
+    """Recent journal lines of a service from the System list (admins only): ?lines= (default 200, max 1000)
+    → {name, unit, lines: [str], error}"""
+    return stats.logs(name, q.get("lines") or 200)
+
+
+def _quiet_admin():
+    cfg = quiet_hours.settings(DATA_DIR, QUIET_DEFAULT)
+    times = cfg["times"] or quiet_hours.parse_window(quiet_hours.DEFAULT_WINDOW)
+    return {"settings": {"enabled": cfg["window"] is not None, "start": quiet_hours.hhmm(times[0]),
+                         "end": quiet_hours.hhmm(times[1]), "grace_min": round(cfg["grace"] / 60, 2),
+                         "source": cfg["source"], "env_window": cfg["env_window"], "updated_by": cfg["updated_by"],
+                         "updated_at": cfg["updated_at"]},
+            "status": quiet.status()}
+
+
+def _apply_quiet():
+    cfg = quiet_hours.settings(DATA_DIR, QUIET_DEFAULT)
+    quiet.configure(cfg["window"], cfg["grace"])
+    guard.quiet_changed()
+
+
+@route("GET", "/api/admin/quiet-hours")
+def _admin_quiet(q, b):
+    """Quiet-hours settings and state (admins only): {settings {enabled, start: "21:00", end: "08:00", grace_min,
+    source: admin|env, env_window, updated_by, updated_at}, status (as GET /api/quiet-hours, plus override
+    {kind: unlocked|locked, until_ts, by})}"""
+    return _quiet_admin()
+
+
+@route("PUT", "/api/admin/quiet-hours")
+def _admin_set_quiet(q, b):
+    """Body {enabled?, start?: "HH:MM", end?: "HH:MM", grace_min?} (admins only): change the window at runtime, or
+    {reset: true} to go back to the server default (QUIET_HOURS). Saved in the data dir and also used by the OS
+    watchdog (quiet_hours.py sync, the AirPlay receiver's start check). Applies at once: enabling a window that has
+    already started locks the speakers if nothing has played for the grace period"""
+    if b.get("reset"):
+        quiet_hours.reset_settings(DATA_DIR)
+    else:
+        cur = quiet_hours.settings(DATA_DIR, QUIET_DEFAULT)
+        times = cur["times"]
+        start = b.get("start") or quiet_hours.hhmm(times[0])
+        end = b.get("end") or quiet_hours.hhmm(times[1])
+        window = quiet_hours.parse_window(f"{start}-{end}")
+        enabled = b["enabled"] if "enabled" in b else cur["window"] is not None
+        grace = round(float(b["grace_min"]) * 60) if b.get("grace_min") is not None else cur["grace"]
+        if not 0 <= grace <= quiet_hours.MAX_GRACE:
+            raise ValueError(f"grace_min must be 0-{quiet_hours.MAX_GRACE // 60}")
+        quiet_hours.save_settings(DATA_DIR, window if enabled else None, grace, _by(), times=window)
+    _apply_quiet()
+    return _quiet_admin()
+
+
+@route("POST", "/api/admin/quiet-hours/override")
+def _admin_quiet_override(q, b):
+    """Body {action: unlock|lock|clear} (admins only). unlock: the speakers stay unlocked until the current (or next)
+    window ends. lock: lock now until the window ends (409 outside the window). clear: back to the normal rules"""
+    try:
+        quiet.set_override(b.get("action"), _by())
+    except ValueError as e:
+        raise AccountError(str(e), 409)
+    guard.quiet_changed()
+    return _quiet_admin()
+
+
+def _known_users():
+    known = {}
+    for uid, e in personal.by_user.items():
+        u = e.get("user") or {}
+        if u.get("kind") == "slack":
+            known[uid] = (u, None)
+    for uid, (u, seen) in sessions.users().items():
+        if u.get("kind") == "slack":
+            known[uid] = (u, seen)
+    return known
+
+
+def _admins_out():
+    known = _known_users()
+    by_key = {}
+    for u, _ in known.values():
+        by_key.update({k: u for k in Admins._keys(u)})
+    me = Admins._keys(_req.user)
+    out = []
+    for e in admins.entries():
+        u = by_key.get(e["key"]) or {}
+        out.append({"key": e["key"], "id": u.get("id") or e.get("id"), "email": u.get("email") or e.get("email"),
+                    "name": u.get("name") or e.get("name"), "avatar": u.get("avatar") or e.get("avatar"),
+                    "source": e["source"], "added_by": e.get("added_by"), "added": e.get("added"),
+                    "you": e["key"] in me})
+    people = [{"id": uid, "name": u.get("name"), "avatar": u.get("avatar"), "email": u.get("email"),
+               "admin": admins.resolve(u)["admin"], "last_seen": seen} for uid, (u, seen) in known.items()]
+    people.sort(key=lambda p: (-(p["last_seen"] or 0), (p["name"] or "").lower()))
+    return {"admins": out, "known": people}
+
+
+@route("GET", "/api/admin/admins")
+def _admin_admins(q, b):
+    """Admins (admins only): {admins: [{key, id, email, name, avatar, source: config|admin, added_by, added, you}],
+    known: [{id, name, avatar, email, admin, last_seen}] (everyone who has signed in)}. config admins come from
+    SLACK_ADMINS and can't be removed here; API tokens are always admin"""
+    return _admins_out()
+
+
+@route("POST", "/api/admin/admins")
+def _admin_add(q, b):
+    """Body {id} (Slack user ID) or {email} (admins only): make someone an admin, saved in the data dir. 409 if they
+    already are. Returns the same as GET"""
+    ident = (b.get("id") or "").strip()
+    email = (b.get("email") or "").strip() or (ident if "@" in ident else "")
+    uid = "" if "@" in ident else ident
+    u = (_known_users().get(uid.upper()) or (None,))[0] if uid else None
+    if uid and not u and slack and slack.configured:
+        try:
+            u = slack.session_user(uid.upper())
+        except AccountError:
+            u = None
+    admins.add(_by(), id=uid, email=email, name=(u or {}).get("name"), avatar=(u or {}).get("avatar"))
+    return _admins_out()
+
+
+@route("DELETE", "/api/admin/admins/{key}")
+def _admin_remove(q, b, key):
+    """Remove an admin added here (admins only); key from GET. 409 for config admins and for removing yourself as
+    the last admin. Returns the same as GET"""
+    admins.remove(key, _req.user)
+    return _admins_out()
+
+
+@route("GET", "/api/admin/update")
+def _admin_update(q, b):
+    """Update status (admins only): {configured, setup_hint, deployed {commit, short, subject, date, built_at},
+    latest {commit, short, subject, date} (origin/main), build {commit, short, built_at, ready} (the pi-build branch
+    GitHub Actions publishes), behind, commits [{commit, short, subject, author, date}] newest first,
+    changes {files, restarts, units, notes}, fetched_at, fetch_error, run {id, state: running|succeeded|rolled_back|failed,
+    started_at, finished_at, from, to, result, log [{t, msg, level}]}}. Fetches from GitHub if the last fetch is over 10 min old"""
+    return updates.status()
+
+
+@route("POST", "/api/admin/update/check")
+def _admin_update_check(q, b):
+    """Fetch from GitHub now (admins only); returns the same as GET"""
+    return updates.status(fetch=True)
+
+
+@route("POST", "/api/admin/update")
+def _admin_update_start(q, b):
+    """Update to the latest build (admins only). Runs in the background: stages the build, swaps it in, restarts
+    music-api (and music-display if its files changed; Soloist and AirPlay keep playing), health-checks /api/status
+    and rolls back if that fails. Poll GET for run.state and run.log; expect the API to drop for a few seconds.
+    409 if already up to date or an update is running"""
+    run = updates.start(_by())
+    return {**updates.status(fetch=False), "run": run}
+
+
 # ---------- Web API login (OAuth Authorization Code + PKCE) ----------
 
 LOGIN_PAGE = """<!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">
@@ -1093,6 +1281,8 @@ class Handler(BaseHTTPRequestHandler):
             _req.user, renew = sessions.get(sid)
             if renew:
                 _req.cookies = (self._set_cookie(sid, SESSION_COOKIE_AGE),)
+        if _req.user and admins:
+            _req.user = admins.resolve(_req.user)
         _req.origin = activity_log.origin_for(self.headers, _req.bearer)
         if _req.user:
             return True
@@ -1388,12 +1578,12 @@ def main():
                     help="shairport-sync metadata pipe (default %(default)s); fine if it doesn't exist")
     a = ap.parse_args()
     try:
-        window = quiet_hours.parse_window(a.quiet_hours)
+        quiet_hours.parse_window(a.quiet_hours)
     except ValueError as e:
         ap.error(str(e))
 
     global auth, api, player, soloist, tokens, slack, google, sessions, app_playlists, bot, personal, credits, activity, library
-    global guard, airplay, quiet, effects
+    global guard, airplay, quiet, effects, admins, stats, updates, DATA_DIR, QUIET_DEFAULT
     os.makedirs(a.data_dir, mode=0o700, exist_ok=True)
     auth = Auth(a.data_dir, a.client_id, a.redirect_uri or f"http://127.0.0.1:{a.port}/auth/callback")
     api = WebAPI(auth)
@@ -1406,6 +1596,11 @@ def main():
         return
 
     tokens = Tokens(a.data_dir, a.token)
+    DATA_DIR, QUIET_DEFAULT = a.data_dir, a.quiet_hours
+    admins = Admins(a.data_dir, os.environ.get("SLACK_ADMINS", "").split(","))
+    stats = system_stats.Stats()
+    threading.Thread(target=stats.loop, daemon=True).start()
+    updates = updater_mod.Updater(data_dir=a.data_dir, port=a.port)
     sessions = Sessions(a.data_dir)
     personal = PersonalTokens(a.data_dir)
     app_playlists = Playlists(a.data_dir, a.hidden_playlists)
@@ -1441,7 +1636,8 @@ def main():
     if soloist:
         soloist.on_event = player.on_soloist_event
         threading.Thread(target=soloist.loop, daemon=True).start()
-    quiet = quiet_hours.QuietHours(window, os.path.join(a.data_dir, quiet_hours.STATE_FILE))
+    qcfg = quiet_hours.settings(a.data_dir, a.quiet_hours)
+    quiet = quiet_hours.QuietHours(qcfg["window"], os.path.join(a.data_dir, quiet_hours.STATE_FILE), grace=qcfg["grace"])
     airplay = airplay_mod.AirPlay(a.airplay_pipe, state_path=os.path.join(a.data_dir, "airplay-sender.json"))
     guard = Guard(player, quiet, airplay, enforce=lambda locked: quiet_hours.enforce(locked, a.data_dir),
                   receiver=quiet_hours.receiver, remote=airplay_mod.remote,

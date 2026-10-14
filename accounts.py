@@ -114,9 +114,9 @@ class Slack:
         profile = (extra or self._call("users.info", self.bot_token, user=uid)["user"]).get("profile", {})
         name = profile.get("display_name") or profile.get("real_name") or fallback_name or uid
         avatar = profile.get("image_192") or profile.get("image_72") or fallback_avatar
-        email = (email or "").lower()
+        email = (email or profile.get("email") or "").lower()
         admin = uid.lower() in self.admins or (email and email in self.admins)
-        return {"id": uid, "name": name, "avatar": avatar, "admin": bool(admin), "kind": "slack"}
+        return {"id": uid, "name": name, "avatar": avatar, "admin": bool(admin), "kind": "slack", "email": email or None}
 
 
 class Google:
@@ -228,6 +228,75 @@ class PersonalTokens:
             return self.by_user[uid]["user"] if uid else None
 
 
+class Admins:
+    """Who is an admin: the static config list (SLACK_ADMINS: Slack user IDs or emails), which the web app can't
+    change, plus the ones admins add at runtime (<data-dir>/admins.json)."""
+
+    def __init__(self, data_dir, config=()):
+        self.path = os.path.join(data_dir, "admins.json")
+        self.config = [a.strip().lower() for a in config if a and a.strip()]
+        self.lock = threading.Lock()
+        self.added = _read_json(self.path, [])
+
+    @staticmethod
+    def _keys(user):
+        return {k for k in ((user.get("id") or "").lower(), (user.get("email") or "").lower()) if k}
+
+    def is_admin(self, user):
+        keys = self._keys(user)
+        if keys & set(self.config):
+            return True
+        with self.lock:
+            return any(e["key"] in keys for e in self.added)
+
+    def resolve(self, user):
+        """`user` with `admin` recomputed. Sessions from before emails were stored keep a config-email admin flag."""
+        if user.get("kind") != "slack":
+            return user
+        admin = self.is_admin(user) or ("email" not in user and bool(user.get("admin")))
+        return user if user.get("admin") == admin else {**user, "admin": admin}
+
+    def entries(self):
+        with self.lock:
+            added = [dict(e) for e in self.added]
+        out = [{"key": k, "id": None if "@" in k else k.upper(), "email": k if "@" in k else None, "source": "config",
+                "added_by": None, "added": None} for k in self.config]
+        return out + [{**e, "source": "admin"} for e in added if e["key"] not in self.config]
+
+    def add(self, by, id=None, email=None, name=None, avatar=None):
+        id, email = (id or "").strip(), (email or "").strip().lower()
+        if email and ("@" not in email or " " in email):
+            raise AccountError("that doesn't look like an email address")
+        if id and not id.replace("_", "").isalnum():
+            raise AccountError("Slack user IDs look like U012ABCDEF")
+        key = (id or email).lower()
+        if not key:
+            raise AccountError("give a Slack user ID or an email")
+        if key in self.config:
+            raise AccountError("already an admin (server config)", 409)
+        with self.lock:
+            if any(e["key"] == key for e in self.added):
+                raise AccountError("already an admin", 409)
+            self.added.append({"key": key, "id": id.upper() or None, "email": email or None, "name": name,
+                               "avatar": avatar, "added_by": {k: by.get(k) for k in ("id", "name")},
+                               "added": int(time.time())})
+            _write_json(self.path, self.added)
+
+    def remove(self, key, by):
+        key = (key or "").strip().lower()
+        if key in self.config:
+            raise AccountError("this admin comes from the server config (SLACK_ADMINS); change it there", 409)
+        with self.lock:
+            entry = next((e for e in self.added if e["key"] == key), None)
+            if not entry:
+                raise AccountError("not an admin", 404)
+            rest = [e for e in self.added if e is not entry]
+            if key in self._keys(by) and not self.config and not rest:
+                raise AccountError("you're the last admin; add someone else first", 409)
+            self.added = rest
+            _write_json(self.path, self.added)
+
+
 class Sessions:
     def __init__(self, data_dir):
         self.path = os.path.join(data_dir, "sessions.json")
@@ -266,6 +335,16 @@ class Sessions:
         with self.lock:
             if self.sessions.pop(self._key(sid or ""), None):
                 _write_json(self.path, self.sessions)
+
+    def users(self):
+        """Everyone with a session: {id: (user, last seen)}, newest sign-in's profile per person."""
+        out = {}
+        with self.lock:
+            for s in self.sessions.values():
+                u = s.get("user") or {}
+                if u.get("id") and (u["id"] not in out or s["seen"] > out[u["id"]][1]):
+                    out[u["id"]] = (u, s["seen"])
+        return out
 
 
 class Playlists:

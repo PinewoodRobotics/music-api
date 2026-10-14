@@ -61,7 +61,7 @@ class GoogleTest(unittest.TestCase):
         with mock.patch.object(accounts, "_http_json", fake):
             user, nxt = google.finish("c", q["state"])
         self.assertEqual(nxt, "/next")
-        self.assertEqual(user, {"id": "U123", "name": "Ada", "avatar": "http://img/192", "admin": True, "kind": "slack", "via": "google"})
+        self.assertEqual(user, {"id": "U123", "name": "Ada", "avatar": "http://img/192", "admin": True, "kind": "slack", "email": "ada@pinewood.edu", "via": "google"})
         token_call = next(c for c in calls if c[0] == Google.TOKEN_URL)
         form = urllib.parse.parse_qs(token_call[1].decode())
         import base64, hashlib

@@ -121,6 +121,25 @@ Tokens have no scopes: any token can do everything, including creating and revok
 | `GET` | `/api/system/outputs` | Audio outputs (sinks) on this machine, e.g. the USB speakers (Linux) |
 | `POST` | `/api/system/outputs` | Body {id}: make that output the default (Linux) |
 
+## Admin
+
+| Method | Path | Notes |
+|---|---|---|
+| `GET` | `/api/admin/system` | System health (admins only): {sampled_at, hostname, model, uptime_s, cpu {percent, cores: [%], count, freq_mhz, max_mhz}, load [1, 5, 15 min], temp_c, power {source: vcgencmd\|sysfs\|hwmon, raw, now {under_voltage, freq_capped, throttled, soft_temp_limit}, since_boot {same}, events (under-voltage kernel messages this boot), last_event_at}, memory {total, available, used, percent, swap_total, swap_used} (bytes), disk {path, total, used, free, percent}, network {interface, ip, ssid, bssid, signal_dbm, quality 0-100, bitrate_mbps, freq_mhz}, services [{name, unit, scope: user\|system, state, sub, since, enabled, restartable}], versions {commit, commit_short, subject, built_at, python, soloist, shairport_sync, kernel, os}, history [{t, cpu, temp}] (every 5 s, last 10 min)}. ?history=0 leaves out the history. Unknown values are null |
+| `POST` | `/api/admin/services/{name}/restart` | Restart soloist, airplay or music-display (admins only) → {name, state}. Restarting soloist interrupts the music for a few seconds; restarting airplay disconnects the AirPlay sender |
+| `GET` | `/api/admin/logs/{name}` | Recent journal lines of a service from the System list (admins only): ?lines= (default 200, max 1000) → {name, unit, lines: [str], error} |
+| `GET` | `/api/admin/quiet-hours` | Quiet-hours settings and state (admins only): {settings {enabled, start: "21:00", end: "08:00", grace_min, source: admin\|env, env_window, updated_by, updated_at}, status (as GET /api/quiet-hours, plus override {kind: unlocked\|locked, until_ts, by})} |
+| `PUT` | `/api/admin/quiet-hours` | Body {enabled?, start?: "HH:MM", end?: "HH:MM", grace_min?} (admins only): change the window at runtime, or {reset: true} to go back to the server default (QUIET_HOURS). Saved in the data dir and also used by the OS watchdog (quiet_hours.py sync, the AirPlay receiver's start check). Applies at once: enabling a window that has already started locks the speakers if nothing has played for the grace period |
+| `POST` | `/api/admin/quiet-hours/override` | Body {action: unlock\|lock\|clear} (admins only). unlock: the speakers stay unlocked until the current (or next) window ends. lock: lock now until the window ends (409 outside the window). clear: back to the normal rules |
+| `GET` | `/api/admin/admins` | Admins (admins only): {admins: [{key, id, email, name, avatar, source: config\|admin, added_by, added, you}], known: [{id, name, avatar, email, admin, last_seen}] (everyone who has signed in)}. config admins come from SLACK_ADMINS and can't be removed here; API tokens are always admin |
+| `POST` | `/api/admin/admins` | Body {id} (Slack user ID) or {email} (admins only): make someone an admin, saved in the data dir. 409 if they already are. Returns the same as GET |
+| `DELETE` | `/api/admin/admins/{key}` | Remove an admin added here (admins only); key from GET. 409 for config admins and for removing yourself as the last admin. Returns the same as GET |
+| `GET` | `/api/admin/update` | Update status (admins only): {configured, setup_hint, deployed {commit, short, subject, date, built_at}, latest {commit, short, subject, date} (origin/main), build {commit, short, built_at, ready} (the pi-build branch GitHub Actions publishes), behind, commits [{commit, short, subject, author, date}] newest first, changes {files, restarts, units, notes}, fetched_at, fetch_error, run {id, state: running\|succeeded\|rolled_back\|failed, started_at, finished_at, from, to, result, log [{t, msg, level}]}}. Fetches from GitHub if the last fetch is over 10 min old |
+| `POST` | `/api/admin/update/check` | Fetch from GitHub now (admins only); returns the same as GET |
+| `POST` | `/api/admin/update` | Update to the latest build (admins only). Runs in the background: stages the build, swaps it in, restarts music-api (and music-display if its files changed; Soloist and AirPlay keep playing), health-checks /api/status and rolls back if that fails. Poll GET for run.state and run.log; expect the API to drop for a few seconds. 409 if already up to date or an update is running |
+
+Admins only (403 for everyone else): API tokens, and Slack users listed in `SLACK_ADMINS` or added on the admin page (`<data-dir>/admins.json`). The web app's admin page (`/admin`, account menu > Admin) is built on these.
+
 ## Other
 
 | Method | Path | Notes |
