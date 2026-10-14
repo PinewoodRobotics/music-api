@@ -8,6 +8,13 @@ APP=.local/share/music-api-v2
 
 (cd "$REPO/web" && npm ci --silent && npm run build --silent)
 rsync -a "$REPO"/*.py "$REPO"/*.html "$REPO"/*.md "$REPO"/*.txt "$HOST:$APP/"
+# what's deployed, for the admin page's System and Updates tabs (updater.py writes the same from GitHub builds)
+python3 -c 'import json, subprocess, sys, time
+git = lambda *a: subprocess.check_output(["git", "-C", sys.argv[1], *a], text=True).strip()
+print(json.dumps({"commit": git("rev-parse", "HEAD"), "subject": git("log", "-1", "--format=%s"),
+                  "date": int(git("log", "-1", "--format=%ct")), "built_at": int(time.time()),
+                  "dirty": bool(git("status", "--porcelain", "--untracked-files=no")), "via": "deploy-pi.sh"}))' "$REPO" \
+  | ssh "$HOST" "cat > $APP/BUILD.json"
 # sound effects: pw-play plays them, ffmpeg normalizes mp3/ogg/flac uploads (wav works without it)
 ssh "$HOST" 'command -v pw-play >/dev/null && command -v ffmpeg >/dev/null || sudo -n apt-get install -y --no-install-recommends pipewire-bin ffmpeg || echo "WARNING: could not install pw-play/ffmpeg; sound effects need them (sh deploy/install-linux.sh)" >&2'
 ssh "$HOST" "mkdir -p $APP/web/dist"

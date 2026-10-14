@@ -1,0 +1,67 @@
+# Tests every push to main, builds the web app and publishes the deployable tree (what deploy/deploy-pi.sh copies,
+# plus web/dist and BUILD.json) as the `pi-build` branch, which the Pi's updater.py fetches with a read-only deploy key.
+name: Pi build
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: pi-build
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Python tests
+        run: python3 -m unittest discover -p 'test_*.py'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Build the web app
+        working-directory: web
+        run: npm ci && npm run build
+
+      - name: Assemble the deployable tree
+        run: |
+          out="$RUNNER_TEMP/pi-build"
+          mkdir -p "$out/web"
+          cp *.py *.html *.md *.txt "$out/"
+          cp -R deploy display "$out/"
+          cp -R web/dist "$out/web/dist"
+          find "$out" -name __pycache__ -prune -exec rm -rf {} +
+          python3 - "$out/BUILD.json" <<'PY'
+          import json, subprocess, sys, time
+          git = lambda *a: subprocess.check_output(["git", *a], text=True).strip()
+          json.dump({"commit": git("rev-parse", "HEAD"), "subject": git("log", "-1", "--format=%s"),
+                     "date": int(git("log", "-1", "--format=%ct")), "built_at": int(time.time()),
+                     "via": "github-actions"}, open(sys.argv[1], "w"))
+          PY
+
+      - name: Publish to pi-build
+        run: |
+          export GIT_INDEX_FILE="$RUNNER_TEMP/pi-build.index"
+          out="$RUNNER_TEMP/pi-build"
+          git --work-tree="$out" add --all --force .
+          tree=$(git --work-tree="$out" write-tree)
+          commit=$(GIT_AUTHOR_NAME=github-actions GIT_AUTHOR_EMAIL=github-actions@github.com \
+            GIT_COMMITTER_NAME=github-actions GIT_COMMITTER_EMAIL=github-actions@github.com \
+            git commit-tree "$tree" -m "Build of ${GITHUB_SHA::7}: $(git log -1 --format=%s)")
+          git push --force origin "$commit:refs/heads/pi-build"
