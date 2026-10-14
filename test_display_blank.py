@@ -85,5 +85,15 @@ class DisplayFlow(unittest.TestCase):
         self.assertEqual(fb.calls, ["black", "off", "render", "on"])
 
 
+class MissingNames(unittest.TestCase):
+    def test_track_renders_with_none_fields(self):
+        st = {"state": "playing", "track": {"name": None, "artists": [{"name": None}, {"name": "C418"}],
+                                            "album": {"name": None}, "artwork": None}}
+        ups = [{"item": {"name": None, "artists": [{"name": None}], "artwork": None}}]
+        img, box = npd.Scene(640, 360).track(st, ups, False)
+        self.assertEqual(img.size, (640, 360))
+
+
+
 if __name__ == "__main__":
     unittest.main()

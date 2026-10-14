@@ -23,7 +23,7 @@ CACHE_DIR = os.path.expanduser("~/.cache/music-display")
 CACHE_FILES = 50
 PROGRESS_EVERY = 2.0
 WATCHDOG = 45
-BLANK_AFTER = 30.0
+BLANK_AFTER = 1.5
 FBIOBLANK = 0x4611
 FB_BLANK_UNBLANK, FB_BLANK_POWERDOWN = 0, 4
 FONT_DIRS = ["/usr/share/fonts/opentype/inter", "/usr/share/fonts/truetype/dejavu"]
@@ -74,6 +74,7 @@ FONTS = Fonts()
 
 
 def fit(text, font, width):
+    text = text or ""
     if font.getlength(text) <= width:
         return text
     while text and font.getlength(text + "…") > width:
@@ -272,9 +273,9 @@ class Scene:
         f_head, f_row, f_rowsub = FONTS.get(self.px(30), 600), FONTS.get(self.px(26), 600), FONTS.get(self.px(22))
         dim, faint = blend(WHITE, 0.72), blend(WHITE, 0.55)
 
-        title_lines = wrap(tr.get("name", ""), f_title, tw, 2)
-        artists = ", ".join(a["name"] for a in tr.get("artists", []))
-        album = (tr.get("album") or {}).get("name", "")
+        title_lines = wrap(tr.get("name") or "", f_title, tw, 2)
+        artists = ", ".join(a["name"] for a in tr.get("artists") or [] if a.get("name"))
+        album = (tr.get("album") or {}).get("name") or ""
         meta = fit(" · ".join(p for p in (artists, album) if p), f_meta, tw)
         credit = st.get("credit")
         credit_text = None
@@ -364,8 +365,8 @@ class Scene:
                 else:
                     d.rounded_rectangle((tx, y, tx + thumb, y + thumb), self.px(8), fill=(40, 40, 48))
                 textx = tx + thumb + self.px(18)
-                names = ", ".join(a["name"] for a in it.get("artists", []))
-                d.text((textx, y + thumb // 2 - self.px(3)), fit(it.get("name", ""), f_row, tw - textx + tx),
+                names = ", ".join(a["name"] for a in it.get("artists") or [] if a.get("name"))
+                d.text((textx, y + thumb // 2 - self.px(3)), fit(it.get("name") or "", f_row, tw - textx + tx),
                        font=f_row, fill=WHITE, anchor="ls")
                 d.text((textx, y + thumb // 2 + self.px(4)), fit(names, f_rowsub, tw - textx + tx),
                        font=f_rowsub, fill=faint, anchor="lt")
