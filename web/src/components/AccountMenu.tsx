@@ -1,5 +1,6 @@
-import { History, LogOut, SquareTerminal } from 'lucide-react'
+import { History, LogOut, ShieldCheck, SquareTerminal } from 'lucide-react'
 import { useState } from 'react'
+import { navigate } from '../lib/router'
 import { useSession } from '../state/session'
 import { useUI } from '../state/ui'
 import { Avatar } from './Avatar'
@@ -57,6 +58,20 @@ export function AccountMenu() {
               >
                 <SquareTerminal className="size-4 text-dim" />
                 API
+              </button>
+            )}
+            {me.admin && (
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  setAnchor(null)
+                  navigate('/admin')
+                }}
+                className="flex w-full items-center gap-3 rounded-[5px] px-3 py-2 text-left text-sm hover:bg-white/[0.08]"
+              >
+                <ShieldCheck className="size-4 text-dim" />
+                Admin
               </button>
             )}
             <button

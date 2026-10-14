@@ -1,4 +1,4 @@
-import type { ActivityEntry, AppPlaylist, LibraryAlbum, Lyrics, QuietHours, Queue, Status, Track } from '../lib/api'
+import type { ActivityEntry, AdminEntry, AdminList, AppPlaylist, KnownUser, LibraryAlbum, Lyrics, QuietAdmin, QuietHours, QuietSettings, Queue, ServiceInfo, Status, SystemInfo, Track, UpdateInfo, UpdateRun } from '../lib/api'
 import fixtures from './fixtures.json'
 
 type Mode = 'full' | 'signedout' | 'signedout-slack' | 'signedout-google' | 'writes' | 'down'
@@ -403,10 +403,246 @@ function mutate(patch: Partial<Status>) {
 const ok = (result: unknown) => [200, { result }] as const
 const fail = (status: number, error: string) => [status, { error }] as const
 
+const sec = () => Date.now() / 1000
+const wave = (t: number, period: number, phase = 0) => Math.sin((t / period) * Math.PI * 2 + phase)
+const bootAt = sec() - 3 * 86400 - 5 * 3600
+
+function cpuAt(t: number) {
+  return Math.round((40 + 14 * wave(t, 90) + 7 * wave(t, 23, 1) + 4 * wave(t, 7, 2)) * 10) / 10
+}
+const tempAt = (t: number) => Math.round((58.5 + 2.6 * wave(t, 140) + 0.8 * wave(t, 11)) * 10) / 10
+
+const mockServices: ServiceInfo[] = [
+  { name: 'soloist', unit: 'soloist.service', scope: 'user', state: 'active', sub: 'running', since: bootAt + 60, enabled: 'enabled', restartable: true },
+  { name: 'music-api', unit: 'music-api.service', scope: 'user', state: 'active', sub: 'running', since: sec() - 5 * 3600, enabled: 'enabled', restartable: true },
+  { name: 'airplay', unit: 'shairport-sync.service', scope: 'user', state: 'active', sub: 'running', since: bootAt + 62, enabled: 'enabled', restartable: true },
+  { name: 'music-display', unit: 'music-display.service', scope: 'user', state: 'active', sub: 'running', since: sec() - 5 * 3600, enabled: 'enabled', restartable: true },
+  { name: 'quiet-hours.timer', unit: 'quiet-hours.timer', scope: 'user', state: 'active', sub: 'waiting', since: bootAt + 70, enabled: 'enabled', restartable: false },
+  { name: 'cloudflared', unit: 'cloudflared.service', scope: 'system', state: 'active', sub: 'running', since: bootAt + 30, enabled: 'enabled', restartable: false },
+]
+
+function systemInfo(): SystemInfo {
+  const t = sec()
+  const history = Array.from({ length: 120 }, (_, i) => {
+    const at = t - (119 - i) * 5
+    return { t: Math.round(at), cpu: cpuAt(at), temp: tempAt(at) }
+  })
+  const gib = 1024 ** 3
+  return {
+    sampled_at: t,
+    hostname: 'robotics-pi',
+    model: 'Raspberry Pi 3 Model B Plus Rev 1.3',
+    uptime_s: t - bootAt,
+    cpu: {
+      percent: cpuAt(t),
+      cores: [0, 1, 2, 3].map((c) => Math.max(2, Math.min(98, Math.round(cpuAt(t) + 16 * wave(t, 13 + c * 5, c) + c * 2)))),
+      count: 4,
+      freq_mhz: 1400,
+      max_mhz: 1400,
+    },
+    load: [1.12 + 0.3 * wave(t, 60), 0.94, 0.71],
+    temp_c: tempAt(t),
+    power: {
+      source: 'vcgencmd',
+      raw: 'throttled=0x50000',
+      now: { under_voltage: false, freq_capped: false, throttled: false, soft_temp_limit: false },
+      since_boot: { under_voltage: true, freq_capped: false, throttled: true, soft_temp_limit: false },
+      events: 3,
+      last_event_at: t - 2 * 3600,
+    },
+    memory: { total: 0.9 * gib, available: 0.38 * gib, used: 0.52 * gib, percent: 57.8, swap_total: 0.1 * gib, swap_used: 0.02 * gib },
+    disk: { path: '/', total: 29.1 * gib, used: 7.4 * gib, free: 20.8 * gib, percent: 25.4 },
+    network: { interface: 'wlan0', ip: '192.168.4.27', ssid: 'Pinewood-IoT', bssid: 'a4:2b:b0:5c:19:e2', signal_dbm: -61 - Math.round(2 * wave(t, 30)), quality: 62, bitrate_mbps: 65, freq_mhz: 2437 },
+    services: mockServices,
+    versions: {
+      commit: 'e801f38c0f6f2d6a1a3b0b1c4d5e6f708192a3b4',
+      commit_short: 'e801f38',
+      subject: 'Docs: sound effects in README',
+      built_at: sec() - 5 * 3600,
+      python: '3.11.2',
+      soloist: '0.14.2',
+      shairport_sync: '4.3.2',
+      kernel: '6.6.51+rpt-rpi-v8',
+      os: 'Debian GNU/Linux 12 (bookworm)',
+    },
+    history,
+  }
+}
+
+const quietSettings: QuietSettings = { enabled: true, start: '21:00', end: '08:00', grace_min: 5, source: 'env', env_window: '21:00-08:00', updated_by: null, updated_at: null }
+let quietOverride: NonNullable<QuietAdmin['status']['override']> | null = null
+
+function quietAdmin(): QuietAdmin {
+  const tomorrow = new Date()
+  tomorrow.setHours(Number(quietSettings.start.slice(0, 2)), Number(quietSettings.start.slice(3)), 0, 0)
+  const status = {
+    ...quiet,
+    enabled: quietSettings.enabled,
+    window: quietSettings.enabled ? `${quietSettings.start}-${quietSettings.end}` : null,
+    until: quietSettings.end,
+    grace_s: quietSettings.grace_min * 60,
+    starts_at: tomorrow.getTime() / 1000,
+    override: quietOverride,
+  }
+  return { settings: { ...quietSettings }, status }
+}
+
+function applyQuietSettings() {
+  quiet = { ...quiet, enabled: quietSettings.enabled, window: quietSettings.enabled ? `${quietSettings.start}-${quietSettings.end}` : null, until: quietSettings.end, grace_s: quietSettings.grace_min * 60 }
+}
+
+const adminUsers: AdminEntry[] = [
+  { key: 'email:howard@robotics.example', id: null, email: 'howard@robotics.example', name: 'Howard Kent', avatar: null, source: 'config', added_by: null, added: null, you: false },
+  { key: 'U01', id: 'U01', email: 'adam@robotics.example', name: 'Adam Xu', avatar: null, source: 'admin', added_by: { id: 'U03', name: 'Howard Kent' }, added: sec() - 6 * 86400, you: true },
+]
+const knownUsers: KnownUser[] = [
+  { id: 'U01', name: 'Adam Xu', avatar: null, email: 'adam@robotics.example', admin: true, last_seen: sec() - 30 },
+  { id: 'U02', name: 'Maya Lindqvist', avatar: null, email: 'maya@robotics.example', admin: false, last_seen: sec() - 3600 },
+  { id: 'U03', name: 'Howard Kent', avatar: null, email: 'howard@robotics.example', admin: true, last_seen: sec() - 86400 },
+  { id: 'U04', name: 'Priya Natarajan', avatar: null, email: 'priya@robotics.example', admin: false, last_seen: sec() - 2 * 86400 },
+  { id: 'U05', name: 'Jonas Weber', avatar: null, email: null, admin: false, last_seen: sec() - 9 * 86400 },
+]
+
+function adminList(): AdminList {
+  const ids = new Set(adminUsers.map((a) => a.id))
+  const emails = new Set(adminUsers.map((a) => a.email))
+  return { admins: adminUsers, known: knownUsers.map((u) => ({ ...u, admin: ids.has(u.id) || emails.has(u.email) })) }
+}
+
+const updateCommits = [
+  { commit: 'd41c0b7a', short: 'd41c0b7', subject: 'Admin: system health, quiet hours, admins, updates and services', author: 'Adam Xu', date: sec() - 2 * 3600 },
+  { commit: 'b93e2f10', short: 'b93e2f1', subject: 'Display: smoother progress strip on slow SD cards', author: 'Adam Xu', date: sec() - 20 * 3600 },
+  { commit: '7a5d8c33', short: '7a5d8c3', subject: 'Queue: keep the autoplay credit when skipping', author: 'Maya Lindqvist', date: sec() - 2 * 86400 },
+]
+let updateRunStart: number | null = null
+const UPDATE_STEPS: [number, string, 'info' | 'warn' | 'error'][] = [
+  [0.2, 'Downloading build d41c0b7 from GitHub', 'info'],
+  [1.2, 'Verifying checksum', 'info'],
+  [2.2, 'Unpacking into releases/d41c0b7', 'info'],
+  [3.2, 'Switching the current release', 'info'],
+  [3.8, 'Restarting music-api', 'info'],
+  [6.0, 'music-api is healthy again', 'info'],
+]
+const UPDATE_DONE = 6.5
+
+function updateInfo(): UpdateInfo {
+  const done = updateRunStart !== null && sec() - updateRunStart >= UPDATE_DONE
+  const behind = done ? 0 : updateCommits.length
+  const deployedCommit = done ? updateCommits[0] : { commit: 'e801f38c', short: 'e801f38', subject: 'Docs: sound effects in README', date: sec() - 5 * 3600 }
+  let run: UpdateRun | null = null
+  if (updateRunStart !== null) {
+    const elapsed = sec() - updateRunStart
+    run = {
+      id: 'run-1',
+      state: done ? 'succeeded' : 'running',
+      started_at: updateRunStart,
+      finished_at: done ? updateRunStart + UPDATE_DONE : null,
+      from: 'e801f38',
+      to: 'd41c0b7',
+      result: done ? 'Now running d41c0b7.' : null,
+      log: UPDATE_STEPS.filter(([at]) => elapsed >= at).map(([at, msg, level]) => ({ t: updateRunStart! + at, msg, level })),
+    }
+  }
+  return {
+    configured: true,
+    setup_hint: null,
+    deployed: { ...deployedCommit, built_at: deployedCommit.date },
+    latest: { commit: updateCommits[0].commit, short: updateCommits[0].short, subject: updateCommits[0].subject, date: updateCommits[0].date },
+    build: { commit: updateCommits[0].commit, short: updateCommits[0].short, built_at: updateCommits[0].date + 600, ready: true },
+    behind,
+    commits: behind ? updateCommits : [],
+    changes: { files: ['server.py', 'web/src'], restarts: behind ? ['music-api'] : [], units: [], notes: behind ? ['Run sh deploy/install-airplay.sh on the Pi to pick up the new AirPlay hooks.'] : [] },
+    fetched_at: sec() - 90,
+    fetch_error: null,
+    run,
+  }
+}
+
+function serviceLog(name: string) {
+  const t = sec()
+  const stamp = (ago: number) => new Date((t - ago) * 1000).toLocaleString('en-US', { month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })
+  const lines = ['started', 'GET /api/status 200 4ms', 'GET /api/queue 200 11ms', 'event: track changed', 'GET /api/status 200 3ms', 'POST /api/volume 200 9ms', 'spotify: token refreshed']
+  return Array.from({ length: 80 }, (_, i) => `${stamp((80 - i) * 37)} robotics-pi ${name}[812]: ${lines[(i * 5) % lines.length]}`)
+}
+
+function handleAdmin(method: string, p: string, body: Record<string, unknown>): readonly [number, unknown] | null {
+  const route = `${method} ${p}`
+  if (route === 'GET /api/admin/system') return ok(systemInfo())
+  if (route === 'GET /api/admin/quiet-hours') return ok(quietAdmin())
+  if (route === 'PUT /api/admin/quiet-hours') {
+    if (body.reset) Object.assign(quietSettings, { enabled: true, start: '21:00', end: '08:00', grace_min: 5, source: 'env', updated_by: null, updated_at: null })
+    else {
+      const { enabled, start, end, grace_min } = body as Partial<QuietSettings>
+      Object.assign(quietSettings, { ...(enabled !== undefined && { enabled }), ...(start && { start }), ...(end && { end }), ...(grace_min !== undefined && { grace_min }) })
+      Object.assign(quietSettings, { source: 'admin', updated_by: { id: adam.id, name: adam.name }, updated_at: sec() })
+    }
+    applyQuietSettings()
+    return ok(quietAdmin())
+  }
+  if (route === 'POST /api/admin/quiet-hours/override') {
+    const until_ts = sec() + 8 * 3600
+    const by = { id: adam.id, name: adam.name }
+    if (body.action === 'unlock') {
+      quietOverride = { kind: 'unlocked', until_ts, by }
+      quiet = { ...quiet, phase: 'open', locked: false }
+    } else if (body.action === 'lock') {
+      if (quiet.phase === 'open' && !quietOverride) return fail(409, 'Quiet hours are not active right now')
+      quietOverride = { kind: 'locked', until_ts, by }
+      quiet = { ...quiet, phase: 'locked', locked: true }
+      setStatus({ state: 'paused' })
+    } else quietOverride = null
+    return ok(quietAdmin())
+  }
+  if (route === 'GET /api/admin/admins') return ok(adminList())
+  if (route === 'POST /api/admin/admins') {
+    const known = knownUsers.find((u) => u.id === body.id || (body.email && u.email === body.email))
+    const email = typeof body.email === 'string' ? body.email : (known?.email ?? null)
+    const id = typeof body.id === 'string' ? body.id : (known?.id ?? null)
+    if (adminUsers.some((a) => (id && a.id === id) || (email && a.email === email))) return fail(409, 'Already an admin')
+    adminUsers.push({ key: id ?? `email:${email}`, id, email, name: known?.name ?? null, avatar: null, source: 'admin', added_by: { id: adam.id, name: adam.name }, added: sec(), you: false })
+    return ok(adminList())
+  }
+  const removing = p.match(/^\/api\/admin\/admins\/(.+)$/)
+  if (method === 'DELETE' && removing) {
+    const key = decodeURIComponent(removing[1])
+    const target = adminUsers.find((a) => a.key === key)
+    if (!target) return fail(404, 'Not an admin')
+    if (target.source === 'config') return fail(409, 'Server config admins cannot be removed here')
+    if (adminUsers.length === 1) return fail(409, 'You are the last admin')
+    adminUsers.splice(adminUsers.indexOf(target), 1)
+    return ok(adminList())
+  }
+  if (route === 'GET /api/admin/update') {
+    const info = updateInfo()
+    if (info.run?.state === 'running' && sec() - updateRunStart! > 3.6 && sec() - updateRunStart! < 5.2) return fail(502, 'Bad gateway')
+    return ok(info)
+  }
+  if (route === 'POST /api/admin/update/check') return ok(updateInfo())
+  if (route === 'POST /api/admin/update') {
+    updateRunStart = sec()
+    return ok(updateInfo())
+  }
+  const restart = p.match(/^\/api\/admin\/services\/([^/]+)\/restart$/)
+  if (method === 'POST' && restart) {
+    const svc = mockServices.find((s) => s.name === decodeURIComponent(restart[1]))
+    if (!svc?.restartable) return fail(404, 'Unknown service')
+    svc.since = sec()
+    return ok({ name: svc.name, state: 'active' })
+  }
+  const logs = p.match(/^\/api\/admin\/logs\/([^/]+)$/)
+  if (method === 'GET' && logs) {
+    const svc = mockServices.find((s) => s.name === decodeURIComponent(logs[1]))
+    if (!svc) return fail(404, 'Unknown service')
+    return ok({ name: svc.name, unit: svc.unit, lines: serviceLog(svc.name), error: null })
+  }
+  return null
+}
+
 function handle(method: string, url: URL, body: Record<string, unknown>): readonly [number, unknown] {
   const p = url.pathname.replace(/\/$/, '')
   const route = `${method} ${p}`
-  if (route === 'GET /api/app/me') return ok({ ...adam, admin: false, kind: 'slack' })
+  if (route === 'GET /api/app/me') return ok({ ...adam, admin: true, kind: 'slack' })
+  if (p.startsWith('/api/admin/')) return handleAdmin(method, p, body) ?? fail(404, 'not found')
   if (route === 'POST /auth/slack/logout') return ok(null)
   if (route === 'GET /api/app/token') return ok(personal)
   if (route === 'POST /api/app/token/regenerate') {

@@ -2,7 +2,7 @@ import { X } from 'lucide-react'
 import { useEffect, type ButtonHTMLAttributes, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 
-type Props = { title: string; onClose: () => void; children: ReactNode; dismissable?: boolean; wide?: boolean }
+type Props = { title: string; onClose: () => void; children: ReactNode; dismissable?: boolean; wide?: boolean | 'xl' }
 
 export function Modal({ title, onClose, children, dismissable = true, wide = false }: Props) {
   useEffect(() => {
@@ -21,7 +21,7 @@ export function Modal({ title, onClose, children, dismissable = true, wide = fal
       className="fixed inset-0 z-[60] grid place-items-center bg-black/70 p-4 backdrop-blur-sm"
       onPointerDown={(e) => e.target === e.currentTarget && dismissable && onClose()}
     >
-      <div role="dialog" aria-modal="true" aria-label={title} className={`animate-pop w-full ${wide ? 'max-w-lg' : 'max-w-md'} max-h-[calc(100dvh-2rem)] overflow-y-auto rounded-xl bg-raised p-6 shadow-2xl shadow-black/60`}>
+      <div role="dialog" aria-modal="true" aria-label={title} className={`animate-pop w-full ${wide === 'xl' ? 'max-w-3xl' : wide ? 'max-w-lg' : 'max-w-md'} max-h-[calc(100dvh-2rem)] overflow-y-auto rounded-xl bg-raised p-6 shadow-2xl shadow-black/60`}>
         <div className="mb-5 flex items-center justify-between gap-4">
           <h2 className="font-display text-xl font-bold tracking-tight">{title}</h2>
           <button

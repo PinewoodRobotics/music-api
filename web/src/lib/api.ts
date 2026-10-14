@@ -214,6 +214,129 @@ export type Resolved = {
   truncated: boolean
 }
 
+export type PowerFlags = { under_voltage: boolean | null; freq_capped: boolean | null; throttled: boolean | null; soft_temp_limit: boolean | null }
+
+export type ServiceState = 'active' | 'inactive' | 'failed' | 'activating' | 'deactivating' | 'unknown'
+
+export type ServiceInfo = {
+  name: string
+  unit: string
+  scope: 'user' | 'system'
+  state: ServiceState
+  sub: string | null
+  since: number | null
+  enabled: string | null
+  restartable: boolean
+}
+
+export type SystemInfo = {
+  sampled_at: number
+  hostname: string
+  model: string | null
+  uptime_s: number
+  cpu: { percent: number; cores: number[]; count: number; freq_mhz: number | null; max_mhz: number | null }
+  load: [number, number, number]
+  temp_c: number | null
+  power: {
+    source: 'vcgencmd' | 'sysfs' | 'hwmon' | null
+    raw: string | null
+    now: PowerFlags
+    since_boot: PowerFlags
+    events: number | null
+    last_event_at: number | null
+  }
+  memory: { total: number; available: number; used: number; percent: number; swap_total: number; swap_used: number }
+  disk: { path: string; total: number; used: number; free: number; percent: number }
+  network: {
+    interface: string | null
+    ip: string | null
+    ssid: string | null
+    bssid: string | null
+    signal_dbm: number | null
+    quality: number | null
+    bitrate_mbps: number | null
+    freq_mhz: number | null
+  }
+  services: ServiceInfo[]
+  versions: {
+    commit: string | null
+    commit_short: string | null
+    subject: string | null
+    built_at: number | null
+    python: string | null
+    soloist: string | null
+    shairport_sync: string | null
+    kernel: string | null
+    os: string | null
+  }
+  history: { t: number; cpu: number | null; temp: number | null }[]
+}
+
+export type Actor = { id: string | null; name: string }
+
+export type QuietSettings = {
+  enabled: boolean
+  start: string
+  end: string
+  grace_min: number
+  source: 'admin' | 'env'
+  env_window: string | null
+  updated_by: Actor | null
+  updated_at: number | null
+}
+
+export type QuietStatus = QuietHours & {
+  starts_at?: number
+  override?: { kind: 'unlocked' | 'locked'; until_ts: number; by: Actor | null } | null
+}
+
+export type QuietAdmin = { settings: QuietSettings; status: QuietStatus }
+
+export type AdminEntry = {
+  key: string
+  id: string | null
+  email: string | null
+  name: string | null
+  avatar: string | null
+  source: 'config' | 'admin'
+  added_by: Actor | null
+  added: number | null
+  you: boolean
+}
+
+export type KnownUser = { id: string; name: string; avatar: string | null; email: string | null; admin: boolean; last_seen: number | null }
+
+export type AdminList = { admins: AdminEntry[]; known: KnownUser[] }
+
+export type UpdateCommit = { commit: string; short: string; subject: string; author: string; date: number }
+
+export type UpdateRun = {
+  id: string
+  state: 'running' | 'succeeded' | 'rolled_back' | 'failed'
+  started_at: number
+  finished_at: number | null
+  from: string | null
+  to: string | null
+  result: string | null
+  log: { t: number; msg: string; level: 'info' | 'warn' | 'error' }[]
+}
+
+export type UpdateInfo = {
+  configured: boolean
+  setup_hint: string | null
+  deployed: { commit: string; short: string; subject: string | null; date: number | null; built_at: number | null } | null
+  latest: { commit: string; short: string; subject: string; date: number } | null
+  build: { commit: string; short: string; built_at: number | null; ready: boolean } | null
+  behind: number
+  commits: UpdateCommit[]
+  changes: { files: string[]; restarts: string[]; units: string[]; notes: string[] }
+  fetched_at: number | null
+  fetch_error: string | null
+  run: UpdateRun | null
+}
+
+export type ServiceLogs = { name: string; unit: string; lines: string[]; error: string | null }
+
 export class ApiError extends Error {
   status: number
   code: string | null
@@ -318,6 +441,20 @@ export const api = {
   personalToken: () => get<PersonalToken>('/api/app/token'),
   regenerateToken: () => post<PersonalToken>('/api/app/token/regenerate'),
   logout: () => post<unknown>('/auth/slack/logout').catch(() => undefined),
+
+  adminSystem: () => get<SystemInfo>('/api/admin/system'),
+  adminQuietHours: () => get<QuietAdmin>('/api/admin/quiet-hours'),
+  saveQuietHours: (body: { enabled?: boolean; start?: string; end?: string; grace_min?: number } | { reset: true }) =>
+    request<QuietAdmin>('PUT', '/api/admin/quiet-hours', body),
+  quietOverride: (action: 'unlock' | 'lock' | 'clear') => post<QuietAdmin>('/api/admin/quiet-hours/override', { action }),
+  adminList: () => get<AdminList>('/api/admin/admins'),
+  addAdmin: (who: { id: string } | { email: string }) => post<AdminList>('/api/admin/admins', who),
+  removeAdmin: (key: string) => request<AdminList>('DELETE', `/api/admin/admins/${encodeURIComponent(key)}`),
+  adminUpdate: () => get<UpdateInfo>('/api/admin/update'),
+  checkUpdate: () => post<UpdateInfo>('/api/admin/update/check'),
+  startUpdate: () => post<UpdateInfo>('/api/admin/update'),
+  restartService: (name: string) => post<{ name: string; state: ServiceState }>(`/api/admin/services/${encodeURIComponent(name)}/restart`),
+  serviceLogs: (name: string, lines = 200) => get<ServiceLogs>(`/api/admin/logs/${encodeURIComponent(name)}?${qs({ lines })}`),
 
   status: () => get<Status>('/api/status'),
   queue: (limit = 50) => get<Queue>(`/api/queue?${qs({ limit })}`),

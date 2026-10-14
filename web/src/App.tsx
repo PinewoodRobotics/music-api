@@ -17,6 +17,7 @@ import { usePalette } from './lib/color'
 import { matchRoute, navigate, useLocation, type Route } from './lib/router'
 import { focusSearch } from './lib/searchFocus'
 import { useSkipWatcher } from './lib/skipNote'
+import { AdminPage } from './pages/admin/AdminPage'
 import { AlbumPage } from './pages/AlbumPage'
 import { ArtistPage } from './pages/ArtistPage'
 import { LibraryPage } from './pages/LibraryPage'
@@ -137,6 +138,8 @@ function Page({ route }: { route: Route }) {
       return <ArtistPage key={route.id} id={route.id} />
     case 'open':
       return <OpenLinkPage key={route.url} url={route.url} />
+    case 'admin':
+      return <AdminPage tab={route.tab} />
     case 'notFound':
       return <Message title="Page not found" action={<Button onClick={() => navigate('/')}>Go home</Button>} />
   }

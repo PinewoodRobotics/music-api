@@ -33,6 +33,7 @@ export type Route =
   | { name: 'playlist'; id: string }
   | { name: 'album'; id: string }
   | { name: 'artist'; id: string }
+  | { name: 'admin'; tab: string | null }
   | { name: 'notFound' }
 
 export function matchRoute(path: string, query: URLSearchParams): Route {
@@ -42,5 +43,6 @@ export function matchRoute(path: string, query: URLSearchParams): Route {
   if (parts.length === 1 && parts[0] === 'open') return { name: 'open', url: query.get('url') ?? '' }
   if (parts.length === 2 && (parts[0] === 'playlist' || parts[0] === 'album' || parts[0] === 'artist'))
     return { name: parts[0], id: parts[1] }
+  if (parts[0] === 'admin' && parts.length <= 2) return { name: 'admin', tab: parts[1] ?? null }
   return { name: 'notFound' }
 }
