@@ -629,7 +629,7 @@ Body `{name?, title?, volume?}`: rename (`409 exists` if the new name is taken) 
 Deletes the clip (and stops it if it is playing). Returns `{"deleted": name}`.
 
 #### POST /api/effects/{name}/play
-Starts the clip and returns at once (it does not wait for it to finish): `{"id", "name", "volume", "duck", "started_at", "duration_ms"}`. Options in the JSON body or the query: `volume` (0-100; default the effect's own), `duck` (bool, default false) and `duck_level` (0-100, default 30). With `duck`, every other audio stream (Spotify, AirPlay) is lowered to `duck_level` percent of its own volume while the effect plays, and put back when the last ducking effect ends (restored on the next server start too if the server died mid-duck). Streams that start during a duck aren't lowered. Up to 16 plays at once (`429 too_many`). `404 unknown_effect`; `423 quiet_hours` while the speakers are locked; `501 no_player` if the host has no pw-play/paplay/afplay.
+Starts the clip and returns at once (it does not wait for it to finish): `{"id", "name", "volume", "slider_volume", "effective_volume", "duck", "started_at", "duration_ms"}`. Options in the JSON body or the query: `volume` (0-100; default the effect's own), `duck` (bool, default false) and `duck_level` (0-100, default 30). Effects follow the music volume slider (`/api/volume`, Spotify's volume, not the system volume): the clip plays at `effective_volume` = `volume` x `slider_volume` / 100, so an effect at 100 is as loud as the music and moving the slider moves effects with it. `slider_volume` is the last slider value the server saw; it is kept while AirPlay plays, while nothing plays and across restarts, and is 50 until the server has seen one. With `duck`, every other audio stream (Spotify, AirPlay) is lowered to `duck_level` percent of its own volume while the effect plays, and put back when the last ducking effect ends (restored on the next server start too if the server died mid-duck). Streams that start during a duck aren't lowered. Up to 16 plays at once (`429 too_many`). `404 unknown_effect`; `423 quiet_hours` while the speakers are locked; `501 no_player` if the host has no pw-play/paplay/afplay.
 ```sh
 curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   -d '{"volume": 80, "duck": true}' $API/api/effects/match-start/play
@@ -637,7 +637,7 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/
 Latency is the time to start one `pw-play` process on the Pi (roughly 100-200 ms), so schedule a start sound slightly early if it has to line up with a clock.
 
 #### GET /api/effects/playing
-`[{"id", "name", "volume", "duck", "started_at", "elapsed_ms", "duration_ms"}]` for plays still running.
+`[{"id", "name", "volume", "slider_volume", "effective_volume", "duck", "started_at", "elapsed_ms", "duration_ms"}]` for plays still running.
 
 #### POST /api/effects/stop
 Stops every playing effect, or with `name` (body or query) only copies of that effect. Music is untouched. Returns `{"stopped": n}`.
