@@ -1354,7 +1354,7 @@ def main():
         soloist.on_event = player.on_soloist_event
         threading.Thread(target=soloist.loop, daemon=True).start()
     quiet = quiet_hours.QuietHours(window, os.path.join(a.data_dir, quiet_hours.STATE_FILE))
-    airplay = airplay_mod.AirPlay(a.airplay_pipe)
+    airplay = airplay_mod.AirPlay(a.airplay_pipe, state_path=os.path.join(a.data_dir, "airplay-sender.json"))
     guard = Guard(player, quiet, airplay, enforce=lambda locked: quiet_hours.enforce(locked, a.data_dir),
                   receiver=quiet_hours.receiver, remote=airplay_mod.remote,
                   resume_path=os.path.join(a.data_dir, "airplay-resume"))

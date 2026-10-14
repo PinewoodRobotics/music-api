@@ -90,6 +90,7 @@ def probe_dbus(run=subprocess.run):
     art = meta.get("mpris:artUrl")
     out.update(state=str(props.get("PlayerState") or "").lower(),
                sender=props.get("ClientName") or None,
+               client=props.get("Client") or None,
                title=meta.get("xesam:title") or None,
                artist=(", ".join(artist) if isinstance(artist, list) else artist) or None,
                album=meta.get("xesam:album") or None,
@@ -182,8 +183,9 @@ def image_type(data):
 
 
 class AirPlay:
-    def __init__(self, pipe=DEFAULT_PIPE, clock=time.time, probe=None, sink_probe=None):
+    def __init__(self, pipe=DEFAULT_PIPE, clock=time.time, probe=None, sink_probe=None, state_path=None):
         self.pipe = pipe
+        self.state_path = state_path
         self.clock = clock
         self.probe = probe or probe_dbus
         self.sink_probe = sink_probe or probe_sink
@@ -194,10 +196,13 @@ class AirPlay:
         self.art = None
         self.recent_art = collections.OrderedDict()
         self._ignore_until = 0
-        self._clear()
+        self._clear(forget=False)
 
-    def _clear(self):
+    def _clear(self, forget=True):
+        if forget:
+            self._forget_sender()
         self.active = False
+        self.client = None
         self.recovered = False
         self.playing = False
         self.sender = None
@@ -264,6 +269,10 @@ class AirPlay:
                     self._progress(text, now)
                 elif code == "snam":
                     self.sender = text or None
+                    self._save_sender()
+                elif code == "clip":
+                    self.client = text or None
+                    self._save_sender()
                 elif code == "PICT":
                     self.art = (data, image_type(data), hashlib.sha1(data).hexdigest()[:12]) if data else None
                     if self.art:
@@ -320,7 +329,8 @@ class AirPlay:
                 return False
             self.active, self.recovered, self.started_at = True, True, now
             self.playing = info.get("state", "playing") != "paused"
-            self.sender = info.get("sender")
+            self.client = info.get("client")
+            self.sender = info.get("sender") or self._saved_sender()
             self.title, self.artist, self.album = info.get("title"), info.get("artist"), info.get("album")
             self.duration_ms = info.get("duration_ms")
             if info.get("progress"):
@@ -331,6 +341,39 @@ class AirPlay:
                 self.recent_art[self.art[2]] = self.art[:2]
         self._fire(["start"])
         return True
+
+    def _save_sender(self):
+        if not self.state_path or not (self.sender or self.client):
+            return
+        try:
+            with open(self.state_path, "w") as f:
+                json.dump({"sender": self.sender, "client": self.client}, f)
+        except OSError as e:
+            log(f"couldn't persist the AirPlay sender: {e}")
+
+    def _forget_sender(self):
+        if self.state_path:
+            try:
+                os.remove(self.state_path)
+            except FileNotFoundError:
+                pass
+            except OSError as e:
+                log(f"couldn't clear the AirPlay sender: {e}")
+
+    def _saved_sender(self):
+        if not self.state_path:
+            return None
+        try:
+            with open(self.state_path) as f:
+                saved = json.load(f)
+            sender, client = saved.get("sender"), saved.get("client")
+        except (OSError, ValueError, AttributeError):
+            return None
+        if client and self.client and client != self.client:
+            return None
+        if not self.client:
+            self.client = client
+        return sender if isinstance(sender, str) and sender else None
 
     @staticmethod
     def _read_art(path):
@@ -354,6 +397,8 @@ class AirPlay:
             info = self.sink_probe()
         if info is None:
             return
+        if not active and not info["active"] and not self.sender:
+            self._forget_sender()
         if not active and info["active"]:
             self.recover(info)
         elif recovered and not info["active"]:

@@ -747,6 +747,20 @@ class AirPlayTest(unittest.TestCase):
         self.assertNotIn("spotify.com", text)
         self.assertIn("https://music.pinewoodrobotics.org/airplay-art/abcabcabcabc", text)
 
+    def test_unknown_sender_credits_airplay(self):
+        bot = make()
+        self.feed(bot, AIR_ART, sender=None)
+        self.feed(bot, AIR_ART, sender=None, dt=sb.SETTLE)
+        self.assertIn("\\nAirPlay", json.dumps(self.calls(bot, "chat.postMessage")[0]["blocks"]))
+
+    def test_sender_learned_later_updates_the_card_in_place(self):
+        bot = make()
+        self.feed(bot, AIR_ART, sender=None)
+        self.feed(bot, AIR_ART, sender=None, dt=sb.SETTLE)
+        self.feed(bot, AIR_ART, dt=sb.UPDATE_EVERY + 1)
+        self.assertEqual(len(self.calls(bot, "chat.postMessage")), 1)
+        self.assertIn("\\nJohn's iPhone", json.dumps(self.calls(bot, "chat.update")[-1]["blocks"]))
+
     def test_song_change_rotates_and_finishes_previous(self):
         bot = make()
         self.feed(bot, AIR_ART)

@@ -477,6 +477,55 @@ class RecoveryTest(unittest.TestCase):
         a.poll()
         self.assertEqual(started, [True])
 
+    def sender_state(self, **kw):
+        d = tempfile.TemporaryDirectory()
+        self.addCleanup(d.cleanup)
+        path = os.path.join(d.name, "sender.json")
+        a, c, _ = self.make(**kw)
+        a.state_path = path
+        return a, path
+
+    def feed_items(self, a, *items):
+        for item in ap.Parser().feed(b"".join(raw_item(*i) for i in items)):
+            a.handle(*item)
+
+    def test_sender_persists_and_is_restored_on_recovery(self):
+        a, path = self.sender_state()
+        self.feed_items(a, ("ssnc", "abeg"), ("ssnc", "clip", b"10.0.0.7"), ("ssnc", "snam", b"John's iPhone"))
+        self.assertTrue(os.path.exists(path))
+        b, _ = self.sender_state()
+        b.state_path = path
+        b.poll()
+        self.assertEqual(b.snapshot()["sender"], "John's iPhone")
+
+    def test_sender_not_restored_for_a_different_client(self):
+        a, path = self.sender_state()
+        self.feed_items(a, ("ssnc", "abeg"), ("ssnc", "clip", b"10.0.0.7"), ("ssnc", "snam", b"John's iPhone"))
+        b, _ = self.sender_state()
+        b.state_path = path
+        b.recover({"active": True, "state": "playing", "client": "10.0.0.9"})
+        self.assertIsNone(b.snapshot()["sender"])
+
+    def test_sender_cleared_when_session_ends(self):
+        a, path = self.sender_state()
+        self.feed_items(a, ("ssnc", "abeg"), ("ssnc", "snam", b"John's iPhone"))
+        self.feed_items(a, ("ssnc", "aend"))
+        self.assertFalse(os.path.exists(path))
+
+    def test_stale_sender_dropped_when_nothing_is_playing(self):
+        a, path = self.sender_state(active=False)
+        with open(path, "w") as f:
+            json.dump({"sender": "Old", "client": None}, f)
+        a.poll()
+        self.assertFalse(os.path.exists(path))
+
+    def test_recovered_session_picks_up_snam_later(self):
+        a, path = self.sender_state()
+        a.poll()
+        self.assertIsNone(a.snapshot()["sender"])
+        self.feed_items(a, ("ssnc", "snam", b"John's iPhone"))
+        self.assertEqual(a.snapshot()["sender"], "John's iPhone")
+
     def test_recovered_art_read_from_cache_file(self):
         with tempfile.NamedTemporaryFile(suffix=".jpg") as f:
             f.write(JPEG)

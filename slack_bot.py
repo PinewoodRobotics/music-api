@@ -84,12 +84,16 @@ def subtitle(t):
 AIRPLAY_ART = re.compile(r"/api/airplay/artwork\?v=([0-9a-f]{12})$")
 
 
+def airplay_credit(st):
+    return {"by": {"name": (st.get("airplay") or {}).get("sender") or "AirPlay"}, "how": "airplay"}
+
+
 def airplay_track(st, remote):
-    t, ap = st.get("track"), st.get("airplay") or {}
+    t = st.get("track")
     art = AIRPLAY_ART.search((t or {}).get("artwork") or "")
     if not (t and art and t.get("name") and t.get("type") == "airplay" and artists_of(t)):
         return None
-    ident = "\x1f".join([ap.get("sender") or "", t["name"], artists_of(t), (t.get("album") or {}).get("name") or ""])
+    ident = "\x1f".join([t["name"], artists_of(t), (t.get("album") or {}).get("name") or ""])
     return {**t, "uri": "airplay:" + ident, "artwork": f"{remote.rstrip('/')}/airplay-art/{art.group(1)}"}
 
 
@@ -880,6 +884,7 @@ class SlackBot:
         elif cur and cur["uri"] == uri:
             if airplay:
                 cur["track"] = t
+                cur["credit"] = airplay_credit(self.st)
             self.refresh(cur, playing, now)
 
     def finish(self, cur):
@@ -890,7 +895,7 @@ class SlackBot:
 
     def rotate(self, t, now):
         if self.st.get("source") == "airplay":
-            up, credit = [], {"by": {"name": (self.st.get("airplay") or {}).get("sender")}, "how": "airplay"}
+            up, credit = [], airplay_credit(self.st)
         else:
             try:
                 up = self.credits.annotate(self.player.queue(4)).get("upcoming", [])
@@ -920,7 +925,7 @@ class SlackBot:
 
     @staticmethod
     def sig(cur):
-        return (cur["playing"], cur["track"].get("artwork"),
+        return (cur["playing"], cur["track"].get("artwork"), ((cur.get("credit") or {}).get("by") or {}).get("name"),
                 tuple((e.get("item") or e).get("uri") for e in cur["upcoming"]))
 
     def refresh(self, cur, playing, now):
