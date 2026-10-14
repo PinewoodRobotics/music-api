@@ -4,6 +4,11 @@ Clips are normalized once at registration (ffmpeg -> 48 kHz stereo 16-bit WAV, P
 a `pw-play` process on the file: a separate PipeWire stream that mixes with Spotify and AirPlay and never touches
 them. Without ffmpeg only WAV uploads are accepted and stored as they are. Files live in <data-dir>/effects/<name>.wav
 and the metadata in <data-dir>/effects/index.json.
+
+Effects follow the music volume slider (Spotify's own volume, not the system volume): a play runs at its requested
+volume x slider / 100, so an effect at 100 is as loud as the music. The slider comes from `slider()`, which must only
+read local state (Soloist's pushed volume), never the Web API; when that has nothing (connect mode, Soloist logged
+out), the last value seen in a status or volume change (note_slider) is used. It is kept in <data-dir>/effects/slider.json so a restart doesn't jump to full volume.
 """
 import io
 import ipaddress
@@ -33,6 +38,7 @@ MAX_UPLOAD = 25 << 20
 MAX_SECONDS = 120
 MAX_PLAYING = 16
 DEFAULT_DUCK_LEVEL = 30
+DEFAULT_SLIDER = 50
 NAME_RX = re.compile(r"^[a-z0-9][a-z0-9_-]{0,47}$")
 RESERVED = {"stop", "playing"}
 UA = "music-api-v2 (https://github.com/PinewoodRobotics/music-api)"
@@ -148,18 +154,22 @@ def pactl_set_volume(index, values):
 
 class Effects:
     def __init__(self, data_dir, popen=subprocess.Popen, ffmpeg=None, build_cmd=None, sink_inputs=None,
-                 set_volume=None, clock=time.time):
+                 set_volume=None, clock=time.time, slider=None):
         self.dir = os.path.join(data_dir, "effects")
         os.makedirs(self.dir, mode=0o700, exist_ok=True)
         self.index_path = os.path.join(self.dir, "index.json")
         self.duck_path = os.path.join(self.dir, "duck-restore.json")
+        self.slider_path = os.path.join(self.dir, "slider.json")
         self.popen = popen
         self.ffmpeg = shutil.which("ffmpeg") if ffmpeg is None else (ffmpeg or None)
         self.build_cmd, self.tool = (build_cmd, "custom") if build_cmd else player_command()
         self.sink_inputs = sink_inputs or (lambda: pactl_json("list", "sink-inputs"))
         self.set_volume = set_volume or pactl_set_volume
         self.clock = clock
+        self.slider = slider or (lambda: None)
         self.lock = threading.Lock()
+        self.slider_lock = threading.Lock()
+        self.slider_volume = self._clamp(_read_json(self.slider_path, {}).get("volume"), DEFAULT_SLIDER)
         self.index = _read_json(self.index_path, {})
         self.active = {}
         self.ducks = 0
@@ -293,24 +303,57 @@ class Effects:
             raise ValueError("volume must be 0-100")
         return round(v)
 
+    # ---------- music volume slider ----------
+
+    @staticmethod
+    def _clamp(value, default):
+        try:
+            return max(0, min(100, round(float(value))))
+        except (TypeError, ValueError):
+            return default
+
+    def note_slider(self, volume):
+        """Remember the music slider position (0-100); None is ignored. Cheap when it hasn't changed."""
+        if volume is None:
+            return
+        v = self._clamp(volume, None)
+        if v is None or v == self.slider_volume:
+            return
+        with self.slider_lock:
+            self.slider_volume = v
+            try:
+                _write_json(self.slider_path, {"volume": v})
+            except OSError as e:
+                log(f"couldn't persist the slider volume: {e}")
+
+    def current_slider(self):
+        try:
+            self.note_slider(self.slider())
+        except Exception as e:  # noqa: BLE001 - a broken volume source must not stop the effect
+            log(f"can't read the music volume: {e}")
+        return self.slider_volume
+
     # ---------- playback ----------
 
     def play(self, name, volume=None, duck=False, duck_level=None):
         if not self.build_cmd:
             raise EffectsError("no audio player found (needs pw-play, paplay or afplay)", 501, "no_player")
         level = self._volume(duck_level, DEFAULT_DUCK_LEVEL)
+        slider = self.current_slider()
         with self.lock:
             e = self._entry(name)
             if len(self.active) >= MAX_PLAYING:
                 raise EffectsError(f"already playing {MAX_PLAYING} effects", 429, "too_many")
             vol = self._volume(volume, e["volume"])
+            effective = round(vol * slider / 100, 1)
             try:
-                proc = self.popen(self.build_cmd(self._path(name), vol / 100), stdin=subprocess.DEVNULL,
+                proc = self.popen(self.build_cmd(self._path(name), effective / 100), stdin=subprocess.DEVNULL,
                                   stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
             except OSError as e2:
                 raise EffectsError(f"couldn't start {self.tool}: {e2}", 500, "play_failed")
             pid = secrets.token_hex(4)
-            rec = {"id": pid, "name": name, "volume": vol, "duck": bool(duck), "started_at": self.clock(),
+            rec = {"id": pid, "name": name, "volume": vol, "slider_volume": slider, "effective_volume": effective,
+                   "duck": bool(duck), "started_at": self.clock(),
                    "duration_ms": e["duration_ms"], "proc": proc}
             self.active[pid] = rec
             if duck:
@@ -335,7 +378,8 @@ class Effects:
     def playing(self):
         now = self.clock()
         with self.lock:
-            return [{"id": p["id"], "name": p["name"], "volume": p["volume"], "duck": p["duck"],
+            return [{"id": p["id"], "name": p["name"], "volume": p["volume"], "slider_volume": p["slider_volume"],
+                     "effective_volume": p["effective_volume"], "duck": p["duck"],
                      "started_at": p["started_at"], "elapsed_ms": round((now - p["started_at"]) * 1000),
                      "duration_ms": p["duration_ms"]} for p in self.active.values()]
 

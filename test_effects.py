@@ -18,6 +18,7 @@ import server
 from accounts import PersonalTokens, Sessions
 from effects import Effects, EffectsError
 from guard import Guard
+from player import Player
 from quiet_hours import QuietHours, parse_window
 from tokens import Tokens
 
@@ -56,8 +57,9 @@ class FakeProc:
 
 
 class Rig:
-    def __init__(self, d, ffmpeg=False):
+    def __init__(self, d, ffmpeg=False, slider=None):
         self.procs = []
+        self.slider = 100
         self.volumes = {}
         self.inputs = [
             {"index": 7, "properties": {"application.name": "Spotify Soloist", "application.process.id": "10"},
@@ -65,7 +67,8 @@ class Rig:
             {"index": 8, "properties": {"application.name": "pw-play", "application.process.id": "99"},
              "volume": {"front-left": {"value": 65536}}}]
         self.fx = Effects(d, popen=self.popen, ffmpeg=ffmpeg, build_cmd=lambda path, vol: ["play", f"{vol:.2f}", path],
-                          sink_inputs=lambda: self.inputs, set_volume=lambda i, v: self.volumes.__setitem__(str(i), list(v)))
+                          sink_inputs=lambda: self.inputs, set_volume=lambda i, v: self.volumes.__setitem__(str(i), list(v)),
+                          slider=slider or (lambda: self.slider))
 
     def popen(self, cmd, **kw):
         p = FakeProc(cmd)
@@ -277,6 +280,114 @@ class TranscodeTest(unittest.TestCase):
             self.assertEqual(cm.exception.code, "undecodable")
 
 
+class NoWebApi:
+    def __init__(self):
+        self.calls = []
+        self.auth = type("A", (), {"logged_in": True})()
+
+    def req(self, *a, **kw):
+        self.calls.append(a)
+        raise AssertionError("the Web API must not be called")
+
+    def get(self, *a, **kw):
+        return self.req("GET", *a)
+
+
+class FakeSoloist:
+    def __init__(self, volume):
+        self.playback = {"volume": volume} if volume is not None else None
+        self.commands = []
+
+    def command(self, name, **fields):
+        self.commands.append((name, fields))
+        if name == "set_volume":
+            self.playback = {**(self.playback or {}), "volume": fields["volume"]}
+        return {}
+
+
+class SliderTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.rig = Rig(self.tmp.name)
+        self.rig.fx.register("beep", beep(), volume=100)
+
+    def tearDown(self):
+        self.rig.settle()
+        self.tmp.cleanup()
+
+    def test_effect_volume_is_scaled_by_the_slider(self):
+        self.rig.slider = 50
+        a = self.rig.fx.play("beep")
+        b = self.rig.fx.play("beep", volume=10)
+        self.assertEqual((a["volume"], a["slider_volume"], a["effective_volume"]), (100, 50, 50))
+        self.assertEqual((b["volume"], b["slider_volume"], b["effective_volume"]), (10, 50, 5))
+        self.assertEqual([p.cmd[1] for p in self.rig.procs], ["0.50", "0.05"])
+        self.assertEqual({(p["volume"], p["effective_volume"]) for p in self.rig.fx.playing()}, {(100, 50), (10, 5)})
+
+    def test_slider_change_applies_to_the_next_play(self):
+        self.rig.slider = 40
+        self.rig.fx.play("beep")
+        self.rig.slider = 80
+        self.assertEqual(self.rig.fx.play("beep", volume=50)["effective_volume"], 40)
+        self.assertEqual([p.cmd[1] for p in self.rig.procs], ["0.40", "0.40"])
+
+    def test_unknown_live_slider_uses_the_last_one_seen(self):
+        self.rig.slider = 30
+        self.rig.fx.play("beep")
+        self.rig.slider = None
+        self.assertEqual(self.rig.fx.play("beep")["slider_volume"], 30)
+        self.rig.fx.note_slider(60)
+        self.assertEqual(self.rig.fx.play("beep")["effective_volume"], 60)
+
+    def test_persisted_slider_survives_restart_and_default_is_50(self):
+        self.assertEqual(Effects(tempfile.mkdtemp(dir=self.tmp.name)).slider_volume, fx.DEFAULT_SLIDER)
+        self.rig.fx.note_slider(35)
+        again = Rig(self.tmp.name, slider=lambda: None)
+        self.assertEqual(again.fx.play("beep")["effective_volume"], 35)
+        again.settle()
+
+    def test_broken_slider_source_still_plays(self):
+        def boom():
+            raise RuntimeError("down")
+        self.rig.fx.note_slider(45)
+        rig = Rig(self.tmp.name, slider=boom)
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(rig.fx.play("beep")["slider_volume"], 45)
+        rig.settle()
+
+    def test_soloist_play_path_reads_local_volume_without_the_web_api(self):
+        api, sol = NoWebApi(), FakeSoloist(40)
+        player = Player("soloist", api, sol)
+        rig = Rig(self.tmp.name, slider=player.local_volume)
+        player.volume_fn = rig.fx.note_slider
+        self.assertEqual(rig.fx.play("beep")["effective_volume"], 40)
+        sol.playback["volume"] = 70
+        self.assertEqual(rig.fx.play("beep")["effective_volume"], 70)
+        sol.playback = None
+        self.assertEqual(rig.fx.play("beep")["slider_volume"], 70)
+        self.assertEqual(api.calls, [])
+        rig.settle()
+
+    def test_connect_play_path_uses_the_last_volume_set_or_seen(self):
+        api = NoWebApi()
+        player = Player("connect", api)
+        rig = Rig(self.tmp.name, slider=player.local_volume)
+        player.volume_fn = rig.fx.note_slider
+        player._cache = (player.clock(), {"volume": 55, "state": "paused", "track": None})
+        player.spotify_status()
+        self.assertEqual(rig.fx.play("beep")["effective_volume"], 55)
+        self.assertEqual(api.calls, [])
+        rig.settle()
+
+    def test_player_volume_set_updates_the_slider(self):
+        player = Player("soloist", NoWebApi(), FakeSoloist(20))
+        seen = []
+        player.volume_fn = seen.append
+        player.status = lambda fresh=False: {}
+        player.volume({"volume": 65})
+        self.assertEqual(seen, [65])
+
+
 class RoutesTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -320,9 +431,13 @@ class RoutesTest(unittest.TestCase):
         self.assertEqual((code, res["result"]["name"], res["result"]["volume"]), (200, "raw", 60))
         self.assertEqual(self.call("POST", "/api/effects?name=raw", beep(), "audio/wav")[0], 409)
         self.assertEqual(self.call("POST", "/api/effects?name=raw&overwrite=true", beep(), "audio/wav")[0], 200)
+        self.rig.slider = 50
         code, res = self.call("POST", "/api/effects/raw/play", {"volume": 30})
         self.assertEqual((code, res["result"]["volume"], res["result"]["name"]), (200, 30, "raw"))
-        self.assertEqual(self.call("GET", "/api/effects/playing")[1]["result"][0]["name"], "raw")
+        self.assertEqual((res["result"]["slider_volume"], res["result"]["effective_volume"]), (50, 15))
+        playing = self.call("GET", "/api/effects/playing")[1]["result"][0]
+        self.assertEqual((playing["name"], playing["effective_volume"]), ("raw", 15))
+        self.rig.slider = 100
         self.assertEqual(self.call("POST", "/api/effects/stop", {})[1]["result"], {"stopped": 1})
         self.rig.settle()
         self.assertEqual(self.call("GET", "/api/effects/raw")[1]["result"]["name"], "raw")

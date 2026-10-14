@@ -84,6 +84,7 @@ class Player:
         self.guard = None    # guard(action) raises PlayerError when quiet hours or AirPlay forbid it
         self.overlay = None  # overlay(status) -> status with quiet hours / AirPlay folded in
         self.redirect = None  # redirect(action, body) -> status when AirPlay takes the command, else None
+        self.volume_fn = None  # volume_fn(0-100) on every volume set or seen in a status
 
     # ---------- events ----------
 
@@ -175,12 +176,24 @@ class Player:
 
     def spotify_status(self, fresh=False):
         st = self._status(fresh)
+        self._saw_volume(st.get("volume"))
         st = {**st, "source": self._source(st)}
         removed = self._src[3] and (st.get("track") or {}).get("uri") == self._src[0]
         if removed:
             st["removed"] = True
         return {**st, "credit": None if removed else self.credit_fn(st) if self.credit_fn else None,
                 "skip": self.skip_fn() if self.skip_fn else None}
+
+    def _saw_volume(self, v):
+        if self.volume_fn and v is not None:
+            self.volume_fn(v)
+
+    def local_volume(self):
+        """Soloist's volume from its pushed state, or None (connect mode has no local copy beyond what volume_fn
+        already saw). Never calls the Web API, so it is safe on latency-sensitive paths."""
+        if self.backend == "soloist" and self.soloist:
+            return (self.soloist.playback or {}).get("volume")
+        return None
 
     def _source(self, st):
         """Where the current track came from (context, queue or autoplay). Soloist only tags Up Next entries,
@@ -386,9 +399,13 @@ class Player:
         v = max(0, min(100, int(v)))
         if self.backend == "soloist":
             self._sol("set_volume", volume=v)
+            self._saw_volume(v)
             return self.status()
         self._put("/me/player/volume", {"volume_percent": v})
-        return self.status(fresh=True)
+        self._saw_volume(v)
+        st = self.status(fresh=True)
+        self._saw_volume(v)
+        return st
 
     def shuffle(self, b):
         """Body {enabled?: bool}; omit to toggle"""
