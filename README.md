@@ -88,7 +88,7 @@ To hand someone the web remote, create a token and send them `https://…/?token
 
 People sign in to the web app with their Slack account in the pinewoodrobotics workspace and appear under their Slack
 display name. The session is an HttpOnly cookie (30 days, stored hashed in `<data-dir>/sessions.json`).
-API tokens keep working and act as **Admin**. Slack users are admins only if their user ID or email is in `SLACK_ADMINS` (comma-separated).
+API tokens keep working and act as **Admin**. Slack users are admins if their user ID or email is in `SLACK_ADMINS` (comma-separated) or an admin added them on the [admin page](#admin-page).
 Everyone signed in with Slack also gets a personal API token (`mapu_…`, account menu → API) that acts as them; regenerating it revokes the old one.
 Every play and queue action is credited to whoever did it (`credit` on `/api/status`, `added_by` on the queue), saved in `<data-dir>/credits.json` and shown in the web app and the Slack feed.
 Non-admins can control playback, search, queue, lyrics and the app's playlists, but get 403 on tokens, the Spotify login,
@@ -280,6 +280,40 @@ From `QUIET_HOURS` (env file or `--quiet-hours`, default `21:00-08:00`, local ti
   RUNNING = audio) and locks on its own. `airplay.service` has `quiet_hours.py receiver-allowed` as its
   `ExecCondition`, so it can't come back while locked (boot, crash restart or a manual start).
 - Set the Pi's timezone (`sudo timedatectl set-timezone America/Los_Angeles`); the installer warns if it's UTC.
+- Admins can change the window and grace period at runtime on the admin page. That's saved in
+  `<data-dir>/quiet-hours-settings.json`, takes precedence over `QUIET_HOURS` (Reset goes back to it) and is read by the
+  watchdog and the receiver's `ExecCondition` too. Admins can also skip tonight's quiet hours (unlock until the window
+  ends) or lock right away during the window.
+
+### Admin page
+
+Admins (`SLACK_ADMINS`, people added on the page itself in `<data-dir>/admins.json`, and API tokens) get **Admin** in
+the account menu (`/admin`), backed by `/api/admin/*` (403 for everyone else):
+
+- **System:** CPU (overall and per core) and temperature with 10 minute sparklines, load, under-voltage and throttling
+  (now and since boot, from the firmware's `get_throttled` via sysfs or `vcgencmd`, else the `rpi_volt` hwmon alarm and
+  kernel log), memory, disk, Wi-Fi, service states and versions. A sampler thread reads `/proc/stat` and the thermal zone
+  every 5 s; subprocesses (`systemctl`, `iw`, `journalctl`) are cached, so polling every 2 s is cheap on a Pi 3.
+- **Quiet hours:** see above. **Admins:** add people who have signed in, or by Slack ID / email; config admins can't be
+  removed here, and nobody can remove themselves as the last admin.
+- **Updates:** compares the deployed commit (`BUILD.json`) with GitHub and updates without stopping the music, below.
+- **Services:** restart Soloist, AirPlay or the display (with a confirmation) and read each unit's recent journal.
+
+#### Updates from GitHub
+
+`.github/workflows/pi-build.yml` runs the Python tests on every push to `main`, builds `web/dist` and force-pushes the
+deployable tree (what `deploy-pi.sh` copies, plus `BUILD.json`) to the `pi-build` branch, using the workflow's own token.
+On the Pi, `updater.py` keeps a bare clone (`~/.local/share/music-api-repo.git`) that fetches `main` and `pi-build`
+with a read-only deploy key (`~/.ssh/music-api-deploy`). An update stages `pi-build` in `music-api-v2.new`, swaps it in
+(the old tree stays as `music-api-v2.prev`), installs changed unit files that are already installed (`daemon-reload`),
+restarts music-api only if Python files changed and music-display only if its files changed, then checks `/api/status`.
+If that fails it swaps back and restarts again. Soloist and the AirPlay receiver are never restarted, and anything that
+needs sudo (apt packages, `install-airplay.sh`) is listed as a note instead of being run. It runs as a transient
+`systemd-run --user` unit so it survives the music-api restart; progress goes to `<data-dir>/update.json`.
+
+One-time setup on the Pi: `python3 ~/.local/share/music-api-v2/updater.py setup` creates the key and the bare repo and
+prints the public key. Add it on GitHub (repo Settings > Deploy keys, read-only), then `python3 updater.py status`.
+`python3 updater.py update` does the same as the button. `deploy/deploy-pi.sh` keeps working and writes `BUILD.json` too.
 
 ### AirPlay receiver
 

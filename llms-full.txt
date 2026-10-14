@@ -46,7 +46,7 @@ The public server runs with `--public`, so a token is required even for requests
 
 There are no scopes: every token can do everything, including creating and revoking other tokens. See "Tokens" in section 3.
 
-The web app instead uses a session cookie from Sign in with Slack (pinewoodrobotics workspace only). Sessions belong to a person: non-admin sessions get `403 {"error": "admins only"}` on tokens, the Spotify login, `/api/spotify/*`, `/api/library/*`, `/api/recent`, `/api/top`, `/api/me`, `/api/devices/transfer`, the raw `GET/POST /api/playlists` list, and hidden playlists. API tokens act as the user **Admin** and can do everything. `GET /api/app/me` says who you are.
+The web app instead uses a session cookie from Sign in with Slack (pinewoodrobotics workspace only). Sessions belong to a person: non-admin sessions get `403 {"error": "admins only"}` on tokens, the Spotify login, `/api/spotify/*`, `/api/library/*`, `/api/recent`, `/api/top`, `/api/me`, `/api/devices/transfer`, the raw `GET/POST /api/playlists` list, hidden playlists and `/api/admin/*`. Admins are the people in `SLACK_ADMINS` plus anyone an admin added on the admin page; changes apply to existing sessions immediately. API tokens act as the user **Admin** and can do everything. `GET /api/app/me` says who you are.
 
 Do not confuse the API token with the Spotify Web API login. They are separate. The server holds one Spotify login (the account whose music this is); you never send Spotify credentials. If the Spotify login is missing or expired, Web API endpoints fail with 412 and an error text that mentions `/auth/login` (see section 7). A 401 always means a missing or wrong API token.
 
@@ -577,6 +577,25 @@ Revoke immediately. Any token can revoke any token, including itself. Returns `{
 
 Also: a static token given with `--token` / `$MUSIC_API_TOKEN` at server start is accepted too, but it is not listed and can't be revoked through the API.
 
+### Admin (admins only; everyone else gets 403)
+
+These back the web app's admin page (`/admin`, account menu > Admin). Shapes are in API.md; the essentials:
+
+#### GET /api/admin/system
+Pi health: `cpu {percent, cores}`, `load`, `temp_c`, `power {now, since_boot}` with the firmware's `under_voltage`, `freq_capped`, `throttled`, `soft_temp_limit` flags plus `events` (under-voltage kernel messages this boot), `memory`, `disk`, `network` (Wi-Fi SSID, signal dBm, bitrate, IP), `services` (soloist, music-api, airplay, music-display, quiet-hours timer, cloudflared), `versions` (deployed commit, Soloist, shairport-sync, Python, kernel, OS) and `history` (CPU and temperature every 5 s for 10 min). Unknown values are null. Poll it no faster than every 2 s.
+
+#### GET /api/admin/quiet-hours, PUT /api/admin/quiet-hours, POST /api/admin/quiet-hours/override
+GET returns `{settings {enabled, start, end, grace_min, source: admin|env, env_window, updated_by, updated_at}, status}`. PUT `{enabled?, start?: "HH:MM", end?: "HH:MM", grace_min?}` changes the window at runtime (saved in the data dir, also used by the OS watchdog); `{reset: true}` returns to `QUIET_HOURS`. Override `{action: "unlock"}` keeps the speakers unlocked until the current or next window ends, `{action: "lock"}` locks now (409 outside the window), `{action: "clear"}` returns to the normal rules. `status.override` is `{kind: unlocked|locked, until_ts, by}` or null.
+
+#### GET /api/admin/admins, POST /api/admin/admins, DELETE /api/admin/admins/{key}
+`{admins: [{key, id, email, name, avatar, source: config|admin, added_by, added, you}], known: [{id, name, avatar, email, admin, last_seen}]}` (known = everyone who has signed in). POST `{id}` (Slack user ID) or `{email}`. DELETE by `key`; `409` for `config` admins (SLACK_ADMINS) and for removing yourself as the last admin.
+
+#### GET /api/admin/update, POST /api/admin/update/check, POST /api/admin/update
+Deployed commit vs `origin/main` on GitHub with the commits in between, the tested build GitHub Actions published (`build.ready` when it matches main), what an update would restart and any manual steps (`changes.notes`). POST /api/admin/update runs the update in the background: Soloist and AirPlay keep playing, music-api restarts (so expect a few seconds of 502s), and it rolls back if the new server fails its health check. Poll GET for `run.state` (`running`, `succeeded`, `rolled_back`, `failed`) and `run.log`. `409` if already up to date or running; `503` until the Pi's deploy key is set up.
+
+#### POST /api/admin/services/{name}/restart, GET /api/admin/logs/{name}
+Restart `soloist` (interrupts the music for a few seconds), `airplay` (disconnects the AirPlay sender) or `music-display`. Logs take any service name from the system list, `?lines=` up to 1000, and return `{name, unit, lines, error}`.
+
 ### Sound effects (short clips played over the music)
 
 Register a clip once under a name, then play it by name with one low-latency call. A play is a separate PipeWire stream (`pw-play`) that mixes with whatever is going on, Spotify or AirPlay: the music is not paused, skipped or interrupted. Clips are converted once at registration to 48 kHz stereo 16-bit WAV (PipeWire's rate), so playing never transcodes. Plays may overlap. Registering, renaming and deleting are admin-only (API tokens are admins); listing, playing and stopping are open to every signed-in user. Files are in `<data-dir>/effects/`. Plays are not recorded in the activity feed.
@@ -773,7 +792,7 @@ The server uses one of two backends; `GET /api/backend` says which.
 
 ### Quiet hours
 
-Default window 21:00-08:00, local time on the server. Music that's playing when it starts keeps going, and playback works normally (grace) until no audio has played from any source for 5 continuous minutes; then the speakers lock until the window ends. While locked, `POST /api/play`, `/api/play-url`, `/api/playpause` (when it would play), `/api/next`, `/api/previous`, `/api/back`, `/api/queue/jump`, `/api/playlists/{id}/play`, `/api/app/library/songs/play`, `/api/devices/transfer` with `play: true`, the Slack bot and `/api/spotify/me/player/{play,next,previous}` return `423 quiet_hours` with `until`. Pause, volume, search, playlists, the Library and queue editing still work. Sound effects (`POST /api/effects/{name}/play`) are refused the same way while locked but play normally during the grace phase; managing effects and `POST /api/effects/stop` always work. There is no override: the lock mutes the speakers at the OS level. Tell the user it's quiet hours until `until`; don't retry. The lock also turns the AirPlay receiver off and mutes the speakers at the OS level.
+Default window 21:00-08:00, local time on the server. Music that's playing when it starts keeps going, and playback works normally (grace) until no audio has played from any source for 5 continuous minutes; then the speakers lock until the window ends. While locked, `POST /api/play`, `/api/play-url`, `/api/playpause` (when it would play), `/api/next`, `/api/previous`, `/api/back`, `/api/queue/jump`, `/api/playlists/{id}/play`, `/api/app/library/songs/play`, `/api/devices/transfer` with `play: true`, the Slack bot and `/api/spotify/me/player/{play,next,previous}` return `423 quiet_hours` with `until`. Pause, volume, search, playlists, the Library and queue editing still work. Sound effects (`POST /api/effects/{name}/play`) are refused the same way while locked but play normally during the grace phase; managing effects and `POST /api/effects/stop` always work. Only admins can override it (the admin page or `POST /api/admin/quiet-hours/override`); the lock mutes the speakers at the OS level. Tell the user it's quiet hours until `until`; don't retry. The lock also turns the AirPlay receiver off and mutes the speakers at the OS level.
 
 ### AirPlay
 
@@ -818,7 +837,9 @@ Other Spotify 4xx errors are passed through with their status and a message of t
 
 - Code: a Python 3.9+ stdlib-only server (`server.py`), installed at `~/.local/share/music-api-v2` on a Raspberry Pi 3 B+ (Debian 13, user `ubuntu`). No dependencies.
 - systemd user units: `soloist.service` (Spotify Soloist, audio to the USB speakers via PipeWire), `music-api.service` (`server.py --host 0.0.0.0 --public`, settings from `~/.config/music-api/env`), `soloist-update.timer` (daily build refresh), `airplay.service` (shairport-sync AirPlay 2 receiver, `AIRPLAY_NAME`), `quiet-hours.timer` (every minute: `quiet_hours.py sync`, the OS-level quiet-hours lock). System service `nqptp` (AirPlay 2 timing).
-- Quiet hours: `QUIET_HOURS=21:00-08:00` in the env file (or `off`); state in `<data-dir>/quiet-hours.json`.
+- Quiet hours: `QUIET_HOURS=21:00-08:00` in the env file (or `off`) is the default; admins can change it at runtime (`<data-dir>/quiet-hours-settings.json`). State in `<data-dir>/quiet-hours.json`.
+- Admins added at runtime: `<data-dir>/admins.json`. Deployed commit: `BUILD.json` in the app dir.
+- Updates: `deploy/deploy-pi.sh` from a Mac, or from GitHub with `updater.py` (admin page > Updates), which fetches the tested `pi-build` branch that `.github/workflows/pi-build.yml` publishes on every push to main.
 - System service `cloudflared` (config `/etc/cloudflared/config.yml`) maps `music.pinewoodrobotics.org` to `http://127.0.0.1:8765`.
 - Restart: `systemctl --user restart music-api`. Logs: `journalctl --user-unit soloist --user-unit music-api -f`.
 - Data directory `~/.local/share/music-api`: `spotify-tokens.json` (Spotify login), `api-tokens.json` (hashed API tokens), `token` (bootstrap token file), `effects/` (sound effect WAVs and `index.json`).
