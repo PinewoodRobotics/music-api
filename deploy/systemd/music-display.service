@@ -7,8 +7,6 @@ Wants=music-api.service
 ExecStart=/usr/bin/python3 %h/.local/share/music-api-v2/display/now_playing_display.py --token-file %h/.config/music-api/display-token
 Restart=always
 RestartSec=3
-Nice=10
-CPUQuota=25%
 
 [Install]
 WantedBy=default.target

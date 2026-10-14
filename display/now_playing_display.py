@@ -2,6 +2,7 @@
 """Low-CPU "now playing" screen drawn straight into the Linux framebuffer."""
 import argparse
 import collections
+import concurrent.futures
 import fcntl
 import hashlib
 import http.client
@@ -21,7 +22,13 @@ FB = "/dev/fb0"
 SYSFB = "/sys/class/graphics/fb0"
 CACHE_DIR = os.path.expanduser("~/.cache/music-display")
 CACHE_FILES = 50
-PROGRESS_EVERY = 2.0
+SECOND_SLACK = 0.005
+SYNC_TOLERANCE_MS = 150
+ART_WAIT = 0.3
+ART_WORKERS = 4
+ART_FAIL_BACKOFF = 30.0
+PACK_THREADS = 4
+PACK_PARALLEL_MIN = 200_000
 WATCHDOG = 45
 BLANK_AFTER = 1.5
 FBIOBLANK = 0x4611
@@ -101,7 +108,14 @@ def wrap(text, font, width, lines):
 class Artwork:
     def __init__(self):
         self.mem = collections.OrderedDict()
+        self.tiles = collections.OrderedDict()
+        self.minis = collections.OrderedDict()
+        self.jobs = {}
+        self.failed = {}
+        self.lock = threading.RLock()
+        self.pool = concurrent.futures.ThreadPoolExecutor(ART_WORKERS)
         self.api = None
+        self.notify = None
         os.makedirs(CACHE_DIR, exist_ok=True)
 
     def fetch(self, url):
@@ -120,39 +134,107 @@ class Artwork:
             return url.replace(marker, "ab67616d" + code)
         return url
 
-    def get(self, url, want):
+    @staticmethod
+    def remember(cache, key, value, limit):
+        cache[key] = value
+        cache.move_to_end(key)
+        while len(cache) > limit:
+            cache.popitem(last=False)
+
+    def load(self, url, size):
+        with self.lock:
+            img = self.mem.get(url)
+        if img is None:
+            path = os.path.join(CACHE_DIR, hashlib.sha1(url.encode()).hexdigest())
+            if os.path.exists(path):
+                os.utime(path)
+                with open(path, "rb") as f:
+                    data = f.read()
+            else:
+                data = self.fetch(url)
+                tmp = f"{path}.tmp{threading.get_ident()}"
+                with open(tmp, "wb") as f:
+                    f.write(data)
+                os.replace(tmp, path)
+                try:
+                    self.prune()
+                except OSError:
+                    pass
+            img = Image.open(io.BytesIO(data)).convert("RGB")
+        mini = img.resize((64, 64), Image.BOX)
+        tile = square(img, size) if size else None
+        with self.lock:
+            self.remember(self.mem, url, img, 24)
+            self.remember(self.minis, url, mini, 48)
+            if tile is not None:
+                self.remember(self.tiles, (url, size), tile, 48)
+
+    def submit(self, url, want, size):
         if not url:
             return None
         url = self.sized(url, want)
-        img = self.mem.get(url)
-        if img is not None:
-            self.mem.move_to_end(url)
-            return img
-        path = os.path.join(CACHE_DIR, hashlib.sha1(url.encode()).hexdigest())
-        try:
-            if os.path.exists(path):
-                os.utime(path)
-                data = open(path, "rb").read()
-            else:
-                data = self.fetch(url)
-                with open(path, "wb") as f:
-                    f.write(data)
-                self.prune()
-            img = Image.open(io.BytesIO(data)).convert("RGB")
-        except Exception as e:
-            log("artwork failed", url, e)
+        key = (url, size)
+        with self.lock:
+            if (url, size) in self.tiles and url in self.minis:
+                return None
+            fut = self.jobs.get(key)
+            if fut is None:
+                if time.monotonic() - self.failed.get(url, -ART_FAIL_BACKOFF) < ART_FAIL_BACKOFF:
+                    return None
+                fut = self.pool.submit(self.load, url, size)
+                self.jobs[key] = fut
+                fut.add_done_callback(lambda f, k=key: self.done(k, f))
+        return fut
+
+    def done(self, key, fut):
+        url = key[0]
+        with self.lock:
+            self.jobs.pop(key, None)
+            err = fut.exception()
+            if err is not None:
+                self.failed[url] = time.monotonic()
+        if err is not None:
+            log("artwork failed", url, err)
+        elif self.notify:
+            self.notify(url)
+
+    def failing(self, url, want):
+        return time.monotonic() - self.failed.get(self.sized(url, want), -ART_FAIL_BACKOFF) < ART_FAIL_BACKOFF
+
+    def get(self, url, want, size, deadline=None):
+        if not url:
             return None
-        self.mem[url] = img
-        while len(self.mem) > 24:
-            self.mem.popitem(last=False)
-        return img
+        sized = self.sized(url, want)
+        with self.lock:
+            tile = self.tiles.get((sized, size))
+            if tile is not None:
+                self.tiles.move_to_end((sized, size))
+                return tile
+        fut = self.submit(url, want, size)
+        if fut is None:
+            return None
+        try:
+            fut.result(None if deadline is None else max(0.0, deadline - time.monotonic()))
+        except Exception:
+            return None
+        with self.lock:
+            return self.tiles.get((sized, size))
+
+    def mini(self, url, want):
+        if not url:
+            return None
+        with self.lock:
+            return self.minis.get(self.sized(url, want))
 
     @staticmethod
     def prune():
-        files = [os.path.join(CACHE_DIR, f) for f in os.listdir(CACHE_DIR)]
+        files = [os.path.join(CACHE_DIR, f) for f in os.listdir(CACHE_DIR) if ".tmp" not in f]
         files.sort(key=os.path.getmtime)
         for f in files[:-CACHE_FILES]:
-            os.unlink(f)
+            try:
+                os.unlink(f)
+            except OSError:
+                pass
 
 
 ART = Artwork()
@@ -220,29 +302,66 @@ class Blanker:
         return max(0.0, self.delay - (now - self.since))
 
 
+class Playhead:
+    """Playback position interpolated from the last status event, so the clock can tick on whole seconds."""
+
+    def __init__(self):
+        self.pos, self.at, self.running, self.dur = 0.0, 0.0, False, 0
+
+    def sync(self, pos_ms, now, running, dur_ms, force=False):
+        pos_ms = pos_ms or 0
+        if not force and running and self.running and abs(pos_ms - self.position(now)) <= SYNC_TOLERANCE_MS:
+            self.dur = dur_ms or 0
+            return
+        self.pos, self.at, self.running, self.dur = pos_ms, now, running, dur_ms or 0
+
+    def position(self, now):
+        pos = self.pos + (now - self.at) * 1000 if self.running else self.pos
+        return min(pos, self.dur) if self.dur else pos
+
+    def second(self, now):
+        return int(self.position(now) // 1000)
+
+    def until_next_second(self, now):
+        pos = self.position(now)
+        if not self.running or (self.dur and pos >= self.dur):
+            return None
+        return (1000 - pos % 1000) / 1000 + SECOND_SLACK
+
+
 class Scene:
     def __init__(self, w, h):
         self.w, self.h = w, h
         self.u = h / 1080
-        self.bg_key = None
-        self.bg = None
+        self.backgrounds = collections.OrderedDict()
+        self.bg_lock = threading.Lock()
+        self.shadows = {}
+        self.pending = set()
 
     def px(self, n, lo=1):
         return max(lo, round(n * self.u))
 
-    def background(self, art_url, art):
-        key = (art_url, self.w, self.h)
-        if key != self.bg_key:
-            if art is None:
+    def background(self, art_url, mini):
+        key = (art_url, mini is None)
+        with self.bg_lock:
+            bg = self.backgrounds.get(key)
+        if bg is None:
+            if mini is None:
                 bg = Image.new("RGB", (self.w, self.h), (18, 18, 22))
             else:
-                small = art.convert("RGB").resize((64, 64), Image.BOX).filter(ImageFilter.GaussianBlur(5))
+                small = mini.filter(ImageFilter.GaussianBlur(5))
                 small = small.point([int(v * 0.42) for v in range(256)] * 3)
                 mid = small.resize((max(1, self.w // 4), max(1, self.h // 4)), Image.BICUBIC)
                 mid = mid.filter(ImageFilter.GaussianBlur(3))
-                bg = ImageChops.add(mid.resize((self.w, self.h), Image.BICUBIC), dither(self.w, self.h))
-            self.bg_key, self.bg = key, bg
-        return self.bg.copy()
+                bg = ImageChops.add_modulo(mid.resize((self.w, self.h), Image.BICUBIC), dither(self.w, self.h))
+            with self.bg_lock:
+                Artwork.remember(self.backgrounds, key, bg, 4)
+        return bg.copy()
+
+    def warm(self, art_url, want):
+        mini = ART.mini(art_url, want)
+        if mini is not None:
+            self.background(art_url, mini)
 
     def idle(self):
         img = Image.new("RGB", (self.w, self.h), (16, 16, 20))
@@ -261,12 +380,46 @@ class Scene:
         tx = x0 + art + self.px(64)
         return art, x0, tx, w - tx - x0
 
-    def track(self, st, upcoming, paused):
+    def thumb_size(self):
+        return self.px(64, 40)
+
+    def avatar_size(self):
+        return self.px(34)
+
+    def tile(self, url, size, deadline):
+        if not url:
+            return None
+        tile = ART.get(url, size, size, deadline)
+        if tile is None and not ART.failing(url, size):
+            self.pending.add(ART.sized(url, size))
+        return tile
+
+    def shadow(self, art_size):
+        if art_size not in self.shadows:
+            sp = self.px(100)
+            shadow = Image.new("L", (art_size + 2 * sp, art_size + 2 * sp), 0)
+            shadow.paste(150, (sp, sp + self.px(14), sp + art_size, sp + art_size + self.px(14)))
+            self.shadows[art_size] = shadow.filter(ImageFilter.GaussianBlur(self.px(22)))
+        return self.shadows[art_size]
+
+    def track(self, st, upcoming, paused, wait=ART_WAIT):
         w, h, u = self.w, self.h, self.u
         tr = st["track"]
         art_size, x0, tx, tw = self.geometry()
-        art = ART.get(tr.get("artwork"), art_size)
-        img = self.background(tr.get("artwork"), art)
+        av = self.avatar_size()
+        thumb = self.thumb_size()
+        credit = st.get("credit")
+        airplay = st.get("source") == "airplay"
+        avatar_url = None if airplay else ((credit or {}).get("by") or {}).get("avatar")
+        art_url = tr.get("artwork")
+        thumbs = [] if airplay else [it["item"].get("artwork") for it in upcoming[:3]]
+        for url, size in [(art_url, art_size), (avatar_url, av), *((t, thumb) for t in thumbs)]:
+            ART.submit(url, size, size)
+        deadline = None if wait is None else time.monotonic() + wait
+        self.pending = set()
+        art = self.tile(art_url, art_size, deadline)
+        mini = ART.mini(art_url, art_size)
+        img = self.background(art_url, mini)
         d = ImageDraw.Draw(img)
 
         f_title, f_meta, f_small = FONTS.get(self.px(60), 700), FONTS.get(self.px(30)), FONTS.get(self.px(24))
@@ -277,9 +430,7 @@ class Scene:
         artists = ", ".join(a["name"] for a in tr.get("artists") or [] if a.get("name"))
         album = (tr.get("album") or {}).get("name") or ""
         meta = fit(" · ".join(p for p in (artists, album) if p), f_meta, tw)
-        credit = st.get("credit")
         credit_text = None
-        airplay = st.get("source") == "airplay"
         if airplay:
             sender = (st.get("airplay") or {}).get("sender")
             credit_text = f"AirPlay from {sender}" if sender else "AirPlay"
@@ -291,8 +442,6 @@ class Scene:
             )
 
         title_lh = int(self.px(60) * 1.2)
-        av = self.px(34)
-        thumb = self.px(64, 40)
         pitch = thumb + self.px(16)
         prog_h = self.px(6, 3)
         times_h = self.px(46)
@@ -320,11 +469,8 @@ class Scene:
         ay = (h - art_size) // 2
         if art is not None:
             sp = self.px(100)
-            shadow = Image.new("L", (art_size + 2 * sp, art_size + 2 * sp), 0)
-            shadow.paste(150, (sp, sp + self.px(14), sp + art_size, sp + art_size + self.px(14)))
-            shadow = shadow.filter(ImageFilter.GaussianBlur(self.px(22)))
-            img.paste((0, 0, 0), (x0 - sp, ay - sp), shadow)
-            img.paste(square(art, art_size), (x0, ay), rounded_mask(art_size, self.px(18)))
+            img.paste((0, 0, 0), (x0 - sp, ay - sp), self.shadow(art_size))
+            img.paste(art, (x0, ay), rounded_mask(art_size, self.px(18)))
         else:
             d.rounded_rectangle((x0, ay, x0 + art_size, ay + art_size), self.px(18), fill=(40, 40, 48))
 
@@ -340,12 +486,11 @@ class Scene:
         y += self.px(40)
         if credit_text:
             y += self.px(14)
-            avatar_url = None if airplay else (credit.get("by") or {}).get("avatar")
             ax = tx
             if avatar_url:
-                im = ART.get(avatar_url, av)
+                im = self.tile(avatar_url, av, deadline)
                 if im is not None:
-                    img.paste(square(im, av), (tx, y), rounded_mask(av, av // 2))
+                    img.paste(im, (tx, y), rounded_mask(av, av // 2))
                     ax = tx + av + self.px(12)
             d.text((ax, y + av // 2), fit(credit_text, f_small, tw - (ax - tx)), font=f_small, fill=faint, anchor="lm")
             y += av
@@ -359,9 +504,9 @@ class Scene:
             y += self.px(44)
             for item in upcoming[:rows]:
                 it = item["item"]
-                im = ART.get(it.get("artwork"), thumb)
+                im = self.tile(it.get("artwork"), thumb, deadline)
                 if im is not None:
-                    img.paste(square(im, thumb), (tx, y), rounded_mask(thumb, self.px(8)))
+                    img.paste(im, (tx, y), rounded_mask(thumb, self.px(8)))
                 else:
                     d.rounded_rectangle((tx, y, tx + thumb, y + thumb), self.px(8), fill=(40, 40, 48))
                 textx = tx + thumb + self.px(18)
@@ -419,21 +564,36 @@ def dither(w, h):
     if (w, h) not in _dither:
         tile = Image.new("RGB", (4, 4))
         tile.putdata([(v // 2, v // 4, v // 2) for v in _BAYER])
+        row = Image.new("RGB", (w, 4))
+        for x in range(0, w, 4):
+            row.paste(tile, (x, 0))
         img = Image.new("RGB", (w, h))
         for y in range(0, h, 4):
-            for x in range(0, w, 4):
-                img.paste(tile, (x, y))
+            img.paste(row, (0, y))
         _dither[(w, h)] = img
     return _dither[(w, h)]
+
+
+PACK_POOL = concurrent.futures.ThreadPoolExecutor(PACK_THREADS)
+
+
+def pack565(img):
+    """Little-endian RGB565: low byte is G[2:0] B[4:0], high byte is R[4:0] G[5:3]. The two halves of each
+    byte share no bits, so a modulo add is the same as an OR."""
+    r, g, b = img.split()
+    hi = ImageChops.add_modulo(r.point(_LUT["r"]), g.point(_LUT["g_hi"]))
+    lo = ImageChops.add_modulo(g.point(_LUT["g_lo"]), b.point(_LUT["b"]))
+    return Image.merge("LA", (lo, hi)).tobytes()
 
 
 def pack(img, bpp):
     if bpp == 32:
         return img.tobytes("raw", "BGRX")
-    r, g, b = img.split()
-    hi = ImageChops.add(r.point(_LUT["r"]), g.point(_LUT["g_hi"]))
-    lo = ImageChops.add(g.point(_LUT["g_lo"]), b.point(_LUT["b"]))
-    return Image.merge("LA", (lo, hi)).tobytes()
+    w, h = img.size
+    if w * h < PACK_PARALLEL_MIN:
+        return pack565(img)
+    step = -(-h // PACK_THREADS)
+    return b"".join(PACK_POOL.map(pack565, [img.crop((0, y, w, min(h, y + step))) for y in range(0, h, step)]))
 
 
 class Framebuffer:
@@ -529,20 +689,48 @@ class Display:
         self.api, self.fb = api, fb
         self.status = None
         self.upcoming = []
-        self.anchor = (0, time.monotonic())
+        self.playhead = Playhead()
+        self.events = None
+        self.pending = set()
+        self.art_dirty = False
         self.base = None
         self.box = None
         self.scene = None
         self.shown_key = None
-        self.last_progress = 0.0
+        self.shown_second = None
         self.blanker = Blanker(now=time.monotonic())
 
     def position(self):
+        return self.playhead.position(time.monotonic())
+
+    def get_scene(self):
+        w, h = self.fb.size
+        if self.scene is None or (self.scene.w, self.scene.h) != (w, h):
+            self.scene = Scene(w, h)
+        return self.scene
+
+    def prefetch(self):
+        scene = self.get_scene()
+        art, thumb = scene.geometry()[0], scene.thumb_size()
+        for i, entry in enumerate(self.upcoming[:3]):
+            url = entry["item"].get("artwork")
+            ART.submit(url, thumb, thumb)
+            if i == 0:
+                fut = ART.submit(url, art, art)
+                if fut is None:
+                    ART.pool.submit(scene.warm, url, art)
+                else:
+                    fut.add_done_callback(lambda f, u=url: ART.pool.submit(scene.warm, u, art))
+
+    def ticking(self):
         st = self.status
-        pos = self.anchor[0]
-        if st and st.get("state") == "playing":
-            pos += (time.monotonic() - self.anchor[1]) * 1000
-        return min(pos, st["duration_ms"]) if st and st.get("duration_ms") else pos
+        return bool(self.box and self.base is not None and st and st.get("track") and not self.blanker.blanked)
+
+    def refresh_queue(self):
+        try:
+            self.events.put(("queue", self.api.get("/api/queue?limit=3")))
+        except Exception as e:
+            log("queue fetch failed:", e)
 
     @staticmethod
     def key(st, upcoming):
@@ -557,32 +745,41 @@ class Display:
                 tuple(i["item"]["uri"] for i in upcoming))
 
     def render(self):
-        w, h = self.fb.size
-        if self.scene is None or (self.scene.w, self.scene.h) != (w, h):
-            self.scene = Scene(w, h)
+        started = time.monotonic()
+        scene = self.get_scene()
         st = self.status
+        self.art_dirty = False
         if st and st.get("track"):
-            self.base, self.box = self.scene.track(st, self.upcoming, st.get("state") == "paused")
+            self.base, self.box = scene.track(st, self.upcoming, st.get("state") == "paused")
+            self.pending = scene.pending
         else:
-            self.base, self.box = self.scene.idle()
+            self.base, self.box = scene.idle()
+            self.pending = set()
         self.shown_key = self.key(st, self.upcoming)
         self.fb.write(self.base)
         self.draw_progress()
+        log(f"render {(time.monotonic() - started) * 1000:.0f} ms, {len(self.pending)} art pending")
 
     def draw_progress(self):
-        self.last_progress = time.monotonic()
+        now = time.monotonic()
+        self.shown_second = self.playhead.second(now)
         st = self.status
         if not self.box or not st or not st.get("track"):
             return
-        region = self.scene.progress(self.base, self.box, self.position(), st.get("duration_ms") or 0,
+        region = self.scene.progress(self.base, self.box, self.playhead.position(now), st.get("duration_ms") or 0,
                                      st.get("state") == "paused")
         self.fb.write(region, self.box[0], self.box[1])
 
     def handle(self, kind, data):
+        if kind == "art":
+            if data in self.pending:
+                self.art_dirty = True
+            return
         if kind == "queue":
             ups = (data or {}).get("upcoming", [])[:3]
             if [i["item"]["uri"] for i in ups] != [i["item"]["uri"] for i in self.upcoming]:
                 self.upcoming = ups
+                self.prefetch()
                 if self.blanker.blanked and not is_playing(self.status):
                     return
                 if self.key(self.status, ups) != self.shown_key:
@@ -590,23 +787,21 @@ class Display:
             return
         if data.get("removed"):
             return
-        if self.blanker.blanked and not is_playing(data):
-            self.status = data
-            return
         old_uri = ((self.status or {}).get("track") or {}).get("uri")
         new_uri = (data.get("track") or {}).get("uri")
-        drift = abs(data.get("position_ms", 0) - self.position())
         self.status = data
-        self.anchor = (data.get("position_ms") or 0, time.monotonic())
+        self.playhead.sync(data.get("position_ms"), time.monotonic(), data.get("state") == "playing",
+                           data.get("duration_ms"), force=new_uri != old_uri)
+        if self.blanker.blanked and not is_playing(data):
+            return
         if new_uri != old_uri and new_uri:
-            try:
-                self.upcoming = self.api.get("/api/queue?limit=3").get("upcoming", [])[:3]
-            except Exception as e:
-                log("queue fetch failed:", e)
+            self.upcoming = [i for i in self.upcoming if i["item"]["uri"] != new_uri]
+            if len(self.upcoming) < 3:
+                threading.Thread(target=self.refresh_queue, daemon=True).start()
         if self.key(data, self.upcoming) != self.shown_key or self.base is None:
             self.render()
-        elif drift > 2500:
-            self.draw_progress()
+        if new_uri != old_uri and new_uri:
+            self.prefetch()
 
     def apply_blank(self, action):
         if action == "blank":
@@ -619,10 +814,15 @@ class Display:
             self.fb.power(True)
 
     def run(self, events):
+        self.events = events
+        ART.notify = lambda url: events.put(("art", url))
         while True:
             now = time.monotonic()
-            playing = is_playing(self.status) and self.box and not self.blanker.blanked
-            wait = max(0.05, self.last_progress + PROGRESS_EVERY - now) if playing else WATCHDOG
+            wait = WATCHDOG
+            if self.ticking():
+                until = self.playhead.until_next_second(now)
+                if until is not None:
+                    wait = until
             left = self.blanker.remaining(now)
             if left is not None:
                 wait = min(wait, left + 0.01)
@@ -638,7 +838,9 @@ class Display:
             elif self.fb.refresh() and not self.blanker.blanked:
                 self.base = None
                 self.render()
-            if playing and not self.blanker.blanked and time.monotonic() - self.last_progress >= PROGRESS_EVERY:
+            if self.art_dirty and events.empty() and not self.blanker.blanked:
+                self.render()
+            if self.ticking() and self.playhead.second(time.monotonic()) != self.shown_second:
                 self.draw_progress()
 
 
@@ -648,7 +850,7 @@ def render_png(api, path, size):
     ups = api.get("/api/queue?limit=3").get("upcoming", [])[:3]
     scene = Scene(w, h)
     if st.get("track"):
-        img, box = scene.track(st, ups, st.get("state") == "paused")
+        img, box = scene.track(st, ups, st.get("state") == "paused", wait=None)
         reg = scene.progress(img, box, st.get("position_ms") or 0, st.get("duration_ms") or 0, st.get("state") == "paused")
         img.paste(reg, box[:2])
     else:
