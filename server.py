@@ -1356,8 +1356,10 @@ def main():
     quiet = quiet_hours.QuietHours(window, os.path.join(a.data_dir, quiet_hours.STATE_FILE))
     airplay = airplay_mod.AirPlay(a.airplay_pipe)
     guard = Guard(player, quiet, airplay, enforce=lambda locked: quiet_hours.enforce(locked, a.data_dir),
-                  receiver=quiet_hours.receiver, remote=airplay_mod.remote)
+                  receiver=quiet_hours.receiver, remote=airplay_mod.remote,
+                  resume_path=os.path.join(a.data_dir, "airplay-resume"))
     threading.Thread(target=airplay.loop, daemon=True).start()
+    threading.Thread(target=airplay.watch, daemon=True).start()
     threading.Thread(target=guard.loop, args=(5 if backend == "soloist" else 15,), daemon=True).start()
     threading.Thread(target=player.loop, daemon=True).start()
     bot = slack_bot.from_env(slack, player, api, credits, resolve=lambda url: links.resolve(api, url),

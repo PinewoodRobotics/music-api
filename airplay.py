@@ -13,6 +13,7 @@ a server restart), snam (sender name), PICT (cover art bytes), mdst/mden (bundle
 import base64
 import collections
 import hashlib
+import json
 import os
 import re
 import select
@@ -21,6 +22,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.parse
 
 DEFAULT_PIPE = "/tmp/shairport-sync-metadata"
 RTP_RATE = 44100
@@ -35,6 +37,8 @@ BUS_NAME = "org.gnome.ShairportSync"
 BUS_PATH = "/org/gnome/ShairportSync"
 BUS_INTERFACE = "org.gnome.ShairportSync.RemoteControl"
 REMOTE_METHODS = {"play": "Play", "pause": "Pause", "next": "Next", "previous": "Previous"}
+SINK_NAME = "AirPlay"
+MAX_ART = 16 << 20
 
 
 def log(msg):
@@ -47,14 +51,76 @@ class RemoteError(Exception):
         self.status, self.code = status, code
 
 
+def bus_env():
+    env = {**os.environ}
+    env.setdefault("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
+    return env
+
+
+def bus_json(args, run=subprocess.run):
+    """busctl --user --json=short <args>, parsed; None if the receiver's bus isn't reachable."""
+    try:
+        r = run(["busctl", "--user", "--timeout=3", "--json=short"] + list(args), capture_output=True, text=True,
+                timeout=6, env=bus_env())
+        return json.loads(r.stdout)["data"] if r.returncode == 0 else None
+    except (OSError, subprocess.TimeoutExpired, ValueError, KeyError, TypeError):
+        return None
+
+
+def _unwrap(v):
+    return v["data"] if isinstance(v, dict) and "data" in v else v
+
+
+def probe_dbus(run=subprocess.run):
+    """What shairport-sync's D-Bus interface says about the session, or None if it can't be reached. {"active": bool}
+    plus, while active: state, sender, title, artist, album, duration_ms, progress ("start/current/end" RTP frames)
+    and art_path."""
+    active = bus_json(["get-property", BUS_NAME, BUS_PATH, BUS_NAME, "Active"], run)
+    if active is None:
+        return None
+    if not active:
+        return {"active": False}
+    out = {"active": True}
+    got = bus_json(["call", BUS_NAME, BUS_PATH, "org.freedesktop.DBus.Properties", "GetAll", "s", BUS_INTERFACE], run)
+    props = got[0] if isinstance(got, list) and got and isinstance(got[0], dict) else {}
+    props = {k: _unwrap(v) for k, v in props.items()}
+    meta = {k: _unwrap(v) for k, v in (props.get("Metadata") or {}).items()} if isinstance(props.get("Metadata"), dict) else {}
+    artist = meta.get("xesam:artist")
+    length = meta.get("mpris:length")
+    art = meta.get("mpris:artUrl")
+    out.update(state=str(props.get("PlayerState") or "").lower(),
+               sender=props.get("ClientName") or None,
+               title=meta.get("xesam:title") or None,
+               artist=(", ".join(artist) if isinstance(artist, list) else artist) or None,
+               album=meta.get("xesam:album") or None,
+               duration_ms=round(length / 1000) if isinstance(length, int) and length > 0 else None,
+               progress=props.get("ProgressString") or None,
+               art_path=urllib.parse.unquote(urllib.parse.urlparse(art).path) if isinstance(art, str) and art else None)
+    return out
+
+
+def probe_sink(run=subprocess.run):
+    """Fallback when D-Bus is unreachable: is shairport-sync's PipeWire/Pulse stream uncorked (audio flowing)?"""
+    try:
+        r = run(["pactl", "--format=json", "list", "sink-inputs"], capture_output=True, text=True, timeout=6,
+                env=bus_env())
+        inputs = json.loads(r.stdout) if r.returncode == 0 else []
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        return None
+    for i in inputs if isinstance(inputs, list) else []:
+        props = i.get("properties") or {}
+        if props.get("application.name") == SINK_NAME and not i.get("corked"):
+            return {"active": True, "state": "playing"}
+    return {"active": False}
+
+
 def remote(action, run=subprocess.run):
     """Send play/pause/next/previous to the AirPlay sender through shairport-sync's own RemoteControl interface on the
     session bus (dbus_service_bus = "session"). shairport-sync finds the sender's DACP service and holds its
     Active-Remote token, so none of that is reimplemented here. Needs busctl (systemd)."""
     method = REMOTE_METHODS[action]
     base = ["busctl", "--user", "--timeout=3"]
-    env = {**os.environ}
-    env.setdefault("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
+    env = bus_env()
 
     def busctl(*args):
         try:
@@ -116,9 +182,11 @@ def image_type(data):
 
 
 class AirPlay:
-    def __init__(self, pipe=DEFAULT_PIPE, clock=time.time):
+    def __init__(self, pipe=DEFAULT_PIPE, clock=time.time, probe=None, sink_probe=None):
         self.pipe = pipe
         self.clock = clock
+        self.probe = probe or probe_dbus
+        self.sink_probe = sink_probe or probe_sink
         self.lock = threading.RLock()
         self.on_start = None
         self.on_end = None
@@ -130,6 +198,7 @@ class AirPlay:
 
     def _clear(self):
         self.active = False
+        self.recovered = False
         self.playing = False
         self.sender = None
         self.title = self.artist = self.album = None
@@ -242,6 +311,63 @@ class AirPlay:
         if self.playing:
             pos += (now - at) * 1000
         return int(min(pos, self.duration_ms) if self.duration_ms else pos)
+
+    def recover(self, info):
+        """Adopt a session that was already running (server restarted mid-song) from a probe result."""
+        with self.lock:
+            now = self.clock()
+            if self.active or now < self._ignore_until:
+                return False
+            self.active, self.recovered, self.started_at = True, True, now
+            self.playing = info.get("state", "playing") != "paused"
+            self.sender = info.get("sender")
+            self.title, self.artist, self.album = info.get("title"), info.get("artist"), info.get("album")
+            self.duration_ms = info.get("duration_ms")
+            if info.get("progress"):
+                self._progress(info["progress"], now)
+            art = self._read_art(info.get("art_path"))
+            if art:
+                self.art = (art, image_type(art), hashlib.sha1(art).hexdigest()[:12])
+                self.recent_art[self.art[2]] = self.art[:2]
+        self._fire(["start"])
+        return True
+
+    @staticmethod
+    def _read_art(path):
+        if not path:
+            return None
+        try:
+            with open(path, "rb") as f:
+                return f.read(MAX_ART) or None
+        except OSError:
+            return None
+
+    def poll(self):
+        """Notice a session this process didn't see begin (or one that ended unseen). The metadata pipe is the
+        primary source; this covers a restart mid-song, when no further session-begin item is coming."""
+        with self.lock:
+            active, recovered = self.active, self.recovered
+        if active and not recovered:
+            return
+        info = self.probe()
+        if info is None and not active:
+            info = self.sink_probe()
+        if info is None:
+            return
+        if not active and info["active"]:
+            self.recover(info)
+        elif recovered and not info["active"]:
+            with self.lock:
+                self._clear()
+            self._fire(["end"])
+
+    def watch(self, interval=3):
+        while True:
+            try:
+                self.poll()
+            except Exception as e:  # noqa: BLE001 - must keep watching
+                log(f"watch: {e!r}")
+            time.sleep(interval)
 
     def tick(self):
         """End a session that sent pend but no aend (older builds, a dropped sender)."""

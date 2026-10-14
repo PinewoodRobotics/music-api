@@ -4,6 +4,7 @@
 - AirPlay: a session pauses Spotify (queue, track and position stay put). Play (without a track), pause, next and
   previous then control the AirPlay sender; the rest of Spotify transport is refused with 409 until it ends. When it ends, Spotify resumes if it was playing when AirPlay took over (unless quiet hours locked).
 """
+import os
 import sys
 import threading
 import time
@@ -24,7 +25,8 @@ def log(msg):
 
 
 class Guard:
-    def __init__(self, player, quiet, airplay=None, enforce=None, receiver=None, remote=None, clock=time.time):
+    def __init__(self, player, quiet, airplay=None, enforce=None, receiver=None, remote=None, clock=time.time,
+                 resume_path=None):
         self.player = player
         self.quiet = quiet
         self.airplay = airplay
@@ -32,6 +34,7 @@ class Guard:
         self.receiver = receiver or (lambda action: False)
         self.remote = remote or (lambda action: None)
         self.clock = clock
+        self.resume_path = resume_path
         self.lock = threading.Lock()
         self.resume_after = False
         self.handoff_until = 0
@@ -105,18 +108,39 @@ class Guard:
             self.enforce(True)
             self.airplay.end_session()
             return
+        if self.airplay.recovered:
+            with self.lock:
+                self.resume_after = self._resume_saved()
+            return
         was = self.spotify_playing()
         with self.lock:
             self.resume_after = was
+        self._save_resume(was)
         if was:
             try:
                 self.player.pause(force=True)
             except (PlayerError, SpotifyError) as e:
                 log(f"couldn't pause Spotify for AirPlay: {e}")
 
+    def _resume_saved(self):
+        return bool(self.resume_path and os.path.exists(self.resume_path))
+
+    def _save_resume(self, resume):
+        if not self.resume_path:
+            return
+        try:
+            if resume:
+                with open(self.resume_path, "w") as f:
+                    f.write("1")
+            elif os.path.exists(self.resume_path):
+                os.remove(self.resume_path)
+        except OSError as e:
+            log(f"couldn't persist the Spotify resume flag: {e}")
+
     def airplay_ended(self):
         with self.lock:
             resume, self.resume_after = self.resume_after, False
+        self._save_resume(False)
         if resume and not self.quiet.locked():
             self.handoff_until = self.clock() + HANDOFF
             try:

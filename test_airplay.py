@@ -4,6 +4,7 @@ import datetime
 import io
 import json
 import os
+import subprocess
 import tempfile
 import threading
 import unittest
@@ -411,6 +412,169 @@ class QuietGuardTest(unittest.TestCase):
         r.guard.tick()
         self.assertEqual(r.enforced, [True])
         self.assertIsNone(r.air.snapshot())
+
+
+def dbus_reply(**props):
+    return json.dumps({"type": "a{sv}", "data": [props]})
+
+
+def typed(t, v):
+    return {"type": t, "data": v}
+
+
+class RecoveryTest(unittest.TestCase):
+    META = {"xesam:title": typed("s", "Town Meeting Song"), "xesam:album": typed("s", "Nightmare"),
+            "xesam:artist": typed("as", ["Danny Elfman", "Other"]), "mpris:length": typed("x", 176706000)}
+
+    def runner(self, active=True, fail=False, art=None, state="Playing", sinks="[]"):
+        calls = []
+        meta = dict(self.META)
+        if art:
+            meta["mpris:artUrl"] = typed("s", "file://" + art)
+
+        def run(cmd, **kw):
+            calls.append(cmd)
+            if cmd[0] == "pactl":
+                return subprocess.CompletedProcess(cmd, 0, sinks, "")
+            if fail:
+                return subprocess.CompletedProcess(cmd, 1, "", "no bus")
+            if "get-property" in cmd:
+                return subprocess.CompletedProcess(cmd, 0, json.dumps(typed("b", active)), "")
+            out = dbus_reply(PlayerState=typed("s", state), ClientName=typed("s", ""), Available=typed("b", True),
+                             ProgressString=typed("s", "1000000/1441000/14230000"), Metadata=typed("a{sv}", meta))
+            return subprocess.CompletedProcess(cmd, 0, out, "")
+        return run, calls
+
+    def make(self, **kw):
+        run, calls = self.runner(**kw)
+        c = Clock()
+        a = ap.AirPlay("/nonexistent", clock=c, probe=lambda: ap.probe_dbus(run), sink_probe=lambda: ap.probe_sink(run))
+        return a, c, calls
+
+    def test_probe_parses_dbus(self):
+        run, _ = self.runner()
+        info = ap.probe_dbus(run)
+        self.assertEqual((info["title"], info["artist"], info["album"], info["duration_ms"], info["state"]),
+                         ("Town Meeting Song", "Danny Elfman, Other", "Nightmare", 176706, "playing"))
+        self.assertIsNone(info["sender"])
+
+    def test_probe_inactive_and_unreachable(self):
+        self.assertEqual(ap.probe_dbus(self.runner(active=False)[0]), {"active": False})
+        self.assertIsNone(ap.probe_dbus(self.runner(fail=True)[0]))
+
+    def test_poll_recovers_session_with_metadata(self):
+        a, c, _ = self.make()
+        started = []
+        a.on_start = lambda: started.append(a.recovered)
+        a.poll()
+        s = a.snapshot()
+        self.assertEqual(started, [True])
+        self.assertEqual((s["state"], s["track"]["name"], s["track"]["album"]["name"]),
+                         ("playing", "Town Meeting Song", "Nightmare"))
+        self.assertEqual(s["track"]["artists"][0]["name"], "Danny Elfman, Other")
+        c.t += 5
+        self.assertGreater(a.snapshot()["position_ms"], 9000)
+        a.poll()
+        self.assertEqual(started, [True])
+
+    def test_recovered_art_read_from_cache_file(self):
+        with tempfile.NamedTemporaryFile(suffix=".jpg") as f:
+            f.write(JPEG)
+            f.flush()
+            a, _, _ = self.make(art=f.name)
+            a.poll()
+        self.assertEqual(a.artwork()[0], JPEG)
+        self.assertIn("/api/airplay/artwork", a.snapshot()["track"]["artwork"])
+
+    def test_paused_state(self):
+        a, _, _ = self.make(state="Paused")
+        a.poll()
+        self.assertEqual(a.snapshot()["state"], "paused")
+
+    def test_inactive_does_nothing(self):
+        a, _, _ = self.make(active=False)
+        a.poll()
+        self.assertIsNone(a.snapshot())
+
+    def test_sink_fallback_without_dbus(self):
+        sinks = json.dumps([{"corked": True, "properties": {"application.name": "Spotify"}},
+                            {"corked": False, "properties": {"application.name": "AirPlay"}}])
+        a, _, _ = self.make(fail=True, sinks=sinks)
+        a.poll()
+        s = a.snapshot()
+        self.assertEqual((s["state"], s["track"]["name"], s["sender"]), ("playing", "AirPlay", None))
+
+    def test_corked_sink_is_not_a_session(self):
+        a, _, _ = self.make(fail=True, sinks=json.dumps([{"corked": True, "properties": {"application.name": "AirPlay"}}]))
+        a.poll()
+        self.assertIsNone(a.snapshot())
+
+    def test_pipe_items_fill_in_later(self):
+        a, _, _ = self.make(fail=True, sinks=json.dumps([{"corked": False, "properties": {"application.name": "AirPlay"}}]))
+        a.poll()
+        for item in ap.Parser().feed(SESSION):
+            a.handle(*item)
+        s = a.snapshot()
+        self.assertEqual((s["sender"], s["track"]["name"]), ("Adam's iPhone", "Clair de Lune"))
+
+    def test_recovered_session_ends_when_receiver_goes_inactive(self):
+        a, _, _ = self.make()
+        ended = []
+        a.on_end = lambda: ended.append(1)
+        a.poll()
+        a.probe = lambda: {"active": False}
+        a.poll()
+        self.assertIsNone(a.snapshot())
+        self.assertEqual(ended, [1])
+
+    def test_ignored_right_after_end_session(self):
+        a, _, _ = self.make()
+        a.end_session()
+        a.poll()
+        self.assertIsNone(a.snapshot())
+
+
+class RecoveryGuardTest(unittest.TestCase):
+    def make(self, spotify="paused"):
+        r = Rig(spotify)
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        r.guard.resume_path = os.path.join(self.dir.name, "airplay-resume")
+        r.air.probe = lambda: {"active": True, "state": "playing", "title": "Song"}
+        return r
+
+    def test_resume_flag_persists_and_clears(self):
+        r = self.make("playing")
+        r.start_airplay()
+        self.assertTrue(os.path.exists(r.guard.resume_path))
+        r.end_airplay()
+        self.assertFalse(os.path.exists(r.guard.resume_path))
+
+    def test_flag_survives_restart(self):
+        r = self.make("playing")
+        r.start_airplay()
+        r2 = self.make("paused")
+        r2.guard.resume_path = r.guard.resume_path
+        r2.air.poll()
+        self.assertTrue(r2.guard.resume_after)
+        self.assertEqual(r2.guard.overlay(r2.player.status())["source"], "airplay")
+        r2.end_airplay()
+        self.assertFalse(r2.guard.resume_after)
+        self.assertEqual(r2.sol.calls[-1], "play")
+
+    def test_recovered_without_flag_does_not_resume(self):
+        r = self.make("paused")
+        r.air.poll()
+        self.assertFalse(r.guard.resume_after)
+        self.assertIsNotNone(r.guard._airplay())
+
+    def test_recovered_session_counts_as_audio_and_blocks_spotify(self):
+        r = self.make("paused")
+        r.air.poll()
+        self.assertTrue(r.guard.audio_playing())
+        with self.assertRaises(PlayerError) as cm:
+            r.guard.check("jump")
+        self.assertEqual(cm.exception.code, "airplay_active")
 
 
 class RoutesTest(unittest.TestCase):
