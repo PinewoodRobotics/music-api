@@ -27,7 +27,9 @@ jobs:
           python-version: '3.12'
 
       - name: Python tests
-        run: python3 -m unittest discover -p 'test_*.py'
+        run: |
+          python3 -m pip install --quiet pillow
+          python3 -m unittest discover -p 'test_*.py'
 
       - uses: actions/setup-node@v4
         with:
