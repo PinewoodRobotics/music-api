@@ -294,7 +294,8 @@ the account menu (`/admin`), backed by `/api/admin/*` (403 for everyone else):
   (now and since boot, from the firmware's `get_throttled` via sysfs or `vcgencmd`, else the `rpi_volt` hwmon alarm and
   kernel log), memory, disk, Wi-Fi, service states and versions. A sampler thread reads `/proc/stat` and the thermal zone
   every 5 s; subprocesses (`systemctl`, `iw`, `journalctl`) are cached, so polling every 2 s is cheap on a Pi 3.
-- **Quiet hours:** see above. **Admins:** add people who have signed in, or by Slack ID / email; config admins can't be
+- **Quiet hours:** see above. **Sound effects:** "Same as media" (effects follow the music slider) or a separate
+  effects volume, see [Sound effects](#sound-effects). **Admins:** add people who have signed in, or by Slack ID / email; config admins can't be
   removed here, and nobody can remove themselves as the last admin.
 - **Updates:** compares the deployed commit (`BUILD.json`) with GitHub and updates without stopping the music, below.
 - **Services:** restart Soloist, AirPlay or the display (with a confirmation) and read each unit's recent journal.
@@ -355,7 +356,8 @@ Register short clips by name and play them over whatever else is playing, e.g. f
 
 - `POST /api/effects?name=match-start` with the audio as the body (`Content-Type: audio/wav`, mp3, ogg or flac, or multipart, or JSON `{name, url}`) registers a clip; `GET/PATCH/DELETE /api/effects/{name}` read, rename and delete it. Registering and deleting are admin-only.
 - `POST /api/effects/{name}/play {volume?, duck?, duck_level?}` returns immediately. `POST /api/effects/stop` stops every playing effect.
-- Effects follow the music volume slider (Spotify's volume, `/api/volume`): a play runs at `volume` x slider / 100, reported as `slider_volume` and `effective_volume`. The slider is read from Soloist's local state, or the last value seen in a status or volume change (connect mode, AirPlay, idle), never from the Web API at play time. It is persisted in `<data-dir>/effects/slider.json`; until one has been seen it is 50.
+- Effects follow the music volume slider (Spotify's volume, `/api/volume`): a play runs at `volume` x slider / 100, reported as `slider_volume` and `effective_volume` (`volume_source: "media"`). The slider is read from Soloist's local state, or the last value seen in a status or volume change (connect mode, AirPlay, idle), never from the Web API at play time. It is persisted in `<data-dir>/effects/slider.json`; until one has been seen it is 50.
+- Admins can unhook effects from the music volume (Admin > Sound effects: uncheck **Same as media**, then set **Sound effects volume**; `/api/admin/effects-volume`). Plays then run at `volume` x that level / 100 and report it as `slider_volume` with `volume_source: "fixed"`. Saved in `<data-dir>/effects/volume.json`; applies to the next play.
 - Playing is one `pw-play` process per play: its own PipeWire stream, mixed with Spotify and AirPlay, which keep playing untouched. Plays may overlap (16 at most). Nothing is transcoded at play time: at registration ffmpeg converts the upload to 48 kHz stereo 16-bit WAV (PipeWire's rate) and it is stored as `<data-dir>/effects/<name>.wav` with `index.json`. Without ffmpeg only PCM WAV uploads are accepted, as they are.
 - `duck: true` lowers the other PipeWire streams (`pactl set-sink-input-volume`) to `duck_level` % (default 30) while the effect plays and restores them when the last ducking effect ends, or at the next server start if it died mid-duck. Streams that begin during the duck aren't lowered, and the music's own volume setting is not touched.
 - Quiet hours: effects are refused with `423 quiet_hours` while the speakers are locked, exactly like play, and allowed during the grace phase and outside the window. There is no force override, because the lock mutes every sink at the OS level. Managing and stopping effects always works.
