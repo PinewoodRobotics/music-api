@@ -370,7 +370,14 @@ Register short clips by name and play them over whatever else is playing, e.g. f
 
 - AirPlay sessions show the sender's art and song with "AirPlay from <sender>". As soon as nothing is playing (paused, stopped, quiet-hours locked, logged out) it draws black and powers the HDMI output down with the `FBIOBLANK` ioctl on `/dev/fb0` (the DRM connector goes to DPMS Off so the monitor enters standby; the `video` group can do this, no udev rule or root needed). Anything playing wakes it at once and redraws the full scene; a 1.5 s debounce keeps track changes from flickering.
 - Future option: cutting USB power to the screen with `uhubctl` isn't viable on a Pi 3 B+ because its USB ports switch together and would also cut the USB speakers; it would need a per-port-switchable hub or a smart plug.
-- It reads the framebuffer size at runtime, so it works at any resolution (16 or 32 bpp). For 1080p add `video=HDMI-A-1:1920x1080@60` to `/boot/firmware/cmdline.txt`; `vt.global_cursor_default=0 consoleblank=0 quiet logo.nologo` keeps the text console quiet.
+- It reads the framebuffer size at runtime, so it works at any resolution (16 or 32 bpp). `vt.global_cursor_default=0 consoleblank=0 quiet logo.nologo` keeps the text console quiet.
+- Pin the monitor's EDID. If the Pi can't read it when the monitor wakes, the kernel falls back to 1024x768 while the framebuffer stays 1920x1080, so the monitor shows a stretched, clipped top-left corner. Save the EDID while the mode is right and load it from firmware:
+  ```
+  sudo mkdir -p /lib/firmware/edid && sudo cp /sys/class/drm/card0-HDMI-A-1/edid /lib/firmware/edid/acer.bin
+  # append to the single line in /boot/firmware/cmdline.txt:
+  drm.edid_firmware=HDMI-A-1:edid/acer.bin video=HDMI-A-1:1920x1080@60D
+  ```
+  Also add an `/etc/initramfs-tools/hooks/edid` hook that copies the file into `$DESTDIR/lib/firmware/edid/`, then run `sudo update-initramfs -u` and reboot. `kmsprint` should show the CRTC at 1920x1080.
 - `install-linux.sh` disables `getty@tty1`, lets the `video` group hide the tty1 cursor, silences console kernel messages, and enables the `music-display` user unit. Create its token once: `POST /api/tokens {"name": "pi display"}` into `~/.config/music-api/display-token` (mode 600).
 - Preview without a framebuffer: `python3 display/now_playing_display.py --render-png /tmp/shot.png --size 1920x1080`.
 
