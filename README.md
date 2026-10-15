@@ -269,7 +269,8 @@ From `QUIET_HOURS` (env file or `--quiet-hours`, default `21:00-08:00`, local ti
   transfer-with-play are refused with `423 {"error": "quiet_hours", "until": "08:00", "message": ...}` from every
   route, the Slack bot and the raw `/api/spotify/me/player/...` passthrough. Pause, volume, search, playlists, the
   Library and queue editing keep working. The AirPlay receiver stops advertising and every output sink is muted.
-  At the end of the window both are restored (the mute state each sink had before).
+  At the end of the window both are restored (the mute state each sink had before). Sound effects still play unless
+  an admin turns that off, see [Sound effects](#sound-effects).
 - `GET /api/quiet-hours` and `status.quiet_hours` report `{window, phase: open|grace|locked, idle_since, locks_at, until}`.
 - The lock and the idle clock live in `<data-dir>/quiet-hours.json`, so restarts and reboots keep them. A reboot during
   the window comes up locked if it was locked, otherwise in grace with the persisted idle clock (so a box that was idle
@@ -295,7 +296,7 @@ the account menu (`/admin`), backed by `/api/admin/*` (403 for everyone else):
   kernel log), memory, disk, Wi-Fi, service states and versions. A sampler thread reads `/proc/stat` and the thermal zone
   every 5 s; subprocesses (`systemctl`, `iw`, `journalctl`) are cached, so polling every 2 s is cheap on a Pi 3.
 - **Quiet hours:** see above. **Sound effects:** "Same as media" (effects follow the music slider) or a separate
-  effects volume, see [Sound effects](#sound-effects). **Admins:** add people who have signed in, or by Slack ID / email; config admins can't be
+  effects volume, and "Play during quiet hours", see [Sound effects](#sound-effects). **Admins:** add people who have signed in, or by Slack ID / email; config admins can't be
   removed here, and nobody can remove themselves as the last admin.
 - **Updates:** compares the deployed commit (`BUILD.json`) with GitHub and updates without stopping the music, below.
 - **Services:** restart Soloist, AirPlay or the display (with a confirmation) and read each unit's recent journal.
@@ -360,7 +361,7 @@ Register short clips by name and play them over whatever else is playing, e.g. f
 - Admins can unhook effects from the music volume (Admin > Sound effects: uncheck **Same as media**, then set **Sound effects volume**; `/api/admin/effects-volume`). Plays then run at `volume` x that level / 100 and report it as `slider_volume` with `volume_source: "fixed"`. Saved in `<data-dir>/effects/volume.json`; applies to the next play.
 - Playing is one `pw-play` process per play: its own PipeWire stream, mixed with Spotify and AirPlay, which keep playing untouched. Plays may overlap (16 at most). Nothing is transcoded at play time: at registration ffmpeg converts the upload to 48 kHz stereo 16-bit WAV (PipeWire's rate) and it is stored as `<data-dir>/effects/<name>.wav` with `index.json`. Without ffmpeg only PCM WAV uploads are accepted, as they are.
 - `duck: true` lowers the other PipeWire streams (`pactl set-sink-input-volume`) to `duck_level` % (default 30) while the effect plays and restores them when the last ducking effect ends, or at the next server start if it died mid-duck. Streams that begin during the duck aren't lowered, and the music's own volume setting is not touched.
-- Quiet hours: effects are refused with `423 quiet_hours` while the speakers are locked, exactly like play, and allowed during the grace phase and outside the window. There is no force override, because the lock mutes every sink at the OS level. Managing and stopping effects always works.
+- Quiet hours: effects keep playing while the speakers are locked (Admin > Sound effects > **Play during quiet hours**, on by default; `play_during_quiet_hours` in `/api/admin/effects-volume`, saved in `<data-dir>/effects/volume.json`). The lock mutes every sink at the OS level, so a quiet-hours play unmutes the sinks the lock muted (not ones that were muted before) for the effect's length plus 2 s and mutes them again when the last one ends; the play response has `quiet_hours: true`. `quiet_hours.py sync` leaves the sinks alone until then (`effects_until` in `<data-dir>/quiet-hours-os.json`) and re-mutes if the server dies mid-effect. Music stays refused, the AirPlay receiver stays off, Spotify is not resumed and the lock and idle clock are untouched: effects never count as playback. With the setting off, effects get `423 quiet_hours` while locked, like play. Either way they play normally during the grace phase and outside the window, and managing and stopping effects always works.
 - The Pi needs `pw-play` (`pipewire-bin`) and `ffmpeg`; `install-linux.sh` and `deploy-pi.sh` install them if missing. Plays are not written to the activity feed.
 
 ### HDMI now-playing display
