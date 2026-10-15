@@ -18,7 +18,7 @@ import server
 from accounts import PersonalTokens, Sessions
 from effects import Effects, EffectsError
 from guard import Guard
-from player import Player
+from player import Player, PlayerError
 from quiet_hours import QuietHours, parse_window
 from tokens import Tokens
 
@@ -57,7 +57,7 @@ class FakeProc:
 
 
 class Rig:
-    def __init__(self, d, ffmpeg=False, slider=None):
+    def __init__(self, d, ffmpeg=False, slider=None, on_quiet=None):
         self.procs = []
         self.slider = 100
         self.volumes = {}
@@ -68,7 +68,7 @@ class Rig:
              "volume": {"front-left": {"value": 65536}}}]
         self.fx = Effects(d, popen=self.popen, ffmpeg=ffmpeg, build_cmd=lambda path, vol: ["play", f"{vol:.2f}", path],
                           sink_inputs=lambda: self.inputs, set_volume=lambda i, v: self.volumes.__setitem__(str(i), list(v)),
-                          slider=slider or (lambda: self.slider))
+                          slider=slider or (lambda: self.slider), on_quiet=on_quiet)
 
     def popen(self, cmd, **kw):
         p = FakeProc(cmd)
@@ -405,6 +405,49 @@ class SliderTest(unittest.TestCase):
         cfg = Rig(self.tmp.name).fx.volume_settings()
         self.assertEqual((cfg["mode"], cfg["level"]), ("follow", 100))
 
+    def test_play_during_quiet_hours_defaults_on_validates_and_persists(self):
+        self.assertTrue(self.rig.fx.volume_settings()["play_during_quiet_hours"])
+        self.assertTrue(self.rig.fx.plays_during_quiet_hours())
+        for bad in ("maybe", 2):
+            with self.assertRaises(ValueError):
+                self.rig.fx.set_volume_settings(play_during_quiet_hours=bad)
+        cfg = self.rig.fx.set_volume_settings(play_during_quiet_hours=False, by={"id": "U1", "name": "Ada"})
+        self.assertEqual((cfg["play_during_quiet_hours"], cfg["mode"]), (False, "follow"))
+        self.assertFalse(Rig(self.tmp.name).fx.plays_during_quiet_hours())
+        self.rig.fx.set_volume_settings("fixed", 30)
+        self.assertFalse(Rig(self.tmp.name).fx.volume_settings()["play_during_quiet_hours"])
+        self.assertTrue(self.rig.fx.set_volume_settings(play_during_quiet_hours="true")["play_during_quiet_hours"])
+        with open(os.path.join(self.tmp.name, "effects", "volume.json"), "w") as f:
+            f.write('{"mode": "fixed", "level": 30}')
+        self.assertTrue(Rig(self.tmp.name).fx.plays_during_quiet_hours())
+
+    def test_quiet_plays_keep_the_outputs_open_until_the_last_one_ends(self):
+        opened = []
+        rig = Rig(self.tmp.name, on_quiet=opened.append)
+        rig.fx.register("long", beep(1.0))
+        rig.fx.play("beep")
+        self.assertEqual(opened, [])
+        a = rig.fx.play("beep", quiet=True)
+        b = rig.fx.play("long", quiet=True)
+        self.assertEqual((a["quiet_hours"], b["quiet_hours"]), (True, True))
+        self.assertEqual(len(opened), 2)
+        self.assertAlmostEqual(opened[0] - a["started_at"], 0.1 + fx.QUIET_MARGIN, delta=0.5)
+        self.assertAlmostEqual(opened[1] - b["started_at"], 1.0 + fx.QUIET_MARGIN, delta=0.5)
+        rig.procs[1].finish()
+        for _ in range(200):
+            if len(rig.fx.active) == 2:
+                break
+            threading.Event().wait(0.01)
+        self.assertEqual(len(opened), 2)
+        rig.settle()
+        self.assertEqual(opened[2:], [0])
+        with self.assertRaises(EffectsError):
+            rig.fx.play("nope", quiet=True)
+        self.assertEqual(len(opened), 3)
+        with self.assertRaises(ValueError):
+            rig.fx.play("beep", volume=500, quiet=True)
+        self.assertEqual((len(opened), opened[-1], rig.fx.quiet_plays), (5, 0, 0))
+
     def test_soloist_play_path_reads_local_volume_without_the_web_api(self):
         api, sol = NoWebApi(), FakeSoloist(40)
         player = Player("soloist", api, sol)
@@ -530,17 +573,53 @@ class RoutesTest(unittest.TestCase):
         self.assertEqual(self.call("POST", "/api/effects/v/play", {"volume": 500})[0], 400)
         self.call("DELETE", "/api/effects/v")
 
-    def test_quiet_hours_lock_refuses_play_but_not_management(self):
+    def _lock(self):
         import datetime
         self.call("POST", "/api/effects?name=q", beep(), "audio/wav")
         self.now[0] = datetime.datetime(2026, 10, 13, 22).timestamp()
-        self.assertEqual(self.call("POST", "/api/effects/q/play", {})[0], 200)
+        self.assertEqual(self.call("POST", "/api/effects/q/play", {})[1]["result"]["quiet_hours"], False)
         self.quiet.locked_until = datetime.datetime(2026, 10, 14, 8).timestamp()
-        code, res = self.call("POST", "/api/effects/q/play", {})
-        self.assertEqual((code, res["error"], res["until"]), (423, "quiet_hours", "08:00"))
-        self.assertEqual(self.call("GET", "/api/effects")[0], 200)
+        self.quiet.idle_since = self.now[0] - 600
+
+    def _unlock(self):
+        self.rig.fx.set_volume_settings(play_during_quiet_hours=True)
+        self.rig.fx.on_quiet = lambda until: None
         self.assertEqual(self.call("POST", "/api/effects/stop", {})[0], 200)
+        self.rig.settle()
         self.assertEqual(self.call("DELETE", "/api/effects/q")[0], 200)
+
+    def test_quiet_hours_lock_lets_effects_through_by_default_but_not_music(self):
+        self._lock()
+        opened = []
+        self.rig.fx.on_quiet = opened.append
+        before = (self.quiet.status(), self.quiet.locked_until, self.quiet.idle_since)
+        try:
+            code, res = self.call("POST", "/api/effects/q/play", {"volume": 10})
+            self.assertEqual((code, res["result"]["quiet_hours"]), (200, True))
+            self.assertEqual(len(opened), 1)
+            self.assertEqual((self.quiet.status(), self.quiet.locked_until, self.quiet.idle_since), before)
+            for action in ("play", "next", "previous", "jump", "transfer_play"):
+                with self.assertRaises(PlayerError) as e:
+                    server.guard.check(action)
+                self.assertEqual((e.exception.status, e.exception.code), (423, "quiet_hours"))
+            self.rig.settle()
+            self.assertEqual(opened[1:], [0])
+            self.assertEqual((self.quiet.status(), self.quiet.locked_until, self.quiet.idle_since), before)
+        finally:
+            self._unlock()
+
+    def test_quiet_hours_lock_refuses_effects_when_the_setting_is_off(self):
+        self._lock()
+        self.rig.fx.set_volume_settings(play_during_quiet_hours=False)
+        opened = []
+        self.rig.fx.on_quiet = opened.append
+        try:
+            code, res = self.call("POST", "/api/effects/q/play", {})
+            self.assertEqual((code, res["error"], res["until"]), (423, "quiet_hours", "08:00"))
+            self.assertEqual(opened, [])
+            self.assertEqual(self.call("GET", "/api/effects")[0], 200)
+        finally:
+            self._unlock()
 
     def test_only_admins_manage_effects(self):
         server._req.user = {"id": "U1", "name": "Ada", "admin": False}

@@ -15,6 +15,7 @@ import quiet_hours as qh
 import server
 import system_stats
 import test_system_stats as fake
+from test_effects import beep
 import updater
 from accounts import AccountError, Admins, PersonalTokens, Sessions, Slack
 from effects import Effects
@@ -250,6 +251,33 @@ class RoutesTest(unittest.TestCase):
         self.assertEqual((again.volume_cfg["mode"], again.volume_cfg["level"]), ("fixed", 30))
         code, res = self.call("PUT", "/api/admin/effects-volume", {"mode": "follow"})
         self.assertEqual((res["result"]["mode"], res["result"]["level"]), ("follow", 30))
+
+    def test_play_during_quiet_hours_is_admin_only_and_persists(self):
+        code, res = self.call("GET", "/api/admin/effects-volume")
+        self.assertEqual((code, res["result"]["play_during_quiet_hours"]), (200, True))
+        self.assertEqual(self.call("PUT", "/api/admin/effects-volume", {"play_during_quiet_hours": False}, sid=self.bob)[0], 403)
+        self.assertTrue(server.effects.plays_during_quiet_hours())
+        self.assertEqual(self.call("PUT", "/api/admin/effects-volume", {"play_during_quiet_hours": "maybe"})[0], 400)
+        mode = server.effects.volume_cfg["mode"]
+        code, res = self.call("PUT", "/api/admin/effects-volume", {"play_during_quiet_hours": False})
+        self.assertEqual((code, res["result"]["play_during_quiet_hours"], res["result"]["mode"]), (200, False, mode))
+        self.assertFalse(Effects(self.tmp.name, slider=lambda: None).plays_during_quiet_hours())
+        self.now[0] = datetime.datetime(2026, 10, 13, 23).timestamp()
+        self.quiet.locked_until = datetime.datetime(2026, 10, 14, 8).timestamp()
+        server.effects.register("horn", beep())
+        try:
+            self.assertEqual(self.call("POST", "/api/effects/horn/play")[0], 423)
+            self.call("PUT", "/api/admin/effects-volume", {"play_during_quiet_hours": True})
+            code, res = self.call("POST", "/api/effects/horn/play")
+            self.assertEqual((code, res["result"]["quiet_hours"]), (200, True))
+            with self.assertRaises(Exception) as e:
+                server.guard.check("play")
+            self.assertEqual((e.exception.status, e.exception.code), (423, "quiet_hours"))
+            self.assertTrue(self.quiet.locked())
+        finally:
+            server.effects.stop()
+            server.effects.delete("horn")
+            server.effects.set_volume_settings(play_during_quiet_hours=True)
 
     def test_override_locks_and_unlocks_now(self):
         self.assertEqual(self.call("POST", "/api/admin/quiet-hours/override", {"action": "lock"})[0], 409)

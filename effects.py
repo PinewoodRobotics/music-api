@@ -10,7 +10,9 @@ volume x slider / 100, so an effect at 100 is as loud as the music. The slider c
 read local state (Soloist's pushed volume), never the Web API; when that has nothing (connect mode, Soloist logged
 out), the last value seen in a status or volume change (note_slider) is used. It is kept in <data-dir>/effects/slider.json so a restart doesn't jump to full volume.
 An admin can unhook effects from the slider ("fixed" mode, <data-dir>/effects/volume.json): plays then run at
-volume x the fixed level / 100, whatever the music volume is.
+volume x the fixed level / 100, whatever the music volume is. The same file holds play_during_quiet_hours (default
+on): while quiet hours have the speakers locked, plays are still allowed and `on_quiet` is told how long to keep the
+outputs open (quiet_hours.open_for_effects), then called with 0 when the last such play ends.
 """
 import io
 import ipaddress
@@ -42,6 +44,7 @@ MAX_PLAYING = 16
 DEFAULT_DUCK_LEVEL = 30
 DEFAULT_SLIDER = 50
 VOLUME_MODES = ("follow", "fixed")
+QUIET_MARGIN = 2
 NAME_RX = re.compile(r"^[a-z0-9][a-z0-9_-]{0,47}$")
 RESERVED = {"stop", "playing"}
 UA = "music-api-v2 (https://github.com/PinewoodRobotics/music-api)"
@@ -157,7 +160,7 @@ def pactl_set_volume(index, values):
 
 class Effects:
     def __init__(self, data_dir, popen=subprocess.Popen, ffmpeg=None, build_cmd=None, sink_inputs=None,
-                 set_volume=None, clock=time.time, slider=None):
+                 set_volume=None, clock=time.time, slider=None, on_quiet=None):
         self.dir = os.path.join(data_dir, "effects")
         os.makedirs(self.dir, mode=0o700, exist_ok=True)
         self.index_path = os.path.join(self.dir, "index.json")
@@ -171,8 +174,12 @@ class Effects:
         self.set_volume = set_volume or pactl_set_volume
         self.clock = clock
         self.slider = slider or (lambda: None)
+        self.on_quiet = on_quiet or (lambda until: None)
         self.lock = threading.Lock()
         self.slider_lock = threading.Lock()
+        self.quiet_lock = threading.Lock()
+        self.quiet_plays = 0
+        self.quiet_until = 0
         self.slider_volume = self._clamp(_read_json(self.slider_path, {}).get("volume"), DEFAULT_SLIDER)
         self.volume_cfg = self._load_volume_cfg()
         self.index = _read_json(self.index_path, {})
@@ -343,16 +350,19 @@ class Effects:
     def _load_volume_cfg(self):
         saved = _read_json(self.volume_path, {})
         return {"mode": saved.get("mode") if saved.get("mode") in VOLUME_MODES else "follow",
-                "level": self._clamp(saved.get("level"), None), "updated_by": saved.get("updated_by"),
-                "updated_at": saved.get("updated_at")}
+                "level": self._clamp(saved.get("level"), None),
+                "play_during_quiet_hours": saved.get("play_during_quiet_hours") is not False,
+                "updated_by": saved.get("updated_by"), "updated_at": saved.get("updated_at")}
 
     def volume_settings(self):
         cfg = dict(self.volume_cfg)
         media = self.current_slider()
         return {**cfg, "level": media if cfg["level"] is None else cfg["level"], "media_volume": media}
 
-    def set_volume_settings(self, mode=None, level=None, by=None):
+    def set_volume_settings(self, mode=None, level=None, by=None, play_during_quiet_hours=None):
         cfg = dict(self.volume_cfg)
+        if play_during_quiet_hours is not None:
+            cfg["play_during_quiet_hours"] = self._bool(play_during_quiet_hours, "play_during_quiet_hours")
         if mode is not None:
             if mode not in VOLUME_MODES:
                 raise ValueError("mode must be follow or fixed")
@@ -366,6 +376,19 @@ class Effects:
         self.volume_cfg = cfg
         return self.volume_settings()
 
+    @staticmethod
+    def _bool(value, field):
+        if isinstance(value, bool):
+            return value
+        if str(value).lower() in ("1", "true", "yes", "on"):
+            return True
+        if str(value).lower() in ("0", "false", "no", "off"):
+            return False
+        raise ValueError(f"{field} must be true or false")
+
+    def plays_during_quiet_hours(self):
+        return self.volume_cfg["play_during_quiet_hours"]
+
     def _level(self):
         cfg = self.volume_cfg
         if cfg["mode"] == "fixed" and cfg["level"] is not None:
@@ -374,11 +397,42 @@ class Effects:
 
     # ---------- playback ----------
 
-    def play(self, name, volume=None, duck=False, duck_level=None):
+    def _notify_quiet(self, until):
+        try:
+            self.on_quiet(until)
+        except Exception as e:  # noqa: BLE001 - the effect still plays if the outputs can't be opened
+            log(f"can't open the outputs for quiet hours: {e}")
+
+    def _open_quiet(self, duration_ms):
+        with self.quiet_lock:
+            self.quiet_plays += 1
+            self.quiet_until = max(self.quiet_until, self.clock() + duration_ms / 1000 + QUIET_MARGIN)
+            self._notify_quiet(self.quiet_until)
+
+    def _close_quiet(self):
+        with self.quiet_lock:
+            self.quiet_plays -= 1
+            if self.quiet_plays <= 0:
+                self.quiet_plays, self.quiet_until = 0, 0
+                self._notify_quiet(0)
+
+    def play(self, name, volume=None, duck=False, duck_level=None, quiet=False):
+        """quiet: quiet hours have the speakers locked and this play was allowed through; the outputs are opened
+        for it and closed again when the last such play ends."""
         if not self.build_cmd:
             raise EffectsError("no audio player found (needs pw-play, paplay or afplay)", 501, "no_player")
         level = self._volume(duck_level, DEFAULT_DUCK_LEVEL)
         slider, source = self._level()
+        if quiet:
+            self._open_quiet(self.get(name)["duration_ms"])
+        try:
+            return self._start(name, volume, duck, level, slider, source, quiet)
+        except BaseException:
+            if quiet:
+                self._close_quiet()
+            raise
+
+    def _start(self, name, volume, duck, level, slider, source, quiet):
         with self.lock:
             e = self._entry(name)
             if len(self.active) >= MAX_PLAYING:
@@ -393,7 +447,7 @@ class Effects:
             pid = secrets.token_hex(4)
             rec = {"id": pid, "name": name, "volume": vol, "slider_volume": slider, "volume_source": source,
                    "effective_volume": effective, "duck": bool(duck), "started_at": self.clock(),
-                   "duration_ms": e["duration_ms"], "proc": proc}
+                   "duration_ms": e["duration_ms"], "quiet_hours": bool(quiet), "proc": proc}
             self.active[pid] = rec
             if duck:
                 self._duck(level)
@@ -411,6 +465,8 @@ class Effects:
             p = self.active.pop(pid, None)
             if p and p["duck"]:
                 self._unduck()
+        if p and p["quiet_hours"]:
+            self._close_quiet()
         if p and proc.returncode and proc.returncode > 0:
             log(f"{p['name']}: {self.tool} exited {proc.returncode}: {(err or b'').decode('utf-8', 'replace').strip()[-200:]}")
 

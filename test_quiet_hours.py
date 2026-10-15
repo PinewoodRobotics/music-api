@@ -305,5 +305,48 @@ class Settings(unittest.TestCase):
                 self.assertEqual(qh.main(["quiet_hours.py", "receiver-allowed"]), 0)
 
 
+
+class EnforceTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.cmds = []
+        patches = [mock.patch.object(qh.sys, "platform", "linux"),
+                   mock.patch.object(qh, "_sinks", lambda: [["1", "a"], ["2", "b"]]),
+                   mock.patch.object(qh, "_muted", lambda name: name == "b"),
+                   mock.patch.object(qh, "_run", lambda *cmd: self.cmds.append(cmd)),
+                   mock.patch.object(qh, "receiver", lambda action: self.cmds.append(("receiver", action)))]
+        for p in patches:
+            p.start()
+            self.addCleanup(p.stop)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def mutes(self):
+        out = [(c[2], c[3]) for c in self.cmds if c[:2] == ("pactl", "set-sink-mute")]
+        self.cmds.clear()
+        return out
+
+    def test_effects_open_the_lock_mute_until_they_end_or_expire(self):
+        d = self.tmp.name
+        qh.enforce(True, d, now=100)
+        self.assertEqual(self.mutes(), [("a", "1"), ("b", "1")])
+        qh.open_for_effects(110, d, now=100)
+        self.assertEqual(self.mutes(), [("a", "0")])
+        qh.enforce(True, d, now=105)
+        self.assertEqual((self.mutes(), self.cmds), ([], []))
+        qh.open_for_effects(0, d, now=106)
+        self.assertEqual(self.mutes(), [("a", "1"), ("b", "1")])
+        qh.open_for_effects(120, d, now=110)
+        self.mutes()
+        qh.enforce(True, d, now=121)
+        self.assertEqual(self.mutes(), [("a", "1"), ("b", "1")])
+        qh.enforce(False, d)
+        self.assertEqual(self.mutes(), [("a", "0"), ("b", "1")])
+        qh.open_for_effects(200, d, now=100)
+        qh.open_for_effects(0, d, now=100)
+        self.assertEqual(self.mutes(), [])
+
+
 if __name__ == "__main__":
     unittest.main()

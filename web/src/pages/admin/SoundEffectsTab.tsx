@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Slider } from '../../components/Slider'
-import { api, type EffectsVolume } from '../../lib/api'
+import { api, type EffectsVolumeChange } from '../../lib/api'
 import { useToast } from '../../state/toast'
 import { ErrorState, PageSpinner } from '../Message'
 import { ago, Card, Toggle, usePoll } from './kit'
@@ -13,7 +13,7 @@ export function SoundEffectsTab({ active }: { active: boolean }) {
 
   if (!data) return error ? <ErrorState title="Couldn't load the sound effects volume" error={error} onRetry={() => void reload()} /> : <PageSpinner />
 
-  const save = async (body: { mode?: EffectsVolume['mode']; level?: number }, done: string) => {
+  const save = async (body: EffectsVolumeChange, done: string) => {
     setBusy(true)
     if (body.level !== undefined) setData({ ...data, level: body.level })
     try {
@@ -68,6 +68,19 @@ export function SoundEffectsTab({ active }: { active: boolean }) {
           <p className="text-sm text-dim">
             An effect at 100 plays at {used}% of full volume; quieter effects scale down from there. Changes apply to the next effect played.
           </p>
+          <div className="flex items-center justify-between gap-4 border-t border-white/[0.07] pt-4">
+            <div>
+              <div className="text-sm font-semibold">Play during quiet hours</div>
+              <div className="text-xs text-dim">
+                {data.play_during_quiet_hours ? 'Sound effects still play while quiet hours lock the speakers. Music stays off.' : 'Sound effects are blocked while quiet hours lock the speakers, like music.'}
+              </div>
+            </div>
+            <Toggle
+              on={data.play_during_quiet_hours}
+              onChange={(on) => !busy && void save({ play_during_quiet_hours: on }, on ? 'Sound effects play during quiet hours' : 'Sound effects are blocked during quiet hours')}
+              label="Play during quiet hours"
+            />
+          </div>
           {data.updated_at && (
             <p className="text-xs text-dim">
               Changed{data.updated_by ? ` by ${data.updated_by.name}` : ''} {ago(data.updated_at)}.

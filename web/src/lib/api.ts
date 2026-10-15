@@ -296,9 +296,12 @@ export type EffectsVolume = {
   mode: 'follow' | 'fixed'
   level: number
   media_volume: number
+  play_during_quiet_hours: boolean
   updated_by: Actor | null
   updated_at: number | null
 }
+
+export type EffectsVolumeChange = Partial<Pick<EffectsVolume, 'mode' | 'level' | 'play_during_quiet_hours'>>
 
 export type AdminEntry = {
   key: string
@@ -456,7 +459,7 @@ export const api = {
     request<QuietAdmin>('PUT', '/api/admin/quiet-hours', body),
   quietOverride: (action: 'unlock' | 'lock' | 'clear') => post<QuietAdmin>('/api/admin/quiet-hours/override', { action }),
   adminEffectsVolume: () => get<EffectsVolume>('/api/admin/effects-volume'),
-  saveEffectsVolume: (body: { mode?: EffectsVolume['mode']; level?: number }) =>
+  saveEffectsVolume: (body: EffectsVolumeChange) =>
     request<EffectsVolume>('PUT', '/api/admin/effects-volume', body),
   adminList: () => get<AdminList>('/api/admin/admins'),
   addAdmin: (who: { id: string } | { email: string }) => post<AdminList>('/api/admin/admins', who),

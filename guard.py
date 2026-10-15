@@ -1,6 +1,8 @@
 """What may make sound: the quiet-hours lock and the AirPlay override, layered over the Spotify player.
 
-- Quiet hours (see quiet_hours.py): while locked, anything that would start playback (including sound effects) is refused with 423.
+- Quiet hours (see quiet_hours.py): while locked, anything that would start playback is refused with 423. Sound effects
+  are too, unless the admin setting play_during_quiet_hours (effects.py) lets them through; they never count as
+  playback for the idle clock, so they neither unlock nor keep the speakers from locking.
 - AirPlay: a session pauses Spotify (queue, track and position stay put). Play (without a track), pause, next and
   previous then control the AirPlay sender; the rest of Spotify transport is refused with 409 until it ends. When it ends, Spotify resumes if it was playing when AirPlay took over (unless quiet hours locked).
 """
@@ -57,6 +59,13 @@ class Guard:
             sender = ap.get("sender")
             raise PlayerError(f"AirPlay{' from ' + sender if sender else ''} is playing, so Spotify is paused "
                               "until it ends (POST /api/airplay/stop ends it)", 409, "airplay_active", sender=sender)
+
+    def check_effect(self, during_quiet_hours):
+        """True when the speakers are locked and the effect may play anyway; raises 423 when it may not."""
+        if during_quiet_hours and self.quiet.locked():
+            return True
+        self.check("effect")
+        return False
 
     def _check_quiet(self, action):
         if action in QUIET_BLOCKED and self.quiet.locked():

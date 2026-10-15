@@ -12,6 +12,7 @@ OS-level fallback, run every minute by a systemd user timer:
 When the server's heartbeat is stale, `sync` does the idle detection itself from PipeWire sink activity.
 The window and grace come from <data-dir>/quiet-hours-settings.json when an admin has set them, else $QUIET_HOURS.
 """
+import contextlib
 import datetime
 import fcntl
 import json
@@ -311,32 +312,64 @@ def receiver(action):
     return bool(r and r.returncode == 0)
 
 
-def enforce(locked, data_dir=None):
-    """Locked: stop the receiver and mute every sink, remembering the previous mute state. Unlocked: undo that
-    (once) and make sure the receiver is running. Safe to call repeatedly and from several processes."""
-    if sys.platform != "linux":
-        return
-    data_dir = data_dir or default_data_dir()
-    path = os.path.join(data_dir, OS_STATE_FILE)
+@contextlib.contextmanager
+def _os_state(data_dir):
+    path = os.path.join(data_dir or default_data_dir(), OS_STATE_FILE)
     with open(path + ".lock", "w") as lf:
         fcntl.flock(lf, fcntl.LOCK_EX)
-        st = _load(path)
+        yield path, _load(path)
+
+
+def _sink_names():
+    return [s[1] for s in _sinks() if len(s) > 1]
+
+
+def enforce(locked, data_dir=None, now=None):
+    """Locked: stop the receiver and mute every sink, remembering the previous mute state. Unlocked: undo that
+    (once) and make sure the receiver is running. Safe to call repeatedly and from several processes. While a sound
+    effect has the outputs open (open_for_effects), the mute is left alone until it closes or expires."""
+    if sys.platform != "linux":
+        return
+    now = time.time() if now is None else now
+    with _os_state(data_dir) as (path, st):
         if locked:
-            sinks = [s[1] for s in _sinks() if len(s) > 1]
+            sinks = _sink_names()
             if not st.get("enforced"):
                 st = {"enforced": True, "mutes": {name: _muted(name) for name in sinks}}
                 _save(path, st)
-            for name in sinks:
-                _run("pactl", "set-sink-mute", name, "1")
+            if st.get("effects_until", 0) <= now:
+                for name in sinks:
+                    _run("pactl", "set-sink-mute", name, "1")
             receiver("stop")
         else:
             if st.get("enforced"):
                 saved = st.get("mutes") or {}
-                for s in _sinks():
-                    if len(s) > 1:
-                        _run("pactl", "set-sink-mute", s[1], "1" if saved.get(s[1]) else "0")
+                for name in _sink_names():
+                    _run("pactl", "set-sink-mute", name, "1" if saved.get(name) else "0")
                 _save(path, {"enforced": False})
             receiver("start")
+
+
+def open_for_effects(until, data_dir=None, now=None):
+    """Unmute the sinks the lock muted (not those muted before it) until `until` so a sound effect can be heard during
+    quiet hours; 0 or a past time mutes them again. Does nothing unless the lock is enforced. The AirPlay receiver
+    stays stopped and the expiry covers a server that dies mid-effect: the next `sync` mutes again."""
+    if sys.platform != "linux":
+        return
+    now = time.time() if now is None else now
+    with _os_state(data_dir) as (path, st):
+        if not st.get("enforced"):
+            return
+        opening = until > now
+        if opening:
+            st["effects_until"] = until
+        else:
+            st.pop("effects_until", None)
+        _save(path, st)
+        saved = st.get("mutes") or {}
+        for name in _sink_names():
+            if not opening or not saved.get(name):
+                _run("pactl", "set-sink-mute", name, "0" if opening else "1")
 
 
 def main(argv):

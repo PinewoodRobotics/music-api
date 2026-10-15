@@ -328,11 +328,13 @@ def _play_effect(q, b, name):
     slider_volume is the level actually used: by default effects follow the music volume slider (/api/volume,
     volume_source "media"), so 100 matches the music; the slider is the last one known (kept through AirPlay, idle and
     restarts; 50 until one is seen). When an admin sets a fixed effects volume (/api/admin/effects-volume),
-    slider_volume is that level and volume_source is "fixed". Plays may overlap. 423 quiet_hours while the speakers are
-    locked"""
-    guard.check("effect")
+    slider_volume is that level and volume_source is "fixed". Plays may overlap. While quiet hours have the speakers
+    locked, effects still play when the admin setting play_during_quiet_hours is on (the default,
+    /api/admin/effects-volume): the outputs are unmuted just for the effect, quiet_hours is true in the response, and
+    the lock, its idle clock and music are not touched. With the setting off they get 423 quiet_hours like music"""
+    quiet_play = guard.check_effect(effects.plays_during_quiet_hours())
     opts = {**q, **b}
-    return effects.play(name, opts.get("volume"), _flag(opts.get("duck")), opts.get("duck_level"))
+    return effects.play(name, opts.get("volume"), _flag(opts.get("duck")), opts.get("duck_level"), quiet=quiet_play)
 
 
 @route("POST", "/api/play")
@@ -1099,19 +1101,20 @@ def _admin_quiet_override(q, b):
 
 @route("GET", "/api/admin/effects-volume")
 def _admin_effects_volume(q, b):
-    """Sound effects volume (admins only): {mode: follow|fixed, level, media_volume, updated_by, updated_at}. follow
-    (the default, "Same as media"): effects play at volume x the music slider / 100. fixed: at volume x level / 100,
-    whatever the music volume. level is the fixed level (the music slider until one is set); media_volume is the
-    music slider effects would follow"""
+    """Sound effects settings (admins only): {mode: follow|fixed, level, media_volume, play_during_quiet_hours,
+    updated_by, updated_at}. follow (the default, "Same as media"): effects play at volume x the music slider / 100.
+    fixed: at volume x level / 100, whatever the music volume. level is the fixed level (the music slider until one is
+    set); media_volume is the music slider effects would follow. play_during_quiet_hours (default true): effects keep
+    playing while quiet hours have the speakers locked (music stays refused); false refuses them with 423"""
     return effects.volume_settings()
 
 
 @route("PUT", "/api/admin/effects-volume")
 def _admin_set_effects_volume(q, b):
-    """Body {mode?: follow|fixed, level?: 0-100} (admins only): change the sound effects volume. Saved in the data dir
-    and used from the next play on. Switching to fixed without a level keeps the current music slider as the level.
-    Returns the settings as GET"""
-    return effects.set_volume_settings(b.get("mode"), b.get("level"), _by())
+    """Body {mode?: follow|fixed, level?: 0-100, play_during_quiet_hours?: bool} (admins only): change the sound
+    effects settings. Saved in the data dir and used from the next play on. Switching to fixed without a level keeps
+    the current music slider as the level. Returns the settings as GET"""
+    return effects.set_volume_settings(b.get("mode"), b.get("level"), _by(), b.get("play_during_quiet_hours"))
 
 
 def _known_users():
@@ -1665,7 +1668,8 @@ def main():
     guard = Guard(player, quiet, airplay, enforce=lambda locked: quiet_hours.enforce(locked, a.data_dir),
                   receiver=quiet_hours.receiver, remote=airplay_mod.remote,
                   resume_path=os.path.join(a.data_dir, "airplay-resume"))
-    effects = effects_mod.Effects(a.data_dir, slider=player.local_volume)
+    effects = effects_mod.Effects(a.data_dir, slider=player.local_volume,
+                                  on_quiet=lambda until: quiet_hours.open_for_effects(until, a.data_dir))
     player.volume_fn = effects.note_slider
     threading.Thread(target=airplay.loop, daemon=True).start()
     threading.Thread(target=airplay.watch, daemon=True).start()
