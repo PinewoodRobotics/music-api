@@ -290,8 +290,8 @@ def _register_effect(q, b):
 
 @route("GET", "/api/effects/playing")
 def _effects_playing(q, b):
-    """Effects playing right now: [{id, name, volume, slider_volume, effective_volume, duck, started_at, elapsed_ms,
-    duration_ms}] (volumes as in play)"""
+    """Effects playing right now: [{id, name, volume, slider_volume, volume_source, effective_volume, duck, started_at,
+    elapsed_ms, duration_ms}] (volumes as in play)"""
     return effects.playing()
 
 
@@ -322,11 +322,14 @@ def _delete_effect(q, b, name):
 @route("POST", "/api/effects/{name}/play")
 def _play_effect(q, b, name):
     """Play a sound effect now, over whatever is playing (its own PipeWire stream; music is not paused). Returns at
-    once with {id, name, volume, slider_volume, effective_volume, duck, duration_ms, started_at}. Body/query optional:
-    volume (0-100, default the effect's own), duck (bool: lower the other streams while it plays, to duck_level % of
-    their volume, default 30). Effects follow the music volume slider (/api/volume): it plays at effective_volume =
-    volume x slider_volume / 100, so 100 matches the music. slider_volume is the last known slider (kept through
-    AirPlay, idle and restarts; 50 until one is seen). Plays may overlap. 423 quiet_hours while the speakers are locked"""
+    once with {id, name, volume, slider_volume, volume_source, effective_volume, duck, duration_ms, started_at}.
+    Body/query optional: volume (0-100, default the effect's own), duck (bool: lower the other streams while it plays,
+    to duck_level % of their volume, default 30). It plays at effective_volume = volume x slider_volume / 100.
+    slider_volume is the level actually used: by default effects follow the music volume slider (/api/volume,
+    volume_source "media"), so 100 matches the music; the slider is the last one known (kept through AirPlay, idle and
+    restarts; 50 until one is seen). When an admin sets a fixed effects volume (/api/admin/effects-volume),
+    slider_volume is that level and volume_source is "fixed". Plays may overlap. 423 quiet_hours while the speakers are
+    locked"""
     guard.check("effect")
     opts = {**q, **b}
     return effects.play(name, opts.get("volume"), _flag(opts.get("duck")), opts.get("duck_level"))
@@ -1092,6 +1095,23 @@ def _admin_quiet_override(q, b):
         raise AccountError(str(e), 409)
     guard.quiet_changed()
     return _quiet_admin()
+
+
+@route("GET", "/api/admin/effects-volume")
+def _admin_effects_volume(q, b):
+    """Sound effects volume (admins only): {mode: follow|fixed, level, media_volume, updated_by, updated_at}. follow
+    (the default, "Same as media"): effects play at volume x the music slider / 100. fixed: at volume x level / 100,
+    whatever the music volume. level is the fixed level (the music slider until one is set); media_volume is the
+    music slider effects would follow"""
+    return effects.volume_settings()
+
+
+@route("PUT", "/api/admin/effects-volume")
+def _admin_set_effects_volume(q, b):
+    """Body {mode?: follow|fixed, level?: 0-100} (admins only): change the sound effects volume. Saved in the data dir
+    and used from the next play on. Switching to fixed without a level keeps the current music slider as the level.
+    Returns the settings as GET"""
+    return effects.set_volume_settings(b.get("mode"), b.get("level"), _by())
 
 
 def _known_users():

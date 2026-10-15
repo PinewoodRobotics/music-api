@@ -56,6 +56,21 @@ export function Dot({ tone, pulse = false }: { tone: Tone; pulse?: boolean }) {
   return <span className={`inline-block size-2 shrink-0 rounded-full ${toneBg[tone]} ${pulse ? 'animate-pulse' : ''}`} />
 }
 
+export function Toggle({ on, onChange, label }: { on: boolean; onChange: (v: boolean) => void; label: string }) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={on}
+      aria-label={label}
+      onClick={() => onChange(!on)}
+      className={`relative h-6 w-10 shrink-0 rounded-full transition-colors duration-200 ${on ? 'bg-[#34c759]' : 'bg-white/20'}`}
+    >
+      <span className={`absolute left-0 top-0.5 size-5 rounded-full bg-white shadow-md transition-transform duration-200 ${on ? 'translate-x-[18px]' : 'translate-x-0.5'}`} />
+    </button>
+  )
+}
+
 export function Bar({ percent, tone = 'good', label }: { percent: number; tone?: Tone; label?: string }) {
   const value = Math.min(100, Math.max(0, percent))
   return (

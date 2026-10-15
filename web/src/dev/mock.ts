@@ -1,4 +1,4 @@
-import type { ActivityEntry, AdminEntry, AdminList, AppPlaylist, KnownUser, LibraryAlbum, Lyrics, QuietAdmin, QuietHours, QuietSettings, Queue, ServiceInfo, Status, SystemInfo, Track, UpdateInfo, UpdateRun } from '../lib/api'
+import type { ActivityEntry, AdminEntry, AdminList, AppPlaylist, EffectsVolume, KnownUser, LibraryAlbum, Lyrics, QuietAdmin, QuietHours, QuietSettings, Queue, ServiceInfo, Status, SystemInfo, Track, UpdateInfo, UpdateRun } from '../lib/api'
 import fixtures from './fixtures.json'
 
 type Mode = 'full' | 'signedout' | 'signedout-slack' | 'signedout-google' | 'writes' | 'down'
@@ -471,6 +471,7 @@ function systemInfo(): SystemInfo {
 
 const quietSettings: QuietSettings = { enabled: true, start: '21:00', end: '08:00', grace_min: 5, source: 'env', env_window: '21:00-08:00', updated_by: null, updated_at: null }
 let quietOverride: NonNullable<QuietAdmin['status']['override']> | null = null
+let effectsVolume: Omit<EffectsVolume, 'media_volume'> = { mode: 'follow', level: 62, updated_by: null, updated_at: null }
 
 function quietAdmin(): QuietAdmin {
   const tomorrow = new Date()
@@ -578,6 +579,12 @@ function handleAdmin(method: string, p: string, body: Record<string, unknown>): 
     }
     applyQuietSettings()
     return ok(quietAdmin())
+  }
+  if (route === 'GET /api/admin/effects-volume') return ok({ ...effectsVolume, media_volume: state.status.volume ?? 50 })
+  if (route === 'PUT /api/admin/effects-volume') {
+    const { mode, level } = body as Partial<EffectsVolume>
+    effectsVolume = { ...effectsVolume, ...(mode && { mode }), ...(level !== undefined && { level }), updated_by: { id: adam.id, name: adam.name }, updated_at: sec() }
+    return ok({ ...effectsVolume, media_volume: state.status.volume ?? 50 })
   }
   if (route === 'POST /api/admin/quiet-hours/override') {
     const until_ts = sec() + 8 * 3600

@@ -292,6 +292,14 @@ export type QuietStatus = QuietHours & {
 
 export type QuietAdmin = { settings: QuietSettings; status: QuietStatus }
 
+export type EffectsVolume = {
+  mode: 'follow' | 'fixed'
+  level: number
+  media_volume: number
+  updated_by: Actor | null
+  updated_at: number | null
+}
+
 export type AdminEntry = {
   key: string
   id: string | null
@@ -447,6 +455,9 @@ export const api = {
   saveQuietHours: (body: { enabled?: boolean; start?: string; end?: string; grace_min?: number } | { reset: true }) =>
     request<QuietAdmin>('PUT', '/api/admin/quiet-hours', body),
   quietOverride: (action: 'unlock' | 'lock' | 'clear') => post<QuietAdmin>('/api/admin/quiet-hours/override', { action }),
+  adminEffectsVolume: () => get<EffectsVolume>('/api/admin/effects-volume'),
+  saveEffectsVolume: (body: { mode?: EffectsVolume['mode']; level?: number }) =>
+    request<EffectsVolume>('PUT', '/api/admin/effects-volume', body),
   adminList: () => get<AdminList>('/api/admin/admins'),
   addAdmin: (who: { id: string } | { email: string }) => post<AdminList>('/api/admin/admins', who),
   removeAdmin: (key: string) => request<AdminList>('DELETE', `/api/admin/admins/${encodeURIComponent(key)}`),

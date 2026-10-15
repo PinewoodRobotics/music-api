@@ -355,6 +355,56 @@ class SliderTest(unittest.TestCase):
             self.assertEqual(rig.fx.play("beep")["slider_volume"], 45)
         rig.settle()
 
+    def test_follow_mode_is_the_default_and_reports_media(self):
+        self.rig.slider = 60
+        r = self.rig.fx.play("beep", volume=50)
+        self.assertEqual((r["slider_volume"], r["volume_source"], r["effective_volume"]), (60, "media", 30))
+        self.assertEqual(self.rig.fx.playing()[0]["volume_source"], "media")
+        cfg = self.rig.fx.volume_settings()
+        self.assertEqual((cfg["mode"], cfg["level"], cfg["media_volume"]), ("follow", 60, 60))
+
+    def test_fixed_mode_ignores_the_slider_and_applies_to_the_next_play(self):
+        self.rig.slider = 80
+        self.rig.fx.set_volume_settings("fixed", 20, {"id": "U1", "name": "Ada"})
+        r = self.rig.fx.play("beep", volume=50)
+        self.assertEqual((r["slider_volume"], r["volume_source"], r["effective_volume"]), (20, "fixed", 10))
+        self.rig.slider = 10
+        self.assertEqual(self.rig.fx.play("beep")["effective_volume"], 20)
+        self.rig.fx.set_volume_settings(level=40)
+        self.assertEqual(self.rig.fx.play("beep", volume=50)["effective_volume"], 20)
+        self.rig.fx.set_volume_settings("follow")
+        r = self.rig.fx.play("beep", volume=50)
+        self.assertEqual((r["slider_volume"], r["volume_source"], r["effective_volume"]), (10, "media", 5))
+        self.assertEqual([p.cmd[1] for p in self.rig.procs], ["0.10", "0.20", "0.20", "0.05"])
+        cfg = self.rig.fx.volume_settings()
+        self.assertEqual((cfg["mode"], cfg["level"], cfg["media_volume"], cfg["updated_by"]), ("follow", 40, 10, None))
+
+    def test_fixed_without_a_level_starts_at_the_slider(self):
+        self.rig.slider = 35
+        self.assertEqual(self.rig.fx.set_volume_settings("fixed")["level"], 35)
+        self.rig.slider = 90
+        self.assertEqual(self.rig.fx.play("beep")["effective_volume"], 35)
+
+    def test_volume_settings_validation(self):
+        for kw in ({"mode": "loud"}, {"level": 101}, {"level": -1}, {"level": "x"}):
+            with self.assertRaises(ValueError):
+                self.rig.fx.set_volume_settings(**kw)
+        self.assertEqual(self.rig.fx.volume_settings()["mode"], "follow")
+        self.assertFalse(os.path.exists(os.path.join(self.tmp.name, "effects", "volume.json")))
+
+    def test_volume_settings_survive_restart(self):
+        self.rig.fx.set_volume_settings("fixed", 25, {"id": "U1", "name": "Ada"})
+        again = Rig(self.tmp.name)
+        again.slider = 100
+        cfg = again.fx.volume_settings()
+        self.assertEqual((cfg["mode"], cfg["level"], cfg["updated_by"]["name"]), ("fixed", 25, "Ada"))
+        self.assertEqual(again.fx.play("beep")["effective_volume"], 25)
+        again.settle()
+        with open(os.path.join(self.tmp.name, "effects", "volume.json"), "w") as f:
+            f.write('{"mode": "bogus", "level": 500}')
+        cfg = Rig(self.tmp.name).fx.volume_settings()
+        self.assertEqual((cfg["mode"], cfg["level"]), ("follow", 100))
+
     def test_soloist_play_path_reads_local_volume_without_the_web_api(self):
         api, sol = NoWebApi(), FakeSoloist(40)
         player = Player("soloist", api, sol)

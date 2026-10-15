@@ -17,6 +17,7 @@ import system_stats
 import test_system_stats as fake
 import updater
 from accounts import AccountError, Admins, PersonalTokens, Sessions, Slack
+from effects import Effects
 from guard import Guard
 from quiet_hours import QuietHours, parse_window
 from tokens import Tokens
@@ -127,6 +128,8 @@ class RoutesTest(unittest.TestCase):
         server.stats = system_stats.Stats(root=root, run=cls.runner)
         server.updates = updater.Updater(app_dir=d, data_dir=d, repo_dir=os.path.join(d, "missing.git"),
                                          remote="git@github.com:x/y.git", key_path=os.path.join(d, "nokey"))
+        cls.slider = [70]
+        server.effects = Effects(d, build_cmd=lambda path, vol: ["true"], slider=lambda: cls.slider[0])
         cls.logs = contextlib.redirect_stderr(io.StringIO())
         cls.logs.__enter__()
         cls.srv = ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
@@ -137,7 +140,7 @@ class RoutesTest(unittest.TestCase):
         cls.srv.shutdown()
         cls.srv.server_close()
         cls.logs.__exit__(None, None, None)
-        server.admins = None
+        server.admins = server.effects = None
         cls.tmp.cleanup()
 
     def setUp(self):
@@ -229,6 +232,24 @@ class RoutesTest(unittest.TestCase):
         self.assertEqual(self.call("PUT", "/api/admin/quiet-hours", {"grace_min": 999})[0], 400)
         code, res = self.call("PUT", "/api/admin/quiet-hours", {"reset": True})
         self.assertEqual((res["result"]["settings"]["source"], res["result"]["status"]["window"]), ("env", "21:00-08:00"))
+
+    def test_effects_volume_is_admin_only_and_persists(self):
+        code, res = self.call("GET", "/api/admin/effects-volume", sid=self.ada)
+        self.assertEqual(code, 403)
+        self.assertEqual(self.call("PUT", "/api/admin/effects-volume", {"mode": "fixed", "level": 5}, sid=self.bob)[0], 403)
+        self.assertEqual(server.effects.volume_cfg["mode"], "follow")
+        code, res = self.call("GET", "/api/admin/effects-volume")
+        self.assertEqual((code, res["result"]["mode"], res["result"]["media_volume"]), (200, "follow", 70))
+        server.admins.add(ADA, id="U1")
+        code, res = self.call("PUT", "/api/admin/effects-volume", {"mode": "fixed", "level": 30}, sid=self.ada)
+        r = res["result"]
+        self.assertEqual((code, r["mode"], r["level"], r["media_volume"], r["updated_by"]["name"]), (200, "fixed", 30, 70, "Ada"))
+        self.assertEqual(self.call("PUT", "/api/admin/effects-volume", {"mode": "loud"})[0], 400)
+        self.assertEqual(self.call("PUT", "/api/admin/effects-volume", {"level": 150})[0], 400)
+        again = Effects(self.tmp.name, slider=lambda: None)
+        self.assertEqual((again.volume_cfg["mode"], again.volume_cfg["level"]), ("fixed", 30))
+        code, res = self.call("PUT", "/api/admin/effects-volume", {"mode": "follow"})
+        self.assertEqual((res["result"]["mode"], res["result"]["level"]), ("follow", 30))
 
     def test_override_locks_and_unlocks_now(self):
         self.assertEqual(self.call("POST", "/api/admin/quiet-hours/override", {"action": "lock"})[0], 409)

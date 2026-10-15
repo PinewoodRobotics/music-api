@@ -5,7 +5,7 @@ import { api, type QuietAdmin, type QuietSettings } from '../../lib/api'
 import { clockLabel, timeLabel } from '../../lib/playback'
 import { useToast } from '../../state/toast'
 import { ErrorState, PageSpinner } from '../Message'
-import { ago, Banner, Card, duration, usePoll } from './kit'
+import { ago, Banner, Card, duration, Toggle, usePoll } from './kit'
 
 function useNow(active: boolean) {
   const [now, setNow] = useState(() => Date.now() / 1000)
@@ -99,21 +99,6 @@ function PhaseCard({ data, busy, onAction }: { data: QuietAdmin; busy: boolean; 
         </div>
       )}
     </div>
-  )
-}
-
-function Toggle({ on, onChange, label }: { on: boolean; onChange: (v: boolean) => void; label: string }) {
-  return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={on}
-      aria-label={label}
-      onClick={() => onChange(!on)}
-      className={`relative h-6 w-10 shrink-0 rounded-full transition-colors duration-200 ${on ? 'bg-[#34c759]' : 'bg-white/20'}`}
-    >
-      <span className={`absolute left-0 top-0.5 size-5 rounded-full bg-white shadow-md transition-transform duration-200 ${on ? 'translate-x-[18px]' : 'translate-x-0.5'}`} />
-    </button>
   )
 }
 

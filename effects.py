@@ -9,6 +9,8 @@ Effects follow the music volume slider (Spotify's own volume, not the system vol
 volume x slider / 100, so an effect at 100 is as loud as the music. The slider comes from `slider()`, which must only
 read local state (Soloist's pushed volume), never the Web API; when that has nothing (connect mode, Soloist logged
 out), the last value seen in a status or volume change (note_slider) is used. It is kept in <data-dir>/effects/slider.json so a restart doesn't jump to full volume.
+An admin can unhook effects from the slider ("fixed" mode, <data-dir>/effects/volume.json): plays then run at
+volume x the fixed level / 100, whatever the music volume is.
 """
 import io
 import ipaddress
@@ -39,6 +41,7 @@ MAX_SECONDS = 120
 MAX_PLAYING = 16
 DEFAULT_DUCK_LEVEL = 30
 DEFAULT_SLIDER = 50
+VOLUME_MODES = ("follow", "fixed")
 NAME_RX = re.compile(r"^[a-z0-9][a-z0-9_-]{0,47}$")
 RESERVED = {"stop", "playing"}
 UA = "music-api-v2 (https://github.com/PinewoodRobotics/music-api)"
@@ -160,6 +163,7 @@ class Effects:
         self.index_path = os.path.join(self.dir, "index.json")
         self.duck_path = os.path.join(self.dir, "duck-restore.json")
         self.slider_path = os.path.join(self.dir, "slider.json")
+        self.volume_path = os.path.join(self.dir, "volume.json")
         self.popen = popen
         self.ffmpeg = shutil.which("ffmpeg") if ffmpeg is None else (ffmpeg or None)
         self.build_cmd, self.tool = (build_cmd, "custom") if build_cmd else player_command()
@@ -170,6 +174,7 @@ class Effects:
         self.lock = threading.Lock()
         self.slider_lock = threading.Lock()
         self.slider_volume = self._clamp(_read_json(self.slider_path, {}).get("volume"), DEFAULT_SLIDER)
+        self.volume_cfg = self._load_volume_cfg()
         self.index = _read_json(self.index_path, {})
         self.active = {}
         self.ducks = 0
@@ -333,13 +338,47 @@ class Effects:
             log(f"can't read the music volume: {e}")
         return self.slider_volume
 
+    # ---------- effects volume: follow the slider or a fixed level ----------
+
+    def _load_volume_cfg(self):
+        saved = _read_json(self.volume_path, {})
+        return {"mode": saved.get("mode") if saved.get("mode") in VOLUME_MODES else "follow",
+                "level": self._clamp(saved.get("level"), None), "updated_by": saved.get("updated_by"),
+                "updated_at": saved.get("updated_at")}
+
+    def volume_settings(self):
+        cfg = dict(self.volume_cfg)
+        media = self.current_slider()
+        return {**cfg, "level": media if cfg["level"] is None else cfg["level"], "media_volume": media}
+
+    def set_volume_settings(self, mode=None, level=None, by=None):
+        cfg = dict(self.volume_cfg)
+        if mode is not None:
+            if mode not in VOLUME_MODES:
+                raise ValueError("mode must be follow or fixed")
+            cfg["mode"] = mode
+        if level is not None and level != "":
+            cfg["level"] = self._volume(level, None)
+        if cfg["mode"] == "fixed" and cfg["level"] is None:
+            cfg["level"] = self.current_slider()
+        cfg.update(updated_by=by, updated_at=round(self.clock()))
+        _write_json(self.volume_path, cfg)
+        self.volume_cfg = cfg
+        return self.volume_settings()
+
+    def _level(self):
+        cfg = self.volume_cfg
+        if cfg["mode"] == "fixed" and cfg["level"] is not None:
+            return cfg["level"], "fixed"
+        return self.current_slider(), "media"
+
     # ---------- playback ----------
 
     def play(self, name, volume=None, duck=False, duck_level=None):
         if not self.build_cmd:
             raise EffectsError("no audio player found (needs pw-play, paplay or afplay)", 501, "no_player")
         level = self._volume(duck_level, DEFAULT_DUCK_LEVEL)
-        slider = self.current_slider()
+        slider, source = self._level()
         with self.lock:
             e = self._entry(name)
             if len(self.active) >= MAX_PLAYING:
@@ -352,8 +391,8 @@ class Effects:
             except OSError as e2:
                 raise EffectsError(f"couldn't start {self.tool}: {e2}", 500, "play_failed")
             pid = secrets.token_hex(4)
-            rec = {"id": pid, "name": name, "volume": vol, "slider_volume": slider, "effective_volume": effective,
-                   "duck": bool(duck), "started_at": self.clock(),
+            rec = {"id": pid, "name": name, "volume": vol, "slider_volume": slider, "volume_source": source,
+                   "effective_volume": effective, "duck": bool(duck), "started_at": self.clock(),
                    "duration_ms": e["duration_ms"], "proc": proc}
             self.active[pid] = rec
             if duck:
@@ -379,7 +418,7 @@ class Effects:
         now = self.clock()
         with self.lock:
             return [{"id": p["id"], "name": p["name"], "volume": p["volume"], "slider_volume": p["slider_volume"],
-                     "effective_volume": p["effective_volume"], "duck": p["duck"],
+                     "volume_source": p["volume_source"], "effective_volume": p["effective_volume"], "duck": p["duck"],
                      "started_at": p["started_at"], "elapsed_ms": round((now - p["started_at"]) * 1000),
                      "duration_ms": p["duration_ms"]} for p in self.active.values()]
 

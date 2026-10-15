@@ -1,4 +1,4 @@
-import { Activity, Moon, Server, ShieldCheck, Users, CloudDownload } from 'lucide-react'
+import { Activity, Moon, Server, ShieldCheck, Users, CloudDownload, Volume2 } from 'lucide-react'
 import type { ComponentType } from 'react'
 import { Link } from '../../components/Link'
 import { navigate } from '../../lib/router'
@@ -7,12 +7,14 @@ import { Message } from '../Message'
 import { AdminsTab } from './AdminsTab'
 import { QuietHoursTab } from './QuietHoursTab'
 import { ServicesTab } from './ServicesTab'
+import { SoundEffectsTab } from './SoundEffectsTab'
 import { SystemTab } from './SystemTab'
 import { UpdatesTab } from './UpdatesTab'
 
 const TABS = [
   { id: 'system', label: 'System', icon: Activity },
   { id: 'quiet-hours', label: 'Quiet hours', icon: Moon },
+  { id: 'sound-effects', label: 'Sound effects', icon: Volume2 },
   { id: 'admins', label: 'Admins', icon: Users },
   { id: 'updates', label: 'Updates', icon: CloudDownload },
   { id: 'services', label: 'Services', icon: Server },
@@ -62,6 +64,7 @@ export function AdminPage({ tab }: { tab: string | null }) {
         <div className="min-w-0 flex-1">
           {current === 'system' && <SystemTab active />}
           {current === 'quiet-hours' && <QuietHoursTab active />}
+          {current === 'sound-effects' && <SoundEffectsTab active />}
           {current === 'admins' && <AdminsTab active />}
           {current === 'updates' && <UpdatesTab active />}
           {current === 'services' && <ServicesTab active />}
