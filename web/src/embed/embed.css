@@ -1,0 +1,84 @@
+@font-face {
+  font-family: 'SF Symbols Embed';
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: block;
+  src: url('./sf-symbols.woff2') format('woff2');
+}
+
+html[data-embed] {
+  font-size: 20px;
+  --accent: #70cd35 !important;
+  --ink: #000 !important;
+  --glow: #192515 !important;
+  --color-canvas: #000;
+  --color-panel: #0e0e0e;
+  --color-raised: #1b1b1b;
+  --color-hover: #272727;
+  --color-line: #272727;
+  cursor: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+html[data-embed] * {
+  cursor: none !important;
+}
+
+html[data-embed] [data-ui='columns'] {
+  padding: 0;
+  gap: 0;
+}
+
+html[data-embed] [data-ui='columns'] > * {
+  border-radius: 0;
+}
+
+html[data-embed] [data-ui='sidebar'] {
+  width: 360px;
+  gap: 0;
+  background: #000;
+}
+
+html[data-embed] [data-ui='sidebar'] > div {
+  border-radius: 0;
+  background: #000;
+}
+
+html[data-embed] [data-ui='main'] {
+  padding-top: 0.75rem;
+}
+
+html[data-embed] [data-ui='side-panel'] {
+  width: 460px;
+  background: #000;
+}
+
+html[data-embed] .scroll-thin {
+  scrollbar-width: none;
+}
+
+html[data-embed] button,
+html[data-embed] [role='button'],
+html[data-embed] [role='row'],
+html[data-embed] a {
+  min-height: 2.25rem;
+}
+
+html[data-embed] svg.lucide.sf > :not(.sf-glyph) {
+  display: none;
+}
+
+html[data-embed] svg.lucide.sf {
+  overflow: visible;
+}
+
+html[data-embed] svg.lucide .sf-glyph {
+  font-family: 'SF Symbols Embed', sans-serif;
+  font-size: 19px;
+  font-variation-settings: 'wdth' 100;
+  text-anchor: middle;
+  dominant-baseline: central;
+  fill: currentColor;
+  stroke: none;
+}

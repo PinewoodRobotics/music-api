@@ -53,6 +53,8 @@ QUIET_DEFAULT = quiet_hours.DEFAULT_WINDOW
 _req = threading.local()  # per-request context: the token entry and the user that authenticated it
 WEB_DIST = os.path.join(HERE, "web", "dist")
 SESSION_COOKIE = "mapi_session"
+# The FMS touch panel frames the web app (?embed=fms) from Cheesy Arena on the field laptop
+DEFAULT_FRAME_ANCESTORS = "'self' http://localhost:8080 http://127.0.0.1:8080 http://fms.local:8080"
 APP_ERRORS = (SpotifyError, PlayerError, ExtrasError, TokenError, AccountError, links.LinkError, EffectsError,
               system_stats.StatsError, updater_mod.UpdateError)
 # Slack users (non-admins) get playback, search and the app's playlists, not the account's private data or admin routes
@@ -1267,6 +1269,7 @@ class Handler(BaseHTTPRequestHandler):
     server_version = "MusicAPI/2.0"
     require_token = False  # --public or listening beyond localhost
     canonical_url = None  # tunnelled requests for any other hostname are redirected here
+    frame_ancestors = DEFAULT_FRAME_ANCESTORS
 
     def log_message(self, fmt, *args):
         if not self.path.startswith("/api/events"):
@@ -1351,7 +1354,9 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/legacy" or not os.path.exists(index):
             index = os.path.join(HERE, "index.html")
         with open(index, "rb") as f:
-            return self._send(200, f.read(), "text/html; charset=utf-8", [("Cache-Control", "no-cache")])
+            return self._send(200, f.read(), "text/html; charset=utf-8",
+                              [("Cache-Control", "no-cache"),
+                               ("Content-Security-Policy", f"frame-ancestors {self.frame_ancestors}")])
 
     def do_OPTIONS(self):
         self.send_response(204)
@@ -1593,6 +1598,8 @@ def main():
     ap.add_argument("--hidden-playlists", default=os.environ.get("MUSIC_API_HIDDEN_PLAYLISTS")
                     or os.path.expanduser("~/.config/music-api/hidden-playlists.json"),
                     help='JSON {"playlists": [id or {id, name}, ...]}: account playlists the web app never shows')
+    ap.add_argument("--frame-ancestors", default=os.environ.get("MUSIC_API_FRAME_ANCESTORS", DEFAULT_FRAME_ANCESTORS),
+                    help="CSP frame-ancestors sources allowed to embed the web app")
     ap.add_argument("--canonical-url", default=os.environ.get("MUSIC_API_URL"),
                     help="public base URL, e.g. https://music.pinewoodrobotics.org; other tunnelled hostnames redirect to it")
     ap.add_argument("--device", default=os.environ.get("MUSIC_API_DEVICE"),
@@ -1683,6 +1690,7 @@ def main():
 
     Handler.require_token = require
     Handler.canonical_url = a.canonical_url
+    Handler.frame_ancestors = a.frame_ancestors
     srv = ThreadingHTTPServer((a.host, a.port), Handler)
     srv.daemon_threads = True
     print(f"Music API v2 on http://{a.host}:{a.port}/  backend={backend}  web-api={'logged in' if auth.logged_in else 'not logged in (open /auth/login)'}",

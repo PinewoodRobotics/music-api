@@ -171,6 +171,11 @@ class RoutesTest(unittest.TestCase):
         except urllib.error.HTTPError as e:
             return e.code, json.loads(e.read())
 
+    def test_web_app_may_only_be_framed_by_the_fms_panel(self):
+        with urllib.request.urlopen(f"http://127.0.0.1:{self.srv.server_address[1]}/library") as res:
+            csp = res.headers["Content-Security-Policy"]
+        self.assertEqual(csp, "frame-ancestors 'self' http://localhost:8080 http://127.0.0.1:8080 http://fms.local:8080")
+
     def test_non_admins_get_403_everywhere(self):
         routes = [(m, p.replace("{name}", "soloist").replace("{key}", "u9")) for m, _, p, _, _ in server.ROUTES
                   if p.startswith("/api/admin")]
