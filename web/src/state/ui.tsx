@@ -1,5 +1,6 @@
 import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from 'react'
 import type { AppPlaylist, LibraryItem } from '../lib/api'
+import { embed } from '../lib/embed'
 
 export type Panel = 'queue' | 'lyrics'
 export type Dialog =
@@ -30,7 +31,8 @@ export function UIProvider({ children }: { children: ReactNode }) {
   const [expanded, setExpanded] = useState(() => !!devPlayerView())
   const [panel, setPanel] = useState<Panel | null>(() => {
     const view = devPlayerView()
-    return view === 'lyrics' || view === 'queue' ? view : null
+    if (view === 'lyrics' || view === 'queue') return view
+    return embed ? 'queue' : null
   })
   const [dialog, setDialog] = useState<Dialog | null>(null)
   const togglePanel = useCallback((p: Panel) => setPanel((cur) => (cur === p ? null : p)), [])

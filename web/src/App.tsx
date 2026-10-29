@@ -14,6 +14,7 @@ import { SidePanel } from './components/SidePanel'
 import { Sidebar } from './components/Sidebar'
 import { Toasts } from './components/Toasts'
 import { usePalette } from './lib/color'
+import { embed } from './lib/embed'
 import { matchRoute, navigate, useLocation, type Route } from './lib/router'
 import { focusSearch } from './lib/searchFocus'
 import { useSkipWatcher } from './lib/skipNote'
@@ -187,21 +188,22 @@ function Shell() {
       <MediaSessionBridge />
       <SkipWatcher />
       <ActivityToasts />
-      <div className="flex min-h-0 flex-1 gap-2 md:p-2 md:pb-0">
+      <div data-ui="columns" className="flex min-h-0 flex-1 gap-2 md:p-2 md:pb-0">
         <Sidebar />
         <main
           ref={main}
+          data-ui="main"
           onScroll={(e) => setScrolled(e.currentTarget.scrollTop > 24)}
           className="scroll-thin relative min-w-0 flex-1 overflow-y-auto overflow-x-hidden bg-panel md:rounded-lg"
         >
-          <TopBar scrolled={scrolled} />
+          {!embed && <TopBar scrolled={scrolled} />}
           <PlaybackBanner />
           <Page route={route} />
         </main>
         <SidePanel />
       </div>
-      <NowPlayingBar />
-      <MobileNav />
+      {!embed && <NowPlayingBar />}
+      {!embed && <MobileNav />}
       <NowPlayingView />
       <Dialogs />
     </div>

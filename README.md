@@ -83,6 +83,10 @@ On the first start that requires auth, `<data-dir>/token` is imported as "v1 tok
 then deleted, so only its hash remains. If there's no such file either, a token is generated and written to `<data-dir>/token` (mode 600) for you to read.
 `--token` / `$MUSIC_API_TOKEN` still works as an extra static token. It isn't listed and can't be revoked through the API.
 To hand someone the web remote, create a token and send them `https://…/?token=<token>`; the page remembers it.
+Add `&embed=<host>` when another app frames the web app with its own player bar (the FMS touch panel uses
+`embed=panel`): the bottom player bar, top bar and the New playlist/Import buttons are hidden, Up next opens by default,
+and `<html data-embed>` plus `data-ui` attributes on the main columns give the host stable hooks for restyling. API
+tokens show up as "Field" in the app and the activity feed.
 
 ### Web app accounts (Sign in with Slack)
 

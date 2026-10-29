@@ -4,6 +4,7 @@ import { filterLibrary, itemHref } from '../lib/library'
 import { useLocation } from '../lib/router'
 import { useStoredState } from '../lib/useStoredState'
 import { focusSearch } from '../lib/searchFocus'
+import { embed } from '../lib/embed'
 import { useSession } from '../state/session'
 import { Brand } from './Brand'
 import { Link } from './Link'
@@ -37,7 +38,7 @@ export function Sidebar() {
   const [view, setView] = useStoredState<'all' | 'playlists' | 'albums'>('sidebarView', 'all', ['all', 'playlists', 'albums'])
   const items = filterLibrary(library ?? [], { view, query: '', mine: false, sort: 'recent', myId: me?.id })
   return (
-    <aside className="hidden w-[280px] shrink-0 flex-col gap-2 md:flex">
+    <aside data-ui="sidebar" className="hidden w-[280px] shrink-0 flex-col gap-2 md:flex">
       <div className="rounded-lg bg-panel px-3 pb-3 pt-4">
         <div className="mb-4 px-3">
           <Link href="/" aria-label="Library" className="block rounded-md">
@@ -67,8 +68,8 @@ export function Sidebar() {
           </div>
         )}
         <div className="scroll-thin min-h-0 flex-1 overflow-y-auto px-2 pb-2">
-          <PlaylistActions compact />
-          {items.length > 0 && <div className="mx-2 my-2 h-px bg-white/[0.06]" />}
+          {!embed && <PlaylistActions compact />}
+          {!embed && items.length > 0 && <div className="mx-2 my-2 h-px bg-white/[0.06]" />}
           {items.map((item) => (
             <LibrarySidebarRow key={`${item.kind}:${item.id}`} item={item} active={path === itemHref(item)} />
           ))}

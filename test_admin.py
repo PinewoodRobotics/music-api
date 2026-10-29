@@ -220,7 +220,7 @@ class RoutesTest(unittest.TestCase):
         code, res = self.call("PUT", "/api/admin/quiet-hours", {"start": "22:30", "end": "06:00", "grace_min": 10})
         s = res["result"]["settings"]
         self.assertEqual((code, s["start"], s["end"], s["grace_min"], s["source"], s["updated_by"]["name"]),
-                         (200, "22:30", "06:00", 10, "admin", "Admin"))
+                         (200, "22:30", "06:00", 10, "admin", "Field"))
         self.assertEqual((res["result"]["status"]["window"], self.quiet.grace), ("22:30-06:00", 600))
         cfg = qh.settings(self.tmp.name, "21:00-08:00")
         self.assertEqual((cfg["window"], cfg["grace"]), (parse_window("22:30-06:00"), 600))

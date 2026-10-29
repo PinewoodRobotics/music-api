@@ -7,6 +7,7 @@ import { pointRect, type AnchorRect } from '../components/Popover'
 import { SelectionBar } from '../components/SelectionBar'
 import { navigate, useLocation } from '../lib/router'
 import { useStoredState } from '../lib/useStoredState'
+import { embed } from '../lib/embed'
 import { EmptyPlaylists } from '../components/EmptyPlaylists'
 import { LibraryCard, LibraryItemMenu, LibraryListRow, useLibraryBulk, type ItemSelection } from '../components/library/LibraryItems'
 import { LibraryToolbar } from '../components/library/LibraryToolbar'
@@ -135,10 +136,10 @@ export function LibraryPage() {
     <div className="px-3 pb-12 pt-2 max-sm:px-2">
       <div className="mb-4 flex flex-wrap items-end justify-between gap-3 px-3 max-sm:px-2">
         <h1 className="font-display text-[clamp(1.9rem,4vw,3rem)] font-extrabold tracking-tight">Library</h1>
-        <div className="flex gap-2">
+        {!embed && <div className="flex gap-2">
           <Action primary icon={<Plus />} label="New playlist" onClick={() => openDialog({ kind: 'new' })} />
           <Action icon={<Download />} label="Import" onClick={() => openDialog({ kind: 'import' })} />
-        </div>
+        </div>}
       </div>
       <div className="mb-4">
         {songs ? (

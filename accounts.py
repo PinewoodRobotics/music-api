@@ -21,7 +21,7 @@ import links
 
 SLACK = "https://slack.com"
 SESSION_COOKIE_AGE = 400 * 86400  # browsers cap cookie lifetimes at 400 days; it's renewed while in use
-ADMIN = {"id": "admin", "name": "Admin", "avatar": None, "admin": True, "kind": "token"}
+ADMIN = {"id": "admin", "name": "Field", "avatar": None, "admin": True, "kind": "token"}
 AUTOPLAY = {"id": None, "name": "Autoplay", "avatar": None}
 
 
