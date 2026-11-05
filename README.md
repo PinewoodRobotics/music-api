@@ -30,7 +30,7 @@ All of these are served without a token, so you can point an LLM agent straight 
  phone / web remote / scripts ──HTTP+SSE──► server.py (this) ──┬─ WebSocket (127.0.0.1) ─► Spotify Soloist ─► PipeWire ─► USB speakers
                                                                ├─ HTTPS ─► Spotify Web API  (search, library, playlists,   ▲
                                                                │                             history, any Connect device) │
- iPhone / Mac ──AirPlay──► shairport-sync ────────────────────────────────────────────────────────────────────────────────────┘
+ iPhone / Mac ─AirPlay 2─► shairport-sync ────────────────────────────────────────────────────────────────────────────────────┘
                                    ├─ metadata pipe ─► server.py (now playing, pauses Spotify while AirPlay plays)
                                    └─ D-Bus RemoteControl ◄─ server.py (play/pause/next/previous back to the sender)
 ```
@@ -258,7 +258,7 @@ Restart the Spotify desktop app, pick the device, then stop both commands. Adver
 - **USB speakers.** Soloist outputs through PipeWire (falling back to PulseAudio). Find the speakers with `wpctl status`.
   Then either set `SOLOIST_PIPEWIRE_DEVICE` in the env file, or make them the default with `POST /api/system/outputs {id}`.
 - **Install.** On the Pi, run `sh deploy/install-linux.sh`. It installs PipeWire, enables lingering so user services run
-  without a login, installs the AirPlay receiver (the distro `shairport-sync` package), installs systemd user units for Soloist, the API, AirPlay, the
+  without a login, builds the AirPlay 2 receiver (shairport-sync and NQPTP from source, ~15 min on a Pi 3), installs systemd user units for Soloist, the API, AirPlay, the
   quiet-hours timer and a daily Soloist update, and creates `~/.config/music-api/env`.
 - **Build expiry.** Soloist builds expire 90 days after they're built (exit code 10).
   [`deploy/update-soloist.sh`](deploy/update-soloist.sh) runs daily and pulls the current build from Spotify's CDN.
@@ -325,8 +325,8 @@ prints the public key. Add it on GitHub (repo Settings > Deploy keys, read-only)
 
 ### AirPlay receiver
 
-The Pi also shows up as an AirPlay speaker named `AIRPLAY_NAME` (default "PEARL Speakers"), using classic AirPlay (no
-multi-room, no AirPlay 2). AirPlay completely overrides Spotify:
+The Pi also shows up as an AirPlay speaker named `AIRPLAY_NAME` (default "PEARL Speakers"), using AirPlay 2 (older
+senders fall back to classic AirPlay). AirPlay completely overrides Spotify:
 
 - A session starting pauses Soloist (track, position and queue stay put) and remembers whether it was playing.
 - While it lasts, `/api/status` shows the AirPlay song (`source: "airplay"`, title, artist, album, art at
@@ -334,28 +334,32 @@ multi-room, no AirPlay 2). AirPlay completely overrides Spotify:
   the sender's queue, so there's no Up Next for it.
 - Play, pause, play/pause, next and previous (`/api/play` with no body, `/api/pause`, `/api/playpause`, `/api/next`,
   `/api/previous`, the web app and the Slack bot) control the AirPlay sender instead of Spotify. They go through
-  shairport-sync's D-Bus `RemoteControl` interface, which finds the sender's DACP service and uses its Active-Remote
-  token. If the sender has no remote control (some apps and Android senders) they fail with
-  `409 airplay_remote_unavailable`. Everything else in Spotify transport (play a track, seek, jump, transfer) is refused
+  shairport-sync's D-Bus `RemoteControl` interface. A classic sender with no remote control (some apps and Android
+  senders) fails with `409 airplay_remote_unavailable`. AirPlay 2 can't report that, so an app that ignores a command
+  gets a success with no effect, and an app can leave out next/previous. Everything else in Spotify transport (play a track, seek, jump, transfer) is refused
   with `409 {"error": "airplay_active", "sender": ...}`.
 - The Slack #music feed posts AirPlay songs too once they have a title, artist and cover art (no art usually means a video
   or podcast, which isn't posted): same card, credited to the sender's device name, no Up next. The cover is served
   without a token at `/airplay-art/<12-hex content hash>` (the last 8 covers are kept) so Slack can fetch it.
+- Pausing keeps the session for 2 minutes (`active_state_timeout`), during which Play resumes the sender. After that
+  it counts as ended, and a resume from the sender starts a new session.
 - When it ends (the sender stops or disconnects, or someone presses Stop AirPlay / `POST /api/airplay/stop`, which
   restarts the receiver to drop the sender, who can reconnect a few seconds later), Spotify resumes right where it
   left off if it was playing before, and stays paused otherwise. It doesn't resume if quiet hours have locked.
 
 How it's installed (`deploy/install-airplay.sh`, run by `install-linux.sh`; `NO_AIRPLAY=1` skips it): the distro
-`shairport-sync` package (Ubuntu 24.04: 3.3.8, Debian 13: 4.3.7) is classic AirPlay and is built with PulseAudio
-output, the metadata pipe, D-Bus/MPRIS and MQTT. The script installs it, disables the package's system service,
-checks those features, and removes the AirPlay 2 build (NQPTP, `/usr/local/bin/shairport-sync`) an earlier version of
-the script installed. shairport-sync runs as the `airplay.service` user unit (it has to, to reach the user's
-PipeWire and session bus), with [`deploy/shairport-sync.conf`](deploy/shairport-sync.conf): PulseAudio output,
-metadata and cover art to `/tmp/shairport-sync-metadata`, D-Bus on the session bus. The server reads that pipe
-(`--airplay-pipe`); a missing pipe (macOS, receiver not installed) is fine, and shairport-sync restarts are picked up.
-Remote control needs `busctl` (systemd) and `dbus-user-session`. A server restart mid-song loses the session until the
-next song starts (classic AirPlay has no heartbeat to rejoin it).
-Logs: `journalctl --user-unit airplay -f`.
+packages are classic AirPlay only, and remote control of AirPlay 2 senders needs 5.6, so the script builds pinned NQPTP
+1.2.9 (system service, PTP ports 319/320, which must be free and unblocked) and shairport-sync 5.6.2 with PulseAudio
+output, the metadata pipe and D-Bus, and removes the distro package. The two must be the same shared-memory version
+(`smi11`) and NQPTP must be running, or shairport-sync offers classic AirPlay as "<name> (Classic)". shairport-sync runs as
+the `airplay.service` user unit (it has to, to reach the user's PipeWire and session bus), with
+[`deploy/shairport-sync.conf`](deploy/shairport-sync.conf): PulseAudio output, metadata and cover art to
+`/tmp/shairport-sync-metadata`, D-Bus on the session bus. The server reads that pipe (`--airplay-pipe`); a missing pipe
+(macOS, receiver not installed) is fine, and shairport-sync restarts are picked up. AirPlay 2 sends the song's position
+as `copl` plist items and classic as `prgr`, and `airplay.py` handles both. Remote control needs `busctl` (systemd) and
+`dbus-user-session`. After a server restart mid-song, the position stays unknown until the sender's next now-playing
+update.
+Logs: `journalctl --user-unit airplay -f`, `journalctl -u nqptp`.
 
 ### Sound effects
 

@@ -4,6 +4,7 @@ import datetime
 import io
 import json
 import os
+import plistlib
 import subprocess
 import tempfile
 import threading
@@ -157,13 +158,15 @@ class StateTest(unittest.TestCase):
 
 
 class RemoteTest(unittest.TestCase):
-    def runner(self, available="b true\n", code=0):
+    def runner(self, available="b true\n", code=0, stream="s \"Classic\"\n", stream_code=0):
         calls = []
 
         def run(cmd, **kw):
             calls.append(cmd)
-            out = available if "get-property" in cmd else ""
-            return type("R", (), {"returncode": code, "stdout": out, "stderr": "boom"})()
+            is_stream = cmd[-1] == "StreamType"
+            out = stream if is_stream else available if "get-property" in cmd else ""
+            rc = stream_code if is_stream else code
+            return type("R", (), {"returncode": rc, "stdout": out, "stderr": "boom"})()
         return calls, run
 
     def test_calls_the_remote_control_method(self):
@@ -177,7 +180,19 @@ class RemoteTest(unittest.TestCase):
         with self.assertRaises(ap.RemoteError) as e:
             ap.remote("pause", run)
         self.assertEqual((e.exception.status, e.exception.code), (409, "airplay_remote_unavailable"))
-        self.assertEqual(len(calls), 1)
+        self.assertEqual([c[-1] for c in calls], ["Available", "StreamType"])
+
+    def test_airplay2_session_reports_unavailable_but_accepts_commands(self):
+        for stream in ("Buffered", "Realtime"):
+            calls, run = self.runner("b false\n", stream=f's "{stream}"\n')
+            ap.remote("next", run)
+            self.assertEqual(calls[-1][-1], "Next")
+
+    def test_build_without_stream_type_property_is_treated_as_classic(self):
+        _, run = self.runner("b false\n", stream_code=1)
+        with self.assertRaises(ap.RemoteError) as e:
+            ap.remote("next", run)
+        self.assertEqual(e.exception.status, 409)
 
     def test_bus_unreachable_and_busctl_missing(self):
         _, run = self.runner(code=1)
@@ -190,6 +205,82 @@ class RemoteTest(unittest.TestCase):
         with self.assertRaises(ap.RemoteError) as e:
             ap.remote("play", missing)
         self.assertEqual(e.exception.code, "airplay_remote_unavailable")
+
+
+def now_playing(kind="updateMRNowPlayingInfo", params_type="npi-text", **info):
+    fields = {ap.NOW_PLAYING + k: v for k, v in info.items()}
+    return plistlib.dumps({"type": kind, "params": {"type": params_type, "params": fields}},
+                          fmt=plistlib.FMT_BINARY)
+
+
+class NowPlayingPlistTests(unittest.TestCase):
+    def session(self, now=1000.0):
+        clock = {"now": now}
+        a = ap.AirPlay(clock=lambda: clock["now"])
+        a.handle("ssnc", "pbeg", b"")
+        return a, clock
+
+    def test_position_counts_the_time_since_the_senders_timestamp(self):
+        a, clock = self.session()
+        sent = datetime.datetime.fromtimestamp(990, datetime.timezone.utc).replace(tzinfo=None)
+        a.handle("ssnc", "copl", now_playing(ElapsedTime=30.0, PlaybackRate=1.0, Timestamp=sent))
+        self.assertEqual(a.snapshot()["position_ms"], 40000)
+        clock["now"] += 5
+        self.assertEqual(a.snapshot()["position_ms"], 45000)
+
+    def test_paused_sender_position_ignores_the_timestamp(self):
+        a, _ = self.session()
+        sent = datetime.datetime.fromtimestamp(990, datetime.timezone.utc).replace(tzinfo=None)
+        a.handle("ssnc", "copl", now_playing(ElapsedTime=30.0, PlaybackRate=0.0, Timestamp=sent))
+        self.assertEqual(a.snapshot()["position_ms"], 30000)
+
+    def test_sender_clock_ahead_does_not_rewind(self):
+        a, _ = self.session()
+        sent = datetime.datetime.fromtimestamp(1010, datetime.timezone.utc).replace(tzinfo=None)
+        a.handle("ssnc", "copl", now_playing(ElapsedTime=30.0, PlaybackRate=1.0, Timestamp=sent))
+        self.assertEqual(a.snapshot()["position_ms"], 30000)
+
+    def test_new_song_keeps_position_and_art_sent_with_it(self):
+        a, _ = self.session()
+        a.handle("core", "minm", b"Old")
+        a.handle("ssnc", "PICT", b"\xff\xd8old")
+        a.handle("ssnc", "copl", now_playing(Title="New", ElapsedTime=3.0))
+        a.handle("ssnc", "PICT", b"\xff\xd8new")
+        a.handle("core", "minm", b"New")
+        snap = a.snapshot()
+        self.assertEqual((snap["track"]["name"], snap["position_ms"]), ("New", 3000))
+        self.assertEqual(a.artwork()[0], b"\xff\xd8new")
+
+    def test_update_without_a_title_keeps_the_art(self):
+        a, _ = self.session()
+        a.handle("core", "minm", b"Song")
+        a.handle("ssnc", "PICT", b"\xff\xd8art")
+        a.handle("ssnc", "copl", now_playing(ElapsedTime=3.0))
+        self.assertEqual(a.artwork()[0], b"\xff\xd8art")
+
+    def test_other_plists_and_garbage_change_nothing_and_notify_nobody(self):
+        a, _ = self.session()
+        changes = []
+        a.on_change = lambda: changes.append(1)
+        for data in (now_playing("updateMRSupportedCommands", ElapsedTime=9.0),
+                     now_playing(params_type="npi-artwork", ElapsedTime=9.0),
+                     plistlib.dumps(["not", "a", "dict"], fmt=plistlib.FMT_BINARY), b"garbage", b""):
+            a.handle("ssnc", "copl", data)
+        self.assertEqual((a.snapshot()["position_ms"], changes), (0, []))
+
+    def test_resume_after_the_active_state_ended_starts_a_playing_session(self):
+        a, _ = self.session()
+        a.handle("ssnc", "aend", b"")
+        self.assertIsNone(a.snapshot())
+        a.handle("ssnc", "pres", b"")
+        a.handle("ssnc", "abeg", b"")
+        self.assertEqual(a.snapshot()["state"], "playing")
+
+    def test_resume_right_after_stop_is_ignored(self):
+        a, _ = self.session()
+        a.end_session()
+        a.handle("ssnc", "pres", b"")
+        self.assertIsNone(a.snapshot())
 
 
 class FakeSoloist:
