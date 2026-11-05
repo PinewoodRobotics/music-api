@@ -69,7 +69,7 @@ On a Mac this plays through the Spotify desktop app (or any other Connect device
  web app / Slack / scripts ──HTTP+SSE──► server.py ──┬─ WebSocket (127.0.0.1) ─► Spotify Soloist ─► PipeWire ─► speakers
                                                      ├─ HTTPS ─► Spotify Web API  (search, library, playlists,   ▲
                                                      │                             history, any Connect device) │
- iPhone / Mac ──AirPlay──► shairport-sync ──────────────────────────────────────────────────────────────────────┘
+ iPhone / Mac ─AirPlay 2─► shairport-sync ──────────────────────────────────────────────────────────────────────┘
                                  ├─ metadata pipe ─► server.py (now playing, pauses Spotify while AirPlay plays)
                                  └─ D-Bus RemoteControl ◄─ server.py (play/pause/next/previous back to the sender)
 ```
@@ -465,30 +465,34 @@ disables it).
 
 ### AirPlay receiver
 
-The Pi also shows up as an AirPlay speaker named `AIRPLAY_NAME` (default "PEARL Speakers"), using classic AirPlay
-(no multi-room). AirPlay takes over from Spotify:
+The Pi also shows up as an AirPlay speaker named `AIRPLAY_NAME` (default "PEARL Speakers"), using AirPlay 2 (older
+senders fall back to classic AirPlay). AirPlay takes over from Spotify:
 
 - A session starting pauses Spotify (track, position and queue stay put).
 - While it lasts, `/api/status` shows the AirPlay song (`source: "airplay"`, art at `/api/airplay/artwork`,
   `airplay.sender`), and the Slack feed posts it, credited to the sender's device.
 - Play, pause, next and previous (from the API, the web app and Slack) control the sender through shairport-sync's
-  D-Bus `RemoteControl`. Senders without remote control get `409 airplay_remote_unavailable`. Other Spotify transport
-  (play a track, seek, transfer) returns `409 airplay_active`.
+  D-Bus `RemoteControl`. A classic sender without remote control gets `409 airplay_remote_unavailable`. AirPlay 2
+  can't report that, so an app that ignores a command gets a success with no effect. Other Spotify transport (play a
+  track, seek, transfer) returns `409 airplay_active`.
+- Pausing keeps the session for 2 minutes, during which Play resumes the sender. After that it counts as ended.
 - When it ends (the sender stops, or someone presses Stop AirPlay / `POST /api/airplay/stop`), Spotify resumes if it
   was playing before, unless quiet hours have locked.
 
 <details>
 <summary><b>How it's installed</b></summary>
 
-[`deploy/install-airplay.sh`](deploy/install-airplay.sh) installs the distro `shairport-sync` package (built with
-PulseAudio output, the metadata pipe, D-Bus/MPRIS and MQTT), disables its system service and checks those features.
-shairport-sync then runs as the `airplay.service` user unit, so it can reach the user's PipeWire and session bus, with
+The distro packages are classic AirPlay only, and remote control of AirPlay 2 senders needs shairport-sync 5.6, so
+[`deploy/install-airplay.sh`](deploy/install-airplay.sh) builds pinned NQPTP 1.2.9 (system service, PTP ports 319/320,
+which must be free and unblocked) and shairport-sync 5.6.2 with PulseAudio output, the metadata pipe and D-Bus, and
+removes the distro package. NQPTP must be running, or shairport-sync offers classic AirPlay as "<name> (Classic)".
+shairport-sync runs as the `airplay.service` user unit, so it can reach the user's PipeWire and session bus, with
 [`deploy/shairport-sync.conf`](deploy/shairport-sync.conf): metadata and cover art go to
 `/tmp/shairport-sync-metadata`, which the server reads (`--airplay-pipe`). A missing pipe is fine (macOS, or no
-receiver installed). Remote control needs `busctl` and `dbus-user-session`. A server restart mid-song loses the
-session until the next song starts.
+receiver installed). AirPlay 2 sends the song's position as `copl` plist items and classic as `prgr`; `airplay.py`
+handles both. Remote control needs `busctl` and `dbus-user-session`.
 
-Logs: `journalctl --user-unit airplay -f`.
+Logs: `journalctl --user-unit airplay -f`, `journalctl -u nqptp`.
 </details>
 
 ### Sound effects

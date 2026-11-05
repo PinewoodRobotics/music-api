@@ -8,13 +8,16 @@ where type and code are four ASCII characters in hex ("core" "minm" = title) and
 core minm/asar/asal/astm (title, artist, album, length in ms); ssnc pbeg/pend (play session begin/end),
 abeg/aend (active state begin/end), paus/pres/prsm/pfls (pause, resume, flush), prgr ("start/current/end" RTP
 frames), phbt (heartbeat while frames play; also starts a session we missed the beginning of, e.g. after
-a server restart), snam (sender name), PICT (cover art bytes), mdst/mden (bundle markers).
+a server restart), snam (sender name), PICT (cover art bytes), mdst/mden (bundle markers), copl (AirPlay 2 command
+plist: the only source of the song's position, since prgr is classic-only).
 """
 import base64
 import collections
+import datetime
 import hashlib
 import json
 import os
+import plistlib
 import re
 import select
 import stat
@@ -39,6 +42,7 @@ BUS_INTERFACE = "org.gnome.ShairportSync.RemoteControl"
 REMOTE_METHODS = {"play": "Play", "pause": "Pause", "next": "Next", "previous": "Previous"}
 SINK_NAME = "AirPlay"
 MAX_ART = 16 << 20
+NOW_PLAYING = "kMRMediaRemoteNowPlayingInfo"
 
 
 def log(msg):
@@ -138,8 +142,14 @@ def remote(action, run=subprocess.run):
         return r.stdout
 
     if "false" in busctl("get-property", BUS_NAME, BUS_PATH, BUS_INTERFACE, "Available").lower():
-        raise RemoteError("the device playing over AirPlay doesn't accept remote control", 409,
-                          "airplay_remote_unavailable")
+        # shairport-sync 5.6 leaves Available false for the whole of an AirPlay 2 session, though commands work.
+        try:
+            stream = busctl("get-property", BUS_NAME, BUS_PATH, BUS_INTERFACE, "StreamType").lower()
+        except RemoteError:
+            stream = ""
+        if "buffered" not in stream and "realtime" not in stream:
+            raise RemoteError("the device playing over AirPlay doesn't accept remote control", 409,
+                              "airplay_remote_unavailable")
     busctl("call", BUS_NAME, BUS_PATH, BUS_INTERFACE, method)
 
 
@@ -254,7 +264,7 @@ class AirPlay:
                     self._set_playing(False, now)
                 elif code in ("pres", "prsm", "phb0", "phbt"):
                     was = self.playing
-                    if code in ("phb0", "phbt") and not self.active and now >= self._ignore_until:
+                    if code in ("pres", "phb0", "phbt") and not self.active and now >= self._ignore_until:
                         self.active, self.started_at = True, now
                         events.append("start")
                     if self.active:
@@ -267,6 +277,9 @@ class AirPlay:
                         return
                 elif code == "prgr":
                     self._progress(text, now)
+                elif code == "copl":
+                    if not self._now_playing(data, now):
+                        return
                 elif code == "snam":
                     self.sender = text or None
                     self._save_sender()
@@ -301,6 +314,31 @@ class AirPlay:
             self.duration_ms = round(span * 1000 / RTP_RATE)
         self._rtp = (start, end)
         self._anchor = (max(0, round(((cur - start) & 0xFFFFFFFF) * 1000 / RTP_RATE)), now)
+
+    def _now_playing(self, data, now):
+        try:
+            command = plistlib.loads(data)
+            params = command["params"]
+            if command["type"] != "updateMRNowPlayingInfo" or params["type"] != "npi-text":
+                return False
+            info = params["params"]
+            title = info.get(NOW_PLAYING + "Title")
+            elapsed = info.get(NOW_PLAYING + "ElapsedTime")
+            rate = info.get(NOW_PLAYING + "PlaybackRate")
+            stamp = info.get(NOW_PLAYING + "Timestamp")
+        except Exception:  # noqa: BLE001 - a sender's malformed plist must not stop the pipe reader
+            return False
+        # shairport-sync writes PICT and minm after this item, so a new title has to be taken now: taken at minm it
+        # would clear the art and position that belong to the new song.
+        if isinstance(title, str) and title != self.title:
+            self.art = None
+            self._anchor = None
+            self.title = title or None
+        if isinstance(elapsed, (int, float)) and elapsed >= 0:
+            if isinstance(rate, (int, float)) and rate > 0 and isinstance(stamp, datetime.datetime):
+                elapsed += max(0, now - stamp.replace(tzinfo=datetime.timezone.utc).timestamp())
+            self._anchor = (round(elapsed * 1000), now)
+        return True
 
     def _heartbeat(self, text, now):
         try:
