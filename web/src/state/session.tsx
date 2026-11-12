@@ -1,7 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
-import { api, ApiError, clearToken, onUnauthorized, type AppPlaylist, type LibraryAlbum, type LibraryItem, type Me } from '../lib/api'
+import { api, ApiError, banOf, clearToken, onBanned, onUnauthorized, type AppPlaylist, type BanInfo, type LibraryAlbum, type LibraryItem, type Me } from '../lib/api'
 
-type SessionState = { status: 'loading' } | { status: 'signedOut' } | { status: 'error'; message: string } | { status: 'ready'; me: Me }
+type SessionState = { status: 'loading' } | { status: 'signedOut' } | { status: 'error'; message: string } | { status: 'banned'; ban: BanInfo } | { status: 'ready'; me: Me }
 
 type Session = {
   state: SessionState
@@ -46,6 +46,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const [attempt, setAttempt] = useState(0)
 
   useEffect(() => onUnauthorized(() => setState({ status: 'signedOut' })), [])
+  useEffect(() => onBanned((ban) => setState({ status: 'banned', ban })), [])
 
   useEffect(() => {
     let live = true
@@ -54,7 +55,9 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       .then((me) => live && setState({ status: 'ready', me }))
       .catch((err) => {
         if (!live) return
-        if (err instanceof ApiError && err.status === 401) setState({ status: 'signedOut' })
+        const ban = banOf(err)
+        if (ban) setState({ status: 'banned', ban })
+        else if (err instanceof ApiError && err.status === 401) setState({ status: 'signedOut' })
         else setState({ status: 'error', message: err instanceof Error ? err.message : String(err) })
       })
     return () => {

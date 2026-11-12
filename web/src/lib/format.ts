@@ -39,3 +39,26 @@ export function decodeEntities(text: string) {
   el.innerHTML = text
   return el.value
 }
+
+const relative = new Intl.RelativeTimeFormat(undefined, { numeric: 'always' })
+
+export function fromNow(unixSeconds: number) {
+  const s = unixSeconds - Date.now() / 1000
+  const abs = Math.abs(s)
+  if (Math.round(abs / 60) < 60) return relative.format(Math.round(s / 60), 'minute')
+  if (Math.round(abs / 3600) < 24) return relative.format(Math.round(s / 3600), 'hour')
+  if (Math.round(abs / 86400) < 60) return relative.format(Math.round(s / 86400), 'day')
+  return relative.format(Math.round(s / (86400 * 30)), 'month')
+}
+
+export function formatMoment(unixSeconds: number) {
+  const d = new Date(unixSeconds * 1000)
+  return d.toLocaleString([], {
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric',
+    ...(d.getFullYear() !== new Date().getFullYear() && { year: 'numeric' }),
+    hour: 'numeric',
+    minute: '2-digit',
+  })
+}

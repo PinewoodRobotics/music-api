@@ -1,7 +1,7 @@
 import type { ActivityEntry, AdminEntry, AdminList, BanEntry, AppPlaylist, EffectsVolume, KnownUser, LibraryAlbum, Lyrics, QuietAdmin, QuietHours, QuietSettings, Queue, ServiceInfo, Status, SystemInfo, Track, UpdateInfo, UpdateRun } from '../lib/api'
 import fixtures from './fixtures.json'
 
-type Mode = 'full' | 'signedout' | 'signedout-slack' | 'signedout-google' | 'writes' | 'down'
+type Mode = 'full' | 'signedout' | 'signedout-slack' | 'signedout-google' | 'writes' | 'down' | 'banned'
 type Call = { method: string; path: string; body: unknown; origin: string | null }
 
 declare global {
@@ -492,7 +492,10 @@ function applyQuietSettings() {
   quiet = { ...quiet, enabled: quietSettings.enabled, window: quietSettings.enabled ? `${quietSettings.start}-${quietSettings.end}` : null, until: quietSettings.end, grace_s: quietSettings.grace_min * 60 }
 }
 
-const bannedUsers: BanEntry[] = []
+const bannedUsers: BanEntry[] = [
+  { key: 'u05', id: 'U05', email: null, name: 'Jonas Weber', reason: "Kept skipping everyone's songs during the **Friday build session**.\n\n- Skipped 40 tracks in an hour\n- Ignored two warnings in `#lab-music`\n\n> Take a break and come back next week.", until: sec() + 4 * 86400, banned_by: { id: 'U03', name: 'Howard Kent' }, banned: sec() - 2 * 86400 },
+  { key: 'spam@example.com', id: null, email: 'spam@example.com', name: null, reason: 'Used a leaked API token to queue ads.', until: null, banned_by: { id: 'U01', name: 'Adam Xu' }, banned: sec() - 9 * 86400 },
+]
 const adminUsers: AdminEntry[] = [
   { key: 'email:howard@robotics.example', id: null, email: 'howard@robotics.example', name: 'Howard Kent', avatar: null, source: 'config', added_by: null, added: null, you: false },
   { key: 'U01', id: 'U01', email: 'adam@robotics.example', name: 'Adam Xu', avatar: null, source: 'admin', added_by: { id: 'U03', name: 'Howard Kent' }, added: sec() - 6 * 86400, you: true },
@@ -601,14 +604,19 @@ function handleAdmin(method: string, p: string, body: Record<string, unknown>): 
     } else quietOverride = null
     return ok(quietAdmin())
   }
-  if (route === 'GET /api/admin/bans') return ok({ bans: bannedUsers })
+  if (route === 'GET /api/admin/bans') return ok({ bans: bannedUsers.filter((b) => b.until == null || b.until > sec()) })
   if (route === 'POST /api/admin/bans') {
     const known = knownUsers.find((u) => u.id === body.id || (body.email && u.email === body.email))
     const email = typeof body.email === 'string' ? body.email.toLowerCase() : null
     const id = typeof body.id === 'string' ? body.id : null
     const key = (id ?? email ?? '').toLowerCase()
     if (bannedUsers.some((b) => b.key === key)) return fail(409, 'already banned')
-    bannedUsers.unshift({ key, id, email, name: known?.name ?? null, reason: typeof body.reason === 'string' ? body.reason : null, banned_by: { id: adam.id, name: adam.name }, banned: sec() })
+    const reason = typeof body.reason === 'string' ? body.reason.trim() : ''
+    if (!reason) return fail(400, 'reason is required')
+    if (reason.length > 2000) return fail(400, 'reason is too long')
+    const until = typeof body.until === 'number' ? body.until : null
+    if (until != null && until <= sec()) return fail(400, 'until must be in the future')
+    bannedUsers.unshift({ key, id, email, name: known?.name ?? null, reason, until, banned_by: { id: adam.id, name: adam.name }, banned: sec() })
     return ok({ bans: bannedUsers })
   }
   const unbanning = p.match(/^\/api\/admin\/bans\/(.+)$/)
@@ -888,7 +896,7 @@ class MockEventSource extends EventTarget {
 
 export function installMock(param: string | null) {
   const stored = sessionStorage.getItem('mock')
-  const mode: Mode = param && ['signedout', 'signedout-slack', 'signedout-google', 'writes', 'down'].includes(param) ? (param as Mode) : param !== null ? 'full' : ((stored as Mode) ?? 'full')
+  const mode: Mode = param && ['signedout', 'signedout-slack', 'signedout-google', 'writes', 'down', 'banned'].includes(param) ? (param as Mode) : param !== null ? 'full' : ((stored as Mode) ?? 'full')
   sessionStorage.setItem('mock', mode)
   window.__mockCalls = []
   window.__mockActivity = (action, detail = {}, who = 'howard', origin = 'web') => {
@@ -941,8 +949,10 @@ export function installMock(param: string | null) {
       return new Response(JSON.stringify({ slack: mode !== 'signedout-google', google: mode !== 'signedout-slack' }), { status: 200, headers: { 'Content-Type': 'application/json' } })
     const [status, json] = down
       ? fail(502, 'Bad gateway')
-      : mode.startsWith('signedout')
-        ? fail(401, 'unauthorized')
+      : mode === 'banned' && url.pathname.startsWith('/api/')
+        ? [403, { error: "you're banned from the music API", ban: { reason: "Queued **Never Gonna Give You Up** eleven times in a row during build season.\n\n- Skipped everyone else's songs\n- Turned the volume to max at 7am\n\nTake a few days off. See the [lab rules](https://example.com/rules) before you're back.", until: Math.floor(sec()) + 3 * 86400 + 5 * 3600, banned: Math.floor(sec()) - 3600 } }] as const
+        : mode.startsWith('signedout')
+          ? fail(401, 'unauthorized')
         : mode === 'writes' && !url.pathname.startsWith('/api/app/')
           ? ok({ mocked: true })
           : handle(method, url, body)

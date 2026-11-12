@@ -20,6 +20,7 @@ import { focusSearch } from './lib/searchFocus'
 import { useSkipWatcher } from './lib/skipNote'
 import { AdminPage } from './pages/admin/AdminPage'
 import { AlbumPage } from './pages/AlbumPage'
+import { Banned } from './pages/Banned'
 import { ArtistPage } from './pages/ArtistPage'
 import { LibraryPage } from './pages/LibraryPage'
 import { OpenLinkPage } from './pages/OpenLinkPage'
@@ -52,6 +53,7 @@ function Root() {
       </div>
     )
   if (state.status === 'signedOut') return <SignIn />
+  if (state.status === 'banned') return <Banned ban={state.ban} />
   if (state.status === 'error')
     return (
       <div className="grid min-h-dvh place-items-center bg-black">

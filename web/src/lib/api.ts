@@ -324,12 +324,15 @@ export type BanEntry = {
   id: string | null
   email: string | null
   name: string | null
-  reason: string | null
+  reason: string
+  until: number | null
   banned_by: Actor | null
   banned: number | null
 }
 
 export type BanList = { bans: BanEntry[] }
+
+export type BanInfo = { reason: string; until: number | null; banned: number | null }
 
 export type UpdateCommit = { commit: string; short: string; subject: string; author: string; date: number }
 
@@ -363,11 +366,19 @@ export type ServiceLogs = { name: string; unit: string; lines: string[]; error: 
 export class ApiError extends Error {
   status: number
   code: string | null
-  constructor(status: number, message: string, code: string | null = null) {
+  body: unknown
+  constructor(status: number, message: string, code: string | null = null, body: unknown = null) {
     super(message)
     this.status = status
     this.code = code
+    this.body = body
   }
+}
+
+export function banOf(err: unknown): BanInfo | null {
+  if (!(err instanceof ApiError) || err.status !== 403) return null
+  const ban = (err.body as { ban?: unknown } | null)?.ban
+  return ban && typeof ban === 'object' ? (ban as BanInfo) : null
 }
 
 const TOKEN_KEY = 'token'
@@ -394,6 +405,13 @@ const unauthorizedListeners = new Set<() => void>()
 export function onUnauthorized(listener: () => void) {
   unauthorizedListeners.add(listener)
   return () => void unauthorizedListeners.delete(listener)
+}
+
+const bannedListeners = new Set<(ban: BanInfo) => void>()
+
+export function onBanned(listener: (ban: BanInfo) => void) {
+  bannedListeners.add(listener)
+  return () => void bannedListeners.delete(listener)
 }
 
 let clientOrigin = 'ui'
@@ -432,10 +450,14 @@ async function request<T>(method: string, path: string, body?: unknown, retried 
   if (retry && RETRYABLE.has(res.status)) return sleep(1000).then(() => request<T>(method, path, body, true))
   const data = await res.json().catch(() => null)
   if (res.status === 401) unauthorizedListeners.forEach((l) => l())
-  if (!res.ok)
-    throw data?.message
-      ? new ApiError(res.status, data.message, data.error ?? null)
-      : new ApiError(res.status, data?.error ?? friendlyStatus(res.status))
+  if (!res.ok) {
+    const err = data?.message
+      ? new ApiError(res.status, data.message, data.error ?? null, data)
+      : new ApiError(res.status, data?.error ?? friendlyStatus(res.status), null, data)
+    const ban = banOf(err)
+    if (ban) bannedListeners.forEach((l) => l(ban))
+    throw err
+  }
   return data?.result as T
 }
 
@@ -477,7 +499,7 @@ export const api = {
   addAdmin: (who: { id: string } | { email: string }) => post<AdminList>('/api/admin/admins', who),
   removeAdmin: (key: string) => request<AdminList>('DELETE', `/api/admin/admins/${encodeURIComponent(key)}`),
   banList: () => get<BanList>('/api/admin/bans'),
-  ban: (who: ({ id: string } | { email: string }) & { reason?: string }) => post<BanList>('/api/admin/bans', who),
+  ban: (who: ({ id: string } | { email: string }) & { reason: string; until: number | null }) => post<BanList>('/api/admin/bans', who),
   unban: (key: string) => request<BanList>('DELETE', `/api/admin/bans/${encodeURIComponent(key)}`),
   adminUpdate: () => get<UpdateInfo>('/api/admin/update'),
   checkUpdate: () => post<UpdateInfo>('/api/admin/update/check'),
