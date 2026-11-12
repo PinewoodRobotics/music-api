@@ -3,11 +3,11 @@
 
 GitHub Actions (.github/workflows/pi-build.yml) runs the tests on every push to main, builds web/dist and publishes
 the deployable tree (plus BUILD.json) as the `pi-build` branch. The Pi fetches main and pi-build into a bare repo
-with a read-only deploy key, stages the build next to the app dir, swaps it in, restarts music-api (and
+over HTTPS (the repo is public, so no credentials are needed), stages the build next to the app dir, swaps it in, restarts music-api (and
 music-display if its files changed), health-checks the API and swaps back if it fails. Soloist and the AirPlay
 receiver keep running; a music-api restart is safe because both are recovered.
 
-    python3 updater.py setup     # one time: deploy key + bare repo; prints the public key for GitHub
+    python3 updater.py setup     # optional: create the bare repo now (fetch creates it on demand)
     python3 updater.py status    # fetch and show what an update would do
     python3 updater.py update    # update now (also POST /api/admin/update)
 """
@@ -28,7 +28,7 @@ import urllib.error
 import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-REMOTE = "git@github.com:PinewoodRobotics/music-api.git"
+REMOTE = "https://github.com/PinewoodRobotics/music-api.git"
 MAIN, BUILD = "main", "pi-build"
 STATE_FILE = "update.json"
 FETCH_EVERY = 600
@@ -110,15 +110,15 @@ class Updater:
         self.fetched_at, self.fetch_error = None, None
         self.state = None
 
-    def _local_remote(self):
-        return not self.remote.startswith(("git@", "ssh://", "https://", "http://"))
+    def _ssh_remote(self):
+        return self.remote.startswith(("git@", "ssh://"))
 
     def _ssh_command(self):
         return f"ssh -i {self.key_path} -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=accept-new"
 
     def git(self, *args, timeout=60, check=True):
         env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
-        if not self._local_remote():
+        if self._ssh_remote():
             env["GIT_SSH_COMMAND"] = self._ssh_command()
         try:
             r = subprocess.run(["git", "--git-dir", self.repo_dir, *args], capture_output=True, timeout=timeout, env=env)
@@ -133,22 +133,28 @@ class Updater:
         return out.decode().strip() if out is not None else None
 
     def configured(self):
-        return os.path.isdir(self.repo_dir) and (self._local_remote() or os.path.exists(self.key_path))
+        return not self._ssh_remote() or (os.path.isdir(self.repo_dir) and os.path.exists(self.key_path))
+
+    def _ensure_repo(self):
+        if not os.path.isdir(self.repo_dir):
+            r = subprocess.run(["git", "init", "-q", "--bare", self.repo_dir], capture_output=True)
+            if r.returncode != 0:
+                raise UpdateError(f"git init failed: {r.stderr.decode(errors='replace').strip()[-400:]}", 500)
+        if self._text("config", "remote.origin.url", check=False) != self.remote:
+            self.git("config", "remote.origin.url", self.remote)
+            self.git("config", "--replace-all", "remote.origin.fetch", f"+refs/heads/{MAIN}:refs/remotes/origin/{MAIN}")
+            self.git("config", "--add", "remote.origin.fetch", f"+refs/heads/{BUILD}:refs/remotes/origin/{BUILD}")
 
     def setup(self):
-        """Create the deploy key (if missing) and the bare repo; returns the public key."""
-        if not self._local_remote() and not os.path.exists(self.key_path):
+        """Create the bare repo, plus a deploy key when the remote is SSH; returns the public key, if any."""
+        if self._ssh_remote() and not os.path.exists(self.key_path):
             os.makedirs(os.path.dirname(self.key_path), mode=0o700, exist_ok=True)
             rc, out = self.run(["ssh-keygen", "-t", "ed25519", "-N", "", "-C", "music-api-pi-deploy", "-f", self.key_path])
             if rc != 0:
                 raise UpdateError(f"ssh-keygen failed: {out.strip()}", 500)
-        if not os.path.isdir(self.repo_dir):
-            subprocess.run(["git", "init", "-q", "--bare", self.repo_dir], check=True)
-        self.git("config", "remote.origin.url", self.remote)
-        self.git("config", "--replace-all", "remote.origin.fetch", f"+refs/heads/{MAIN}:refs/remotes/origin/{MAIN}")
-        self.git("config", "--add", "remote.origin.fetch", f"+refs/heads/{BUILD}:refs/remotes/origin/{BUILD}")
+        self._ensure_repo()
         pub = self.key_path + ".pub"
-        if os.path.exists(pub):
+        if self._ssh_remote() and os.path.exists(pub):
             with open(pub) as f:
                 return f.read().strip()
         return None
@@ -157,6 +163,7 @@ class Updater:
         if not self.configured():
             raise UpdateError("updates aren't set up on this server yet (python3 updater.py setup)", 503)
         try:
+            self._ensure_repo()
             self.git("fetch", "--prune", "--quiet", "origin", timeout=90)
             self.fetched_at, self.fetch_error = round(self.clock()), None
         except UpdateError as e:
@@ -252,9 +259,9 @@ class Updater:
                "build": None, "behind": 0, "commits": [], "changes": {"files": [], "restarts": [], "units": [], "notes": []},
                "fetched_at": self.fetched_at, "fetch_error": self.fetch_error, "run": self.read_state()}
         if not out["configured"]:
-            out["setup_hint"] = ("Updates from GitHub aren't set up on this Pi yet. On the Pi run "
+            out["setup_hint"] = (f"The update remote {self.remote} uses SSH, which needs a deploy key. On the Pi run "
                                  "python3 ~/.local/share/music-api-v2/updater.py setup and add the public key it prints "
-                                 "as a read-only deploy key of PinewoodRobotics/music-api on GitHub.")
+                                 "as a read-only deploy key on GitHub, or unset MUSIC_API_UPDATE_REMOTE to use HTTPS.")
             return out
         if fetch or (fetch is None and (not self.fetched_at or self.clock() - self.fetched_at > FETCH_EVERY)):
             try:
@@ -492,7 +499,7 @@ def main(argv=None):
             pub = u.setup()
             print(f"Bare repo: {u.repo_dir}\nRemote: {u.remote}")
             if pub:
-                print("\nAdd this public key on GitHub: PinewoodRobotics/music-api > Settings > Deploy keys > Add deploy key"
+                print("\nAdd this public key on GitHub: repo Settings > Deploy keys > Add deploy key"
                       " (leave 'Allow write access' off):\n\n" + pub + "\n")
             print("Then check it works with: python3 updater.py status")
             return 0

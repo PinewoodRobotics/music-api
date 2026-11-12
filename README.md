@@ -383,8 +383,8 @@ Admins get **Admin** in the account menu (`/admin`), backed by `/api/admin/*`:
 On every push to `main`, [`.github/workflows/pi-build.yml`](.github/workflows/pi-build.yml) runs the Python tests,
 builds `web/dist` and force-pushes the deployable tree (plus `BUILD.json`) to the `pi-build` branch.
 
-On the Pi, `updater.py` keeps a bare clone (`~/.local/share/music-api-repo.git`) that fetches with a read-only deploy
-key. An update:
+On the Pi, `updater.py` keeps a bare clone (`~/.local/share/music-api-repo.git`) that fetches over HTTPS. The repo is
+public, so there's nothing to set up: the clone is created on the first fetch. An update:
 
 1. stages `pi-build` in `music-api-v2.new` and swaps it in (the old tree stays as `music-api-v2.prev`),
 2. installs changed unit files that are already installed,
@@ -395,9 +395,9 @@ Soloist and the AirPlay receiver are never restarted, and anything that needs su
 being run. The update runs as a transient `systemd-run --user` unit so it survives the restart; progress goes to
 `<data-dir>/update.json`.
 
-One-time setup: `python3 ~/.local/share/music-api-v2/updater.py setup` creates the key and the bare repo and prints
-the public key. Add it on GitHub (Settings > Deploy keys, read-only), then check with `python3 updater.py status`.
-`python3 updater.py update` does the same as the button. [`deploy/deploy-pi.sh`](deploy/deploy-pi.sh) still works for
+`python3 ~/.local/share/music-api-v2/updater.py status` shows what an update would do, and `python3 updater.py update`
+does the same as the button. To pull from a fork, set `MUSIC_API_UPDATE_REMOTE`; an SSH remote also needs a deploy
+key, which `python3 updater.py setup` generates. [`deploy/deploy-pi.sh`](deploy/deploy-pi.sh) still works for
 copying straight from a laptop.
 
 ### Quiet hours

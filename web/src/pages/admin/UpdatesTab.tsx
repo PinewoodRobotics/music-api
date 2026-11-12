@@ -98,7 +98,7 @@ export function UpdatesTab({ active }: { active: boolean }) {
     <div className="space-y-4">
       {!data.configured && (
         <Banner tone="warn" icon={<AlertTriangle />} title="Updates are not set up yet">
-          {data.setup_hint ?? 'The deploy key for GitHub has not been configured on the Pi.'}
+          {data.setup_hint ?? 'The update remote on the Pi needs a deploy key.'}
         </Banner>
       )}
 

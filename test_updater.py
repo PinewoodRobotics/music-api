@@ -7,6 +7,7 @@ import subprocess
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 import updater as up
 
@@ -267,6 +268,36 @@ class UpdaterTest(unittest.TestCase):
         with self.assertRaises(up.UpdateError) as e:
             u.start()
         self.assertEqual(e.exception.status, 503)
+
+    def test_https_remote_needs_no_setup(self):
+        u = up.Updater(app_dir=self.rig.app, data_dir=self.rig.data, repo_dir=os.path.join(self.rig.tmp, "fresh.git"),
+                       remote="https://github.com/x/y.git", key_path=os.path.join(self.rig.tmp, "nokey"), run=self.rig.run)
+        self.assertTrue(u.configured())
+        self.assertIsNone(u.status(fetch=False)["setup_hint"])
+        self.assertNotIn("GIT_SSH_COMMAND", self._git_env(u))
+
+    def _git_env(self, u):
+        seen = {}
+        real = up.subprocess.run
+
+        def spy(cmd, **kw):
+            seen.update(kw.get("env") or {})
+            return real(cmd, **kw)
+        with mock.patch.object(up.subprocess, "run", spy):
+            u.git("config", "--list", check=False)
+        return seen
+
+    def test_fetch_creates_the_repo_and_moves_it_off_an_old_remote(self):
+        repo = os.path.join(self.rig.tmp, "lazy.git")
+        u = up.Updater(app_dir=self.rig.app, data_dir=self.rig.data, repo_dir=repo, remote=self.rig.origin,
+                       unit_dir=self.rig.units, run=self.rig.run, which=lambda c: "/usr/bin/" + c)
+        st = u.status(fetch=True)
+        self.assertIsNone(st["fetch_error"])
+        self.assertEqual(st["latest"]["commit"], self.rig.v1)
+
+        u.git("config", "remote.origin.url", "git@github.com:x/y.git")
+        u.fetch()
+        self.assertEqual(u._text("config", "remote.origin.url"), self.rig.origin)
 
     def test_setup_generates_a_key_for_github(self):
         key = os.path.join(self.rig.tmp, "keys", "deploy")
