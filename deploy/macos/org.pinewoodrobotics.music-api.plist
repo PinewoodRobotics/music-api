@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>org.pinewoodrobotics.music-api</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/python3</string>
+    <string>/Users/labteacher/Developer/music-api-v2/server.py</string>
+    <string>--public</string>
+    <string>--client-id</string>
+    <string>a7e18c754f624ce5b882f92b1b343704</string>
+  </array>
+  <key>WorkingDirectory</key><string>/Users/labteacher/Developer/music-api-v2</string>
+  <key>EnvironmentVariables</key>
+  <dict><key>PATH</key><string>/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin</string></dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>10</integer>
+  <key>StandardOutPath</key><string>/Users/labteacher/Developer/music-api-v2/server.log</string>
+  <key>StandardErrorPath</key><string>/Users/labteacher/Developer/music-api-v2/server.log</string>
+</dict>
+</plist>

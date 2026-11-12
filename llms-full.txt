@@ -1,0 +1,860 @@
+# Music API v2
+
+> HTTP JSON API and web remote for Spotify. It controls playback on a real speaker, searches the Spotify catalog, manages playlists and the user's library, reads listening history, and adds synced lyrics (LRCLIB) and the host machine's audio mixer. Base URL: https://music.pinewoodrobotics.org
+
+This file is the complete reference for driving the API with no other context. It follows the llms.txt convention: the short index is at https://music.pinewoodrobotics.org/llms.txt and the same content as this file is at /LLMS.md. Everything here was written from the server's source code (server.py, player.py, spotify.py, extras.py, soloist.py, tokens.py).
+
+Contents: 1 Basics, 2 Data shapes, 3 Endpoints, 4 Server-sent events, 5 Workflows, 6 Limits and gotchas, 7 Errors, 8 Deployment.
+
+---
+
+## 1. Basics
+
+### Base URL
+
+- Public: `https://music.pinewoodrobotics.org` (a Cloudflare tunnel to the server on `127.0.0.1:8765`).
+- On the host machine itself: `http://127.0.0.1:8765`.
+
+The examples below use:
+
+```sh
+API=https://music.pinewoodrobotics.org
+TOKEN=mapi_...   # ask the user for one
+```
+
+### Authentication
+
+Send the API token on every request:
+
+```
+Authorization: Bearer mapi_...
+```
+
+or, where headers can't be set (browser `EventSource`, `<img src>`, links), as a query parameter: `?token=mapi_...`.
+
+A token is required for everything except:
+
+- `GET /` and any other non-`/api` page (the web app; it shows a Slack sign-in screen when needed)
+- `GET /auth/slack/login`, `GET /auth/slack/callback`, `POST /auth/slack/logout` (Sign in with Slack)
+- `GET /auth/google/login`, `GET /auth/google/callback` (Sign in with Google, @pinewood.edu accounts that are in the Slack workspace; same session as Slack), `GET /auth/methods` (`{"slack": bool, "google": bool}`)
+- `POST /slack/commands`, `POST /slack/interactions`, `POST /slack/events` (the Slack bot; called by Slack only, each request must carry a valid `X-Slack-Signature` for `SLACK_SIGNING_SECRET`, else 401)
+- `GET /llms.txt`, `GET /llms-full.txt`, `GET /LLMS.md`, `GET /API.md`, `GET /README.md`
+- `GET /auth/callback` (protected by the OAuth PKCE state instead)
+- `OPTIONS` (CORS preflight)
+
+The public server runs with `--public`, so a token is required even for requests from localhost. Missing or wrong token: `401 {"error": "unauthorized"}`.
+
+There are no scopes: every token can do everything, including creating and revoking other tokens. See "Tokens" in section 3.
+
+The web app instead uses a session cookie from Sign in with Slack (pinewoodrobotics workspace only). Sessions belong to a person: non-admin sessions get `403 {"error": "admins only"}` on tokens, the Spotify login, `/api/spotify/*`, `/api/library/*`, `/api/recent`, `/api/top`, `/api/me`, `/api/devices/transfer`, the raw `GET/POST /api/playlists` list, hidden playlists and `/api/admin/*`. Admins are the people in `SLACK_ADMINS` plus anyone an admin added on the admin page; changes apply to existing sessions immediately. API tokens act as the user **Admin** and can do everything. `GET /api/app/me` says who you are.
+
+Do not confuse the API token with the Spotify Web API login. They are separate. The server holds one Spotify login (the account whose music this is); you never send Spotify credentials. If the Spotify login is missing or expired, Web API endpoints fail with 412 and an error text that mentions `/auth/login` (see section 7). A 401 always means a missing or wrong API token.
+
+### Requests
+
+- Bodies are JSON (`Content-Type: application/json`). `application/x-www-form-urlencoded` is also accepted. An empty body is fine where every field is optional.
+- Query strings carry `limit`, `offset`, `q` and so on.
+- CORS: every response has `Access-Control-Allow-Origin: *`; preflight allows GET, POST, PUT, PATCH, DELETE and the `Content-Type` and `Authorization` headers.
+- Trailing slashes are ignored. Unknown path: `404 {"error": "not found"}`. Known path, wrong method: `405 {"error": "method not allowed"}`.
+
+### Response envelope
+
+Success: HTTP 200 with
+
+```json
+{"result": <any JSON value>}
+```
+
+Failure: HTTP 4xx/5xx with
+
+```json
+{"error": "human-readable message"}
+```
+
+A few errors carry a machine-readable code in `error` plus a human `message` and extra fields:
+
+```json
+{"error": "quiet_hours", "message": "Quiet hours: the speakers are locked until 8:00 AM", "until": "08:00", "until_ts": 1791730800}
+{"error": "airplay_active", "message": "AirPlay from Adam's iPhone is playing, so Spotify is paused until it ends ...", "sender": "Adam's iPhone"}
+{"error": "airplay_inactive", "message": "no AirPlay session"}
+```
+
+Exceptions to the envelope:
+
+- `GET /api` returns a bare JSON array (no `result` wrapper).
+- `GET /api/artwork` returns `302` with a `Location` header, or raw image bytes with `?proxy=1` (and always bytes during AirPlay). `GET /api/airplay/artwork` returns image bytes.
+- `GET /auth/login` returns an HTML page (or `302` to Spotify with `?redirect=1`); `/auth/callback` returns HTML.
+- `GET /api/events` is a `text/event-stream`.
+- The documentation files are `text/plain` or `text/markdown`.
+
+### IDs, URIs and links
+
+Spotify identifies things by a 22-character base62 ID and a URI of the form `spotify:<type>:<id>`, where type is one of `track`, `album`, `playlist`, `artist`, `episode`, `show`, `audiobook`, `chapter`.
+
+Where each form is accepted:
+
+| Place | Bare ID | `spotify:` URI | open.spotify.com link |
+|---|---|---|---|
+| Path parameters (`/api/albums/{id}`, `/api/playlists/{id}`, ...) | yes (required) | no | no |
+| `/api/tracks/{id}` | yes, or the word `current` | PATCH only | no |
+| `/api/play` `uri`, `context`; `/api/play-url` `url` | no | yes | yes |
+| `/api/play` `uris[]`, `offset` (as URI) | yes (treated as a track) | yes | yes |
+| `/api/queue` `uri` / `uris[]` | yes (treated as a track) | yes | yes |
+| `/api/lyrics?track=` | yes (track) | yes | yes |
+| `uris` for library and playlist-items endpoints | no | yes | yes |
+
+Links may include `intl-xx/` or `embed/` path segments and query strings such as `?si=...`; they are normalized to URIs. Every object the API returns carries both `uri` and `id`, so the simplest rule is: pass `uri` in bodies, `id` in paths.
+
+### Pagination
+
+List endpoints return a page object (section 2). Use `limit` and `offset`. `next` is a boolean that tells you whether there are more. Default `limit` is 20 and the cap is 50 unless noted (search: max 10). Followed artists use a cursor instead (`after`).
+
+---
+
+## 2. Data shapes
+
+The API returns compact objects, not Spotify's raw ones.
+
+Track:
+
+```json
+{"uri": "spotify:track:4uLU6hMCjMI75M1A2tKUQC", "id": "4uLU6hMCjMI75M1A2tKUQC", "type": "track",
+ "name": "Never Gonna Give You Up",
+ "artists": [{"uri": "spotify:artist:0gxyHStUsqpMadRV0Di1Qt", "name": "Rick Astley"}],
+ "album": {"uri": "spotify:album:...", "name": "Whenever You Need Somebody"},
+ "duration_ms": 213573, "explicit": false, "track_number": 1,
+ "artwork": "https://i.scdn.co/image/...", "is_local": false}
+```
+
+Episode: `uri, id, type: "episode", name, show: {uri, name}, duration_ms, explicit, release_date, artwork`.
+
+Album: `uri, id, type: "album", name, artists[], album_type, release_date, total_tracks, artwork`.
+
+Artist: `uri, id, type: "artist", name, genres, artwork`.
+
+Playlist: `uri, id, type: "playlist", name, owner` (display name string), `description, public, collaborative, total` (item count), `artwork`.
+
+Show / audiobook: `uri, id, type, name, description, artwork`.
+
+When the current item comes from the Soloist backend (section 6), tracks have `uri, id, type, name, duration_ms, explicit, artwork, album: {uri, name}, artists[]` (no `track_number` or `is_local`).
+
+Page:
+
+```json
+{"items": [ ...objects... ], "total": 123, "offset": 0, "limit": 20, "next": true}
+```
+
+Rows from the library, history and playlist items also carry `added_at` or `played_at` (ISO 8601). Items Spotify reports as unavailable (`null`) are dropped, so `items` can be shorter than `limit`.
+
+Status (`GET /api/status`, and the `status` SSE event):
+
+```json
+{"backend": "connect", "state": "playing", "active": true,
+ "device": {"id": "...", "name": "Lab Mac", "type": "Computer", "active": true, "supports_volume": true},
+ "position_ms": 61234, "position": 61.234, "duration_ms": 213573, "volume": 65,
+ "shuffle": false, "repeat": "off",
+ "track": { ...track or episode, or null... },
+ "context": {"uri": "spotify:playlist:...", "type": "playlist"},
+ "actions": [],
+ "credit": {"by": {"id": "U123", "name": "Ada", "avatar": "https://..."}, "how": "queued"}}
+```
+
+- `state`: `playing`, `paused` or `idle` (nothing on any device). Soloist may also report other states such as `buffering`.
+- `repeat`: `off`, `context` or `track`.
+- `actions`: the actions currently allowed, using Soloist's names (`play`, `pause`, `seek`, `skip_next`, `skip_prev`, `shuffle`, `set_repeat`, `add_to_queue`, plus `seek_forward`/`seek_backward` with Soloist). On the connect backend it's derived from Spotify's `disallows`. It's empty when nothing is playing.
+- `removed`: only present, as `true`, for the instant a track removed from Up Next (`POST /api/queue/remove`) is playing before it gets skipped; clients should hide that status.
+- `source`: where the current track came from: `context`, `queue` or `autoplay` (Soloist only; null if unknown), or `airplay` during an AirPlay session.
+- `skip`: for 30 s after someone presses next/previous or jumps in Up Next: `{"by": {id, name, avatar}, "from": <uri of the track they skipped>, "at": unix ms}`, else null. The skip is credited on the track that was skipped; the new track keeps its own `credit`.
+- `credit`: who is responsible for the current track, or null. `how` is `queued` (someone added it with `POST /api/queue`) `started` (someone began playback of it or of its album/playlist/artist with `POST /api/play`, `/api/play-url`, `/api/playlists/{id}/play` or Slack), or `autoplay` (Spotify picked it after the album/playlist ended; `by` is `{"id": null, "name": "Autoplay", "avatar": null}`). It stays the same for the whole track and survives restarts; credits expire after 6 hours (queued) or 12 hours (started).
+- `quiet_hours`: `{"enabled", "window": "21:00-08:00", "phase": "open"|"grace"|"locked", "locked", "grace_s": 300, "idle_since", "locks_at", "starts_at", "until": "08:00", "until_ts"}` (times are unix seconds; `locks_at` is set during grace while nothing plays). See "Quiet hours" in section 6.
+- `airplay`: null, or while an AirPlay session is on `{"sender": "Adam's iPhone", "state", "started_at", "resume_spotify"}`. Then `source` is `"airplay"`, and `state`, `track`, `position_ms` and `duration_ms` describe the AirPlay song: `track` is `{"uri": null, "id": null, "type": "airplay", "name", "artists": [{"uri": null, "name"}], "album": {"uri": null, "name"} | null, "duration_ms", "artwork": "/api/airplay/artwork?v=..." | null}` (a relative URL on this server; add `?token=` or the header). `context`, `credit` and `skip` are null and `actions` is empty. The paused Spotify state is under `spotify: {state, track, position_ms, duration_ms, context, source, credit}`.
+- With the Soloist backend there are also `connected`, `logged_in` and `error` fields, `device` is `{name, type: "Soloist", active}`, and `context` is a compact object (`uri, id, type, name, artwork`).
+- When idle (connect backend), `device`, `track`, `context`, `volume`, `shuffle` and `repeat` are null.
+
+---
+
+## 3. Endpoints
+
+Each heading is `METHOD path`. "Body" means a JSON body; "?" marks optional fields. Unless noted, the result is described inside `{"result": ...}`.
+
+Which endpoints need the Spotify Web API login: all of Catalog, Playlists, Library & history, `/api/me`, `/api/lyrics?track=`, `/api/spotify/*`; all playback with the connect backend; and some playback with the Soloist backend (noted below). The playback backend in use is reported by `GET /api/backend`.
+
+### Discovery
+
+#### GET /api
+Bare JSON array (no envelope) of `{"method", "path", "doc"}` for every route on the running server. Use it to check what the live server supports.
+
+### Playback
+
+#### GET /api/status
+Full status object (section 2), fetched fresh.
+
+```sh
+curl -s -H "Authorization: Bearer $TOKEN" $API/api/status
+```
+
+#### GET /api/now-playing
+Just `status.track`: the current track/episode object, or `null`.
+
+#### POST /api/play
+Play or resume. With no body, resumes. Body (all optional):
+
+- `uri`: one URI or link. Tracks and episodes play on their own; albums, playlists, artists and shows start that context.
+- `shuffle`: `true`/`false` sets shuffle before playing (the web app's Play button sends `false` so albums start at track 1 in order; Shuffle sends `true`).
+- `uris`: list of track/episode URIs (or bare track IDs) to play as an ad-hoc list.
+- `context`: album/playlist/artist/show URI, with
+- `offset`: where to start in the context, either an integer index (0-based, must be a JSON number) or a track URI/ID.
+- `position` (seconds) or `position_ms`: start position.
+
+Returns the status object. A request that names something to play is credited to the caller (`status.credit`); a bare resume isn't.
+
+```sh
+# a track
+curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"uri": "spotify:track:4uLU6hMCjMI75M1A2tKUQC"}' $API/api/play
+# an album, starting at its 3rd track
+curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"context": "spotify:album:6N9PS4QXF1D0OWPk0Sxtb4", "offset": 2}' $API/api/play
+# resume
+curl -s -X POST -H "Authorization: Bearer $TOKEN" $API/api/play
+```
+
+#### POST /api/play-url
+Body `{url}`: play any open.spotify.com link or `spotify:` URI. Same as `/api/play` with `{uri: url}`.
+
+#### POST /api/pause
+Pause. Returns status.
+
+#### POST /api/playpause
+Toggle: pauses if playing or buffering, otherwise resumes. Returns status.
+
+#### POST /api/next
+Skip to the next item. Returns status.
+
+#### POST /api/previous
+Previous track. Spotify restarts the current track instead if it's past the first few seconds. Returns status.
+
+#### POST /api/back
+Alias of `/api/previous` (kept for v1 clients).
+
+#### POST /api/seek
+Body, one of: `{position: seconds}`, `{position_ms}`, `{delta: ±seconds}` (relative). Clamped at 0. Returns status.
+
+#### POST /api/volume
+Spotify's playback volume. Body `{volume: 0-100}` or `{delta: ±n}`. Clamped to 0-100. Returns status. Some Connect devices (e.g. phones) don't support remote volume; check `status.device.supports_volume`. For the host machine's own speaker volume, see `/api/system/volume`.
+
+#### POST /api/shuffle
+Body `{enabled?: bool}`. Omit `enabled` to toggle. Returns status.
+
+#### POST /api/repeat
+Body `{mode?: "off"|"context"|"track"}`. `one` = track, `all` = context, `none` = off are accepted. Omit to cycle off → context → track → off. Returns status.
+
+#### GET /api/artwork
+Cover art of the current item. Default: `302` redirect to Spotify's image CDN. `?proxy=1`: the image bytes themselves (cached, `Cache-Control: max-age=3600`), for clients without HTTPS. `404` if nothing is playing. Needs the token like everything else, so use `?token=` in an `<img>` tag.
+
+#### GET /api/lyrics
+Lyrics for the current song, from lrclib.net. Optional `?track=<id|uri|link>` for any other track (needs the Web API).
+
+```json
+{"source": "lrclib.net", "instrumental": false,
+ "synced": [{"time_ms": 18230, "text": "We're no strangers to love"}, ...],
+ "plain": "We're no strangers to love\n...",
+ "match": {"track": "...", "artist": "...", "album": "..."},
+ "track": {"uri": "spotify:track:...", "name": "..."},
+ "position_ms": 61234, "line": 7}
+```
+
+- `synced` is empty when only plain lyrics exist; `plain` can be null.
+- `line` is the index into `synced` of the line being sung now (`-1` before the first line). `position_ms` and `line` are only present for the current song, not with `?track=`.
+- `instrumental: true` means there are no words.
+- `404` when nothing is playing, for podcast episodes ("lyrics are only available for songs"), or when LRCLIB has nothing ("no lyrics found"). Lookup is exact (title, artist, album, duration) with a fuzzy search fallback; check `match` if it looks wrong.
+
+### AirPlay and quiet hours
+
+#### GET /api/airplay
+`{"active": false}`, or during a session `{"active": true, "state": "playing"|"paused", "sender", "track", "position_ms", "duration_ms", "started_at", "resume_spotify"}` (same `track` shape as in the status). AirPlay carries no queue.
+
+#### GET /api/airplay/artwork
+Cover art the sender sent for the current AirPlay song (image bytes). `404` if there's none.
+
+#### GET /airplay-art/{hash}
+No token: one of the last 8 AirPlay covers by its 12-hex content hash (the `v` in the track's `artwork`), for Slack's image fetcher. `404` otherwise. The Slack #music feed posts an AirPlay song once it has title, artist and art, credited to the sender.
+
+#### POST /api/airplay/stop
+Ends the AirPlay session by restarting the receiver (the sender is disconnected and can reconnect a few seconds later). Spotify then resumes where it left off if it was playing when AirPlay took over (not if quiet hours have locked). Returns the status. `409 airplay_inactive` if no session is on; `503` if the receiver couldn't be restarted.
+
+#### GET /api/quiet-hours
+The `quiet_hours` object from the status.
+
+#### GET /api/sleep
+Sleep timer: `{"active": false}` or `{"active": true, "ends_at": <unix seconds>, "remaining": <seconds>, "fade": <seconds>}`.
+
+#### POST /api/sleep
+Body `{minutes, fade?}`: pause after `minutes` (may be fractional), fading the volume out over the last `fade` seconds (default 30). After pausing, the volume is restored to its earlier level so the next play isn't silent. Setting a new timer replaces the old one. Returns the sleep status.
+
+#### DELETE /api/sleep
+Cancel the timer (restores volume if a fade had started). Returns the sleep status.
+
+### Activity feed
+
+#### GET /api/activity
+What people did in the last 24 hours, oldest first: `{"entries": [...], "latest": <id>}`. `?since=<id>` returns only entries with a higher id (poll or catch up after reconnecting); without it you get the newest `limit` entries. `?limit=` defaults to and is capped at 500. Open to every signed-in user, not admin-only. The same entries are pushed live as the `activity` SSE event (section 4).
+
+Entry: `{"id": 42, "at": 1760000000000, "by": {"id", "name", "avatar"}, "action": "queue_add", "detail": {...}, "origin": "web"}`. `id` increases monotonically; `at` is unix milliseconds. `origin` is `web` (session cookie), `api` (API token), `media-session` (request header `X-Client-Origin` starting with `media-session`, i.e. the OS media controls) or `slack` (the bot's buttons and `/music` commands).
+
+Only successful actions are recorded. Names can arrive late: the entry is first sent with URIs only, then sent again with the same `id` and `names`/`name` filled in, so replace by `id`. `volume` entries coalesce: the same person changing volume again within 10 s updates that entry (new `at` and `volume`, same `id`); so do `playlist_reorder` entries for the same person and playlist.
+
+| `action` | `detail` |
+|---|---|
+| `play`, `pause` | `{}` (`POST /api/playpause` records whichever it did) |
+| `play_item` | `{uri, type, name?}` of what was started |
+| `next`, `previous` | `{from?}`: name of the track that was playing |
+| `jump` | `{name?}`: the Up Next track jumped to |
+| `seek` | `{position_ms}` |
+| `volume` | `{volume}` |
+| `shuffle` | `{enabled}` |
+| `repeat` | `{mode}`: `off`, `context` or `track` |
+| `queue_add` | `{uris, count, names?}` |
+| `queue_remove` | `{names, count}`: Up Next entries removed with `POST /api/queue/remove` |
+| `playlist_create` | `{id, name}` |
+| `playlist_import` | `{id, name, imported, source}` |
+| `playlist_rename` | `{id, name}` (new name) |
+| `playlist_delete` | `{id, name}` |
+| `playlist_add` | `{id, count, name?, names?}` |
+| `playlist_remove` | `{id, count, name?}` |
+| `playlist_play` | `{id, name?}` |
+| `playlist_duplicate` | `{id, name, from}`: the new playlist and the id it was copied from |
+| `playlist_reorder` | `{id, name?}` |
+| `album_add`, `album_remove` | `{id, name}` of a Library album (`name` can be null on remove) |
+| `library_songs_play` | `{uri, name, count}`: song the Library list was started from and how many tracks were queued |
+
+### Queue and devices
+
+#### GET /api/queue
+`?limit=n` optional.
+
+- connect backend: `{"current": <item>, "upcoming": [{"uid": null, "source": null, "item": <item>}], "previous": []}`.
+- Soloist backend: `{"upcoming": [...], "previous": [...]}`, each `{"uid", "source", "item"}` where `source` is `context`, `queue` or `autoplay`; up to 80 upcoming.
+- Upcoming entries also carry `added_by`: `{"id", "name", "avatar"}` of whoever queued that track through this API in the last 6 hours, else null.
+
+#### POST /api/queue/jump
+Body `{uid}` (from `GET /api/queue`, Soloist) or `{index}` (0 = the next entry): skip ahead to that Up Next entry, dropping the entries before it, like clicking a song in Spotify's queue. 409 if that uid is no longer in Up Next. Returns the status.
+
+#### POST /api/queue/remove
+Body `{uid}`, `{uids: [...]}` (several at once) or `{index}` (0 = first entry of the list `GET /api/queue` returns): remove entries from Up Next. Any signed-in user may do it. 404 (and nothing is removed) if a uid or index isn't in Up Next. Returns the queue as `GET /api/queue` does, without the removed entries.
+
+The removal is soft, because Soloist and the Web API can't delete from the queue. The entry is hidden immediately from `GET /api/queue`, the `queue` event, the Slack feed and the display, and `POST /api/queue/jump` indexes ignore it. The moment it starts playing the server skips it, so a fraction of a second of it may be audible (that status has `"removed": true`, no credit, and gets no Slack card). Skipping is Soloist-only; on the connect backend the entry is only hidden. The removal is forgotten after 6 hours or shortly after the entry leaves Up Next. A removed song's queued credit is dropped.
+
+#### POST /api/queue
+Body `{uri}` or `{uris: [...]}`: add tracks or episodes to the end of the user queue (bare IDs are treated as tracks). Albums and playlists can't be queued; play them, or queue their tracks one by one. Returns `{"added": [uris]}`.
+
+#### GET /api/devices
+Spotify Connect devices on the account: `[{"id", "name", "type", "active", "volume", "restricted"}]`. With the Soloist backend each also has `soloist: bool`, and the Soloist device is always listed. Without a Web API login the list is empty (connect backend).
+
+#### POST /api/devices/transfer
+Body `{device, play?}`: move playback to a device. `device` is a device `id` or its `name` (case-insensitive) from `/api/devices` (or `"soloist"`). `play: true` starts playing there; otherwise the current play/pause state is kept. Returns `{"transferred": <device>}` (or status, for Soloist). `404` if the device isn't found or online.
+
+#### GET /api/backend
+```json
+{"backend": "connect",
+ "web_api": {"configured": true, "logged_in": true, "scope": "...", "redirect_uri": "...", "expires_at": 1760000000},
+ "soloist": {"connected": true, "endpoint": ["127.0.0.1", 9999], "data_dir": "...", "error": null,
+             "logged_in": true, "is_active": true, "device_name": "PEARL Speakers"}}
+```
+`soloist` is present only with the Soloist backend.
+
+#### POST /api/backend/soloist/{verb}
+`verb` = `activate` or `deactivate`: make the Soloist device the active Spotify device, or release it. `404` without the Soloist backend. Returns status.
+
+### Catalog (needs the Web API)
+
+#### GET /api/search
+Query: `q` (required), `type` (comma-separated from `track,album,artist,playlist,show,episode,audiobook`; default `track,album,artist,playlist`), `limit` (default and max 10), `offset`.
+
+Result: an object keyed by the plural type, each a page: `{"tracks": page, "albums": page, ...}`. Spotify search syntax works in `q`, e.g. `track:"Clocks" artist:Coldplay`, `year:1990-1999`, `genre:jazz`.
+
+```sh
+curl -s -G -H "Authorization: Bearer $TOKEN" $API/api/search \
+  --data-urlencode 'q=never gonna give you up' -d type=track -d limit=3
+```
+
+#### GET /api/tracks/{id}
+One track, plus `saved: bool` (in Liked Songs). `id` may be `current`.
+
+#### PATCH /api/tracks/{id}
+Body `{saved: bool}`: add to or remove from Liked Songs. `id` may be `current`, a bare ID, URI or link. Returns `{"uri", "saved"}`.
+
+#### GET /api/albums/{id}
+Album plus `label` and `tracks` (first page; each track has `album` and `artwork` filled in).
+
+#### GET /api/albums/{id}/tracks
+`?limit=&offset=`. Page of tracks.
+
+#### GET /api/artists/{id}
+One artist.
+
+#### GET /api/artists/{id}/albums
+`?include_groups=album,single,appears_on,compilation&limit=&offset=`. Page of albums.
+
+#### GET /api/episodes/{id}
+Podcast episode plus `description` and `resume_point`.
+
+#### GET /api/shows/{id}
+Podcast plus `episodes` (first page).
+
+#### GET /api/shows/{id}/episodes
+`?limit=&offset=`. Page of episodes.
+
+#### GET /api/audiobooks/{id}
+Audiobook plus `authors`, `narrators` (name lists) and `chapters` (first page).
+
+#### GET /api/audiobooks/{id}/chapters
+`?limit=&offset=`. Page of chapters.
+
+#### GET /api/chapters/{id}
+One audiobook chapter.
+
+### Playlists (needs the Web API)
+
+#### GET /api/playlists
+The user's playlists (owned and followed). `?limit=&offset=`. Page of playlist objects. `owner` is the owner's display name; compare with `GET /api/me` `name` to find playlists you can edit.
+
+#### POST /api/playlists
+Body `{name, description?, public?, collaborative?}`. Creates a playlist owned by the logged-in user. Returns the playlist object. Spotify sometimes ignores `public` on create; the server re-applies it and returns what Spotify actually stored.
+
+```sh
+curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"name": "Robotics build night", "public": false}' $API/api/playlists
+```
+
+#### GET /api/playlists/{id}
+Playlist details with `total` item count (no items).
+
+#### PATCH /api/playlists/{id}
+Body `{name?, description?, public?, collaborative?}`. Returns the updated playlist.
+
+#### DELETE /api/playlists/{id}
+Removes the playlist from the user's library (unfollow). Spotify has no hard delete; for your own playlist this is how deletion works. Returns `{"removed": uri}`.
+
+#### GET /api/playlists/{id}/items
+`?limit=` (default and max 50) `&offset=`. Page of tracks/episodes with `added_at`. Spotify only returns items for playlists the user owns or collaborates on; others fail (typically 403/404).
+
+#### POST /api/playlists/{id}/items
+Body `{uris: [...], position?: n}` (URIs or links). Appends, or inserts at `position`. Returns Spotify's `{"snapshot_id": ...}`.
+
+```sh
+curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"uris": ["spotify:track:4uLU6hMCjMI75M1A2tKUQC"]}' $API/api/playlists/PLAYLIST_ID/items
+```
+
+#### DELETE /api/playlists/{id}/items
+Body `{uris: [...]}`. Removes every occurrence of each. Returns `{"snapshot_id": ...}`.
+
+#### PUT /api/playlists/{id}/items
+Reorder: body `{range_start, insert_before, range_length?}`. Or replace everything: body `{uris: [...]}`. Returns `{"snapshot_id": ...}`.
+
+#### GET /api/playlists/{id}/image
+Cover image list `[{url, height, width}]` as Spotify returns it.
+
+#### PUT /api/playlists/{id}/image
+Body `{jpeg_base64}`: base64 JPEG (a `data:image/jpeg;base64,...` URL is fine), max 256 KB. Returns `{"uploaded": true}`.
+
+#### POST /api/playlists/{id}/play
+Body `{offset?: index|uri, shuffle?: bool}`. Sets shuffle first if given, then plays the playlist. Works for any playlist, including ones whose items you can't read. Returns status.
+
+### Library and history (needs the Web API)
+
+#### GET /api/library/{kind}
+`kind` = `tracks` (Liked Songs), `albums`, `episodes`, `shows`, `audiobooks`, `playlists`, or `artists` (followed). `?limit=&offset=`. Rows for tracks, albums, episodes and shows have `added_at`. For `artists` use `?after=<cursor>` instead of `offset`; the page then has an `after` field with the next cursor (null at the end).
+
+#### GET /api/library/contains
+`?uris=uri1,uri2` (comma-separated URIs). Returns `{uri: bool}`.
+
+#### PUT /api/library
+Body `{uris: [...]}` (max 40, URIs or links): save tracks, albums, episodes, shows, audiobooks, playlists; follow artists or users. Returns `{"saved": [uris]}`.
+
+#### DELETE /api/library
+Body `{uris: [...]}` (max 40): remove or unfollow. Returns `{"removed": [uris]}`.
+
+#### GET /api/recent
+Recently played tracks. `?limit=` (max 50) `&before=` or `&after=` (unix milliseconds). Page of tracks with `played_at`, plus a parallel `context` array (the playlist/album each was played from, or null).
+
+#### GET /api/top/{kind}
+`kind` = `tracks` or `artists`. `?time_range=short_term|medium_term|long_term&limit=&offset=` (about 4 weeks, 6 months, all time).
+
+#### GET /api/me
+The logged-in Spotify user: `{"id", "name", "uri", "artwork"}`.
+
+### Web app (accounts and the shared Library)
+
+These power the web app. With an API token you act as `Admin`.
+
+#### GET /api/app/me
+`{"id": "U0123" | "admin", "name": "Adam", "avatar": url | null, "admin": bool, "kind": "slack" | "token"}`. `name` is the Slack display name.
+
+#### GET /api/app/token, POST /api/app/token/regenerate
+Your personal API token: `{"token": "mapu_...", "created", "docs": "https://music.pinewoodrobotics.org/llms.txt"}`. One per Slack user, created on first request, and it acts as you (same permissions; queued songs and playlists are credited to you). `regenerate` replaces it and the old one stops working immediately. Only for Slack sign-ins (400 when you're using an admin API token).
+
+#### GET /api/app/playlists
+The playlists the web app shows: every playlist in the account except the hidden ones (configured on the server), playlists created in the app first (newest first).
+```json
+[{"id": "...", "uri": "spotify:playlist:...", "name": "Lab bangers", "description": "", "artwork": "https://...", "total": 42,
+  "created_by": {"id": "U0123", "name": "Adam", "avatar": "https://..."}, "source_url": "https://open.spotify.com/playlist/..." ,
+  "created": "2026-10-09T20:41:00Z", "can_edit": true}]
+```
+`created_by`, `source_url` and `created` are null for playlists not made through the app. `source_url` is set for imports.
+
+#### POST /api/app/playlists
+Body `{name, description?}`. Creates a private playlist on the account, credited to you. Returns the playlist object.
+
+#### POST /api/app/playlists/import
+Body `{url}`: a Spotify, Apple Music or YouTube / YouTube Music playlist (or song) link. Copies its tracks into a new playlist credited to you and returns `{"playlist": {...}, "imported": 100, "total": null, "truncated": true, "source": "spotify"|"apple", "unmatched": [{"name", "artists"}]}`. Spotify playlists must be **public** and only the first 100 tracks can be read, so `truncated` just means the cap was hit. 404 if there is no public playlist there. Send `{url, as: "playlist"}` to copy an album's songs into a playlist instead (needed for Apple Music and YouTube Music albums that have no Spotify match, which otherwise return 422). YouTube links (`youtube.com`, `music.youtube.com`, `youtu.be`) are only used to read titles, artists and lengths, which are then matched to Spotify songs; nothing plays from YouTube. Playlists must be public or unlisted and are capped at 500 songs (`truncated`). Private lists (liked songs, watch later), mixes and channel links are rejected with 400.
+
+**Album links are routed to the Library instead** (Spotify `open.spotify.com/album/...` or `spotify:album:`, Apple Music `music.apple.com/.../album/...` without `?i=`, YouTube Music `music.youtube.com/browse/MPREb_...` or `youtube.com/playlist?list=OLAK5uy_...`): no playlist is created, the album is added as in `POST /api/app/library/albums` and the response is `{"kind": "album", "album": {...album object...}}` (`album.already` is true if it was there already). 422 if an Apple Music or YouTube album has no Spotify album match.
+
+#### POST /api/app/playlists/{id}/duplicate
+Body `{name?}` (default "<name> (copy)"). Copies the playlist's tracks into a new private playlist credited to you. Returns the new playlist object (`total` = tracks copied). Any signed-in user may duplicate any visible playlist.
+
+#### The Library
+
+The Library is the app's shared playlists plus albums saved as references to the real Spotify album (no copy of the tracks). Albums are stored in `<data-dir>/library-albums.json` (mode 600); album metadata is fetched from Spotify and cached for an hour.
+
+Album object (`kind` is `"album"`; `duration_ms` can be null when the album is long):
+```json
+{"kind": "album", "id": "1kCHru7uhxBUdzkm4gzRQc", "uri": "spotify:album:1kCHru7uhxBUdzkm4gzRQc", "name": "Hamilton",
+ "artists": [{"uri": "spotify:artist:...", "name": "Lin-Manuel Miranda"}], "artwork": "https://...", "total": 46, "year": "2015",
+ "duration_ms": 8820000, "added_by": {"id": "U0123", "name": "Adam", "avatar": "https://..."}, "added": "2026-10-09T20:41:00Z",
+ "source_url": "https://open.spotify.com/album/...", "can_edit": true}
+```
+`can_edit` is true for whoever added the album and for admins.
+
+#### GET /api/app/library
+`?kind=all|playlists|albums&sort=recent|name|creator` (defaults `all`, `recent` = newest added first; `creator` groups by who added it). Returns `{"items": [...]}`: playlists with the shape of `GET /api/app/playlists` plus `"kind": "playlist"`, and album objects. Playlists not made through the app have no date and sort last under `recent`. `GET /api/app/playlists` still works as before.
+
+#### POST /api/app/library/albums
+Body `{url}` or `{uri}`: a Spotify album link/URI, or an Apple Music or YouTube Music album link that matches a whole Spotify album. Returns the album object. Idempotent: adding an existing album returns it with `"already": true`. 400 for anything that isn't an album link; 422 (suggesting Import as playlist) when an Apple Music or YouTube album has no Spotify album match. Admins may also pass `added_by: {id, name, avatar}` and `added: "<ISO time>"` to credit someone else (used by `deploy/migrate_album_playlists.py`).
+
+#### GET /api/app/library/albums/{id}, DELETE /api/app/library/albums/{id}
+`GET` returns the album object plus `"tracks"`: every track as a compact item (`uri, id, name, artists, album, duration_ms, explicit, track_number, artwork`). `DELETE` removes it from the Library (whoever added it, or an admin; else 403) and returns `{"removed": "spotify:album:..."}`. 404 if it isn't in the Library.
+
+#### GET /api/app/library/songs
+`?q=&sort=recent|title|artist|album&offset=&limit=` (limit default 100, max 500). Every distinct track across the Library's playlists and albums. `q` matches title, artist or album case-insensitively; `recent` is newest first.
+```json
+{"items": [{"uri": "spotify:track:...", "id": "...", "type": "track", "name": "Satisfied", "artists": [{"uri": "...", "name": "..."}],
+            "album": {"uri": "...", "name": "Hamilton"}, "duration_ms": 331000, "artwork": "https://...",
+            "sources": [{"kind": "album", "id": "1kCHru7uhxBUdzkm4gzRQc", "name": "Hamilton"}, {"kind": "playlist", "id": "...", "name": "Lab bangers"}],
+            "added": "2026-10-09T20:41:00Z"}],
+ "total": 812}
+```
+`added` is the earliest time the song entered the Library. The aggregated list is cached for about 2 minutes and rebuilt right after any Library change made through this API (adding/removing albums, creating/importing/duplicating/renaming/deleting playlists, adding/removing/reordering playlist tracks). Playlists whose tracks Spotify won't list are skipped.
+
+#### POST /api/app/library/songs/play
+Body `{uri, sort?, q?}` (same `sort` and `q` as the songs list). Plays the songs list as an ad-hoc queue (up to 100 tracks, starting at `uri`, in the list's order) and credits you as the starter. 404 if `uri` isn't in the filtered list.
+
+#### GET /api/app/playlists/{id}, PATCH /api/app/playlists/{id}, DELETE /api/app/playlists/{id}
+One playlist; `PATCH` body `{name?, description?}`; `DELETE` removes it. Changing or deleting needs `can_edit` (whoever created it, or an admin), else 403. Use `/api/playlists/{id}/items` to list, add, remove and reorder tracks (`PUT` with `{range_start, insert_before, range_length?}`; open to every signed-in user for visible playlists), and `/api/playlists/{id}/play` to play.
+
+### Tokens
+
+Tokens have no scopes; every token is equal and can manage all tokens. Only SHA-256 hashes are stored (in `<data-dir>/api-tokens.json`, mode 600). The plaintext is returned once, at creation, and can never be retrieved again.
+
+#### GET /api/tokens
+```json
+[{"id": "3f9a1c2e", "name": "kiosk", "prefix": "mapi_Ab3x", "created": 1760000000, "last_used": 1760003600, "current": true}]
+```
+`prefix` is the first characters of the token, for recognizing it. `current` is true for the token making this request. `created` and `last_used` are unix seconds (`last_used` is updated at most once a minute; null if never used).
+
+#### POST /api/tokens
+Body `{name?}` (default name "unnamed"). Returns `{"id", "name", "token", "prefix", "created"}`. Store `token` now; it is shown only this once.
+
+```sh
+curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"name": "hallway e-ink display"}' $API/api/tokens
+```
+
+#### DELETE /api/tokens/{id}
+Revoke immediately. Any token can revoke any token, including itself. Returns `{"revoked": id, "name"}`. `404` for an unknown id. `409` if it's the last remaining token (so nobody gets locked out; this check is skipped when a `--token` static token is configured); create another one first.
+
+Also: a static token given with `--token` / `$MUSIC_API_TOKEN` at server start is accepted too, but it is not listed and can't be revoked through the API.
+
+### Admin (admins only; everyone else gets 403)
+
+These back the web app's admin page (`/admin`, account menu > Admin). Shapes are in API.md; the essentials:
+
+#### GET /api/admin/system
+Pi health: `cpu {percent, cores}`, `load`, `temp_c`, `power {now, since_boot}` with the firmware's `under_voltage`, `freq_capped`, `throttled`, `soft_temp_limit` flags plus `events` (under-voltage kernel messages this boot), `memory`, `disk`, `network` (Wi-Fi SSID, signal dBm, bitrate, IP), `services` (soloist, music-api, airplay, music-display, quiet-hours timer, cloudflared), `versions` (deployed commit, Soloist, shairport-sync, Python, kernel, OS) and `history` (CPU and temperature every 5 s for 10 min). Unknown values are null. Poll it no faster than every 2 s.
+
+#### GET /api/admin/quiet-hours, PUT /api/admin/quiet-hours, POST /api/admin/quiet-hours/override
+GET returns `{settings {enabled, start, end, grace_min, source: admin|env, env_window, updated_by, updated_at}, status}`. PUT `{enabled?, start?: "HH:MM", end?: "HH:MM", grace_min?}` changes the window at runtime (saved in the data dir, also used by the OS watchdog); `{reset: true}` returns to `QUIET_HOURS`. Override `{action: "unlock"}` keeps the speakers unlocked until the current or next window ends, `{action: "lock"}` locks now (409 outside the window), `{action: "clear"}` returns to the normal rules. `status.override` is `{kind: unlocked|locked, until_ts, by}` or null.
+
+#### GET /api/admin/effects-volume, PUT /api/admin/effects-volume
+`{mode: follow|fixed, level, media_volume, play_during_quiet_hours, updated_by, updated_at}`. `follow` (the default, "Same as media" on the admin page): effects play at `volume` x the music slider / 100. `fixed`: at `volume` x `level` / 100, whatever the music volume. `play_during_quiet_hours` (default `true`, "Play during quiet hours"): effects keep playing while quiet hours have the speakers locked; `false` refuses them with `423 quiet_hours` like music. PUT `{mode?, level?: 0-100, play_during_quiet_hours?: bool}`; switching to `fixed` without a `level` keeps the current music slider as the level. Saved in `<data-dir>/effects/volume.json` and used from the next play on; `400` for a bad mode, level or flag.
+
+#### GET /api/admin/admins, POST /api/admin/admins, DELETE /api/admin/admins/{key}
+`{admins: [{key, id, email, name, avatar, source: config|admin, added_by, added, you}], known: [{id, name, avatar, email, admin, last_seen}]}` (known = everyone who has signed in). POST `{id}` (Slack user ID) or `{email}`. DELETE by `key`; `409` for `config` admins (SLACK_ADMINS) and for removing yourself as the last admin.
+
+#### GET /api/admin/update, POST /api/admin/update/check, POST /api/admin/update
+Deployed commit vs `origin/main` on GitHub with the commits in between, the tested build GitHub Actions published (`build.ready` when it matches main), what an update would restart and any manual steps (`changes.notes`). POST /api/admin/update runs the update in the background: Soloist and AirPlay keep playing, music-api restarts (so expect a few seconds of 502s), and it rolls back if the new server fails its health check. Poll GET for `run.state` (`running`, `succeeded`, `rolled_back`, `failed`) and `run.log`. `409` if already up to date or running; `503` only when the update remote is SSH and its deploy key isn't set up.
+
+GET also returns `auto {enabled, time: "HH:MM", updated_by, updated_at}`, `history` (the last 10 runs, newest first: `{id, action: update|revert, auto, outcome: updated|rolled_back|failed|skipped|reverted, result, from, to, started_at, at, by, notes, count?}`; `count` is how many nights a repeated automatic skip covers) and `previous {commit, short, subject, built_at}` (the tree kept in `music-api-v2.prev`, or null). `run` also has `action`, `auto` and `by`.
+
+#### PUT /api/admin/update/settings
+Body `{auto?: bool, time?: "HH:MM"}`. The nightly auto-update (`auto-update.timer`, default on at 03:00 local time): within an hour after `time`, once a night, it updates if the tested build is newer than the deployed commit and quiet hours have the speakers locked or nothing is playing (Spotify, AirPlay or a sound effect); otherwise it adds a `skipped` history entry with the reason. Saved in `<data-dir>/update-settings.json`. `400` for a bad time. Returns the same as GET /api/admin/update.
+
+#### POST /api/admin/update/revert
+Roll back to `previous`: swaps `music-api-v2.prev` back in with the same restarts and health check as an update, in the background (poll GET for `run`, `run.action` is `revert`). The current tree becomes the previous one. `409` if there's no previous version or an update is running. Automatic updates that roll back or fail, and updates whose notes need sudo, DM every admin on Slack when `SLACK_BOT_TOKEN` is set.
+
+#### POST /api/admin/services/{name}/restart, GET /api/admin/logs/{name}
+Restart `soloist` (interrupts the music for a few seconds), `airplay` (disconnects the AirPlay sender) or `music-display`. Logs take any service name from the system list, `?lines=` up to 1000, and return `{name, unit, lines, error}`.
+
+### Sound effects (short clips played over the music)
+
+Register a clip once under a name, then play it by name with one low-latency call. A play is a separate PipeWire stream (`pw-play`) that mixes with whatever is going on, Spotify or AirPlay: the music is not paused, skipped or interrupted. Clips are converted once at registration to 48 kHz stereo 16-bit WAV (PipeWire's rate), so playing never transcodes. Plays may overlap. Registering, renaming and deleting are admin-only (API tokens are admins); listing, playing and stopping are open to every signed-in user. Files are in `<data-dir>/effects/`. Plays are not recorded in the activity feed.
+
+Names are slugs: lowercase letters, digits, `-` and `_`, 1-48 characters (input is lowercased and spaces become `-`); `stop` and `playing` are reserved. Effect object: `{"name": "match-start", "title": "Match start", "volume": 100, "duration_ms": 1850, "rate": 48000, "channels": 2, "size": 355244, "source": null|"<url>", "created": <unix s>, "updated": <unix s>, "playing": 0}`. `volume` (0-100) is the default play volume.
+
+#### GET /api/effects
+All effects, sorted by name. `playing` is how many copies are playing now.
+
+#### POST /api/effects
+Register a clip: wav, mp3, ogg or flac, at most 25 MB and 120 s. Three ways to send it:
+- Raw body with `Content-Type: audio/wav` (or any `audio/*`, or `application/octet-stream`) and `?name=...`, optionally `&title=`, `&volume=`, `&overwrite=true`.
+- `multipart/form-data` with a `file` part and `name` (optional `title`, `volume`, `overwrite`) fields.
+- JSON `{"name", "url", "title"?, "volume"?, "overwrite"?}`: the server fetches the public http(s) URL (private and local addresses are refused).
+
+The format is detected from the bytes, not the content type. Returns the effect. `409 exists` if the name is taken (pass `overwrite=true` to replace it, which keeps `created`). `415 unsupported_format` / `undecodable`, `413 too_large` / `too_long`, `400 bad_name` / `bad_url` / `no_audio`. `501 ffmpeg_missing`: the server has no ffmpeg, so only PCM wav uploads work.
+```sh
+curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: audio/wav" --data-binary @horn.wav \
+  "$API/api/effects?name=match-start&title=Match%20start&volume=90"
+curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"name": "buzzer", "url": "https://example.com/buzzer.mp3"}' $API/api/effects
+```
+
+#### GET /api/effects/{name}
+One effect. `404 unknown_effect`.
+
+#### PATCH /api/effects/{name}
+Body `{name?, title?, volume?}`: rename (`409 exists` if the new name is taken) or change title and default volume. Returns the effect.
+
+#### DELETE /api/effects/{name}
+Deletes the clip (and stops it if it is playing). Returns `{"deleted": name}`.
+
+#### POST /api/effects/{name}/play
+Starts the clip and returns at once (it does not wait for it to finish): `{"id", "name", "volume", "slider_volume", "volume_source", "effective_volume", "duck", "started_at", "duration_ms", "quiet_hours"}`. Options in the JSON body or the query: `volume` (0-100; default the effect's own), `duck` (bool, default false) and `duck_level` (0-100, default 30). Effects follow the music volume slider (`/api/volume`, Spotify's volume, not the system volume): the clip plays at `effective_volume` = `volume` x `slider_volume` / 100, so an effect at 100 is as loud as the music and moving the slider moves effects with it. `slider_volume` is the last slider value the server saw; it is kept while AirPlay plays, while nothing plays and across restarts, and is 50 until the server has seen one; `volume_source` is `"media"`. An admin can instead give effects their own fixed volume (admin page > Sound effects, `/api/admin/effects-volume`): then `slider_volume` is that fixed level, `volume_source` is `"fixed"` and the music slider is ignored, so `effective_volume` = `volume` x `slider_volume` / 100 holds in both modes. With `duck`, every other audio stream (Spotify, AirPlay) is lowered to `duck_level` percent of its own volume while the effect plays, and put back when the last ducking effect ends (restored on the next server start too if the server died mid-duck). Streams that start during a duck aren't lowered. Up to 16 plays at once (`429 too_many`). While quiet hours have the speakers locked, effects still play by default (`quiet_hours: true` in the response; the server unmutes the outputs just for the clip, and music, the lock and its idle clock are untouched); an admin can turn that off (`play_during_quiet_hours: false` in `/api/admin/effects-volume`), and then plays get `423 quiet_hours` while locked. `404 unknown_effect`; `501 no_player` if the host has no pw-play/paplay/afplay.
+```sh
+curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"volume": 80, "duck": true}' $API/api/effects/match-start/play
+```
+Latency is the time to start one `pw-play` process on the Pi (roughly 100-200 ms), so schedule a start sound slightly early if it has to line up with a clock.
+
+#### GET /api/effects/playing
+`[{"id", "name", "volume", "slider_volume", "volume_source", "effective_volume", "duck", "started_at", "elapsed_ms", "duration_ms"}]` for plays still running.
+
+#### POST /api/effects/stop
+Stops every playing effect, or with `name` (body or query) only copies of that effect. Music is untouched. Returns `{"stopped": n}`.
+
+### System audio (the host machine's mixer, not Spotify)
+
+#### GET /api/system/volume
+`{"backend": "macos"|"pipewire"|"pulseaudio", "volume": 0-100, "muted": bool}`. This is the computer's output volume, separate from Spotify's volume.
+
+#### POST /api/system/volume
+Body `{volume?: 0-100, delta?: ±n, muted?: bool}`. Returns the new state.
+
+#### GET /api/system/outputs
+Audio outputs on Linux (PipeWire/PulseAudio): `[{"id", "name", "default", ...}]`. `501` on macOS.
+
+#### POST /api/system/outputs
+Body `{id}`: make that output the default (Linux only, `501` elsewhere).
+
+### Spotify passthrough
+
+#### ANY /api/spotify/{path}
+Forwards the request to `https://api.spotify.com/v1/{path}` with the server's Spotify login: same method, query string (minus `token`), and JSON body if one is sent. Returns `{"result": <Spotify's raw JSON, or null>}`. Use it for anything not wrapped above, e.g. `GET /api/spotify/me/player/devices` or `GET /api/spotify/playlists/{id}?fields=name,owner`. Spotify's development-mode limits (section 6) still apply.
+
+### Spotify login (Web API)
+
+#### GET /auth
+`{"result": {"configured", "logged_in", "scope", "redirect_uri", "expires_at"}}`. Check `logged_in` before relying on Web API endpoints.
+
+#### GET /auth/login
+HTML login page for a human (open in a browser with `?token=...`). `?redirect=1` sends `302` straight to Spotify. The page also has a box for the paste flow.
+
+#### GET /auth/callback
+OAuth redirect target. No API token; protected by the PKCE `state`.
+
+#### POST /auth/paste
+Body `{url}`: the full URL Spotify redirected to (`...?code=...&state=...`). Finishes login when the redirect couldn't load (e.g. it points at `127.0.0.1` on another machine). Returns the login status.
+
+#### POST /auth/logout
+Forget the stored Spotify login. Returns the login status. Don't call this unless the user asks; logging back in needs a human with a browser.
+
+### Documentation (no token)
+
+`GET /llms.txt`, `GET /llms-full.txt` (this file), `GET /LLMS.md` (same as this file), `GET /API.md` (endpoint table), `GET /README.md`, and `GET /` (web remote for people).
+
+---
+
+## 4. Server-sent events
+
+`GET /api/events?token=...` (or with the Authorization header) streams `text/event-stream`:
+
+| Event | Data | When |
+|---|---|---|
+| `status` | status object (with `quiet_hours` and `airplay`) | Right after connecting (if known), then every 1 s (Soloist) or 2 s (connect), immediately on Soloist push events, AirPlay changes and quiet-hours phase changes |
+| `track` | track/episode object or `null` | When the current item changes |
+| `queue` | `{upcoming, previous}` | When the queue changes (Soloist backend only) |
+| `sleep` | sleep status | When a sleep timer is set, cancelled or fires |
+| `activity` | activity entry | When someone does something (see `GET /api/activity`). A coalesced or name-enriched entry is sent again with the same `id` |
+| `error` | `{"error": "..."}` | When fetching status fails (e.g. Spotify unreachable) |
+
+Lines starting with `:` (`: ping`) are keep-alives sent after 15 s of silence. Status polling only runs while at least one client is subscribed.
+
+```sh
+curl -sN "$API/api/events?token=$TOKEN"
+```
+
+```js
+const es = new EventSource(`${API}/api/events?token=${TOKEN}`);
+es.addEventListener("status", e => console.log(JSON.parse(e.data).track?.name));
+```
+
+For one-off questions ("what's playing?") use `GET /api/status` instead.
+
+---
+
+## 5. Workflows
+
+### Find and play a song
+
+1. `GET /api/search?q=<words>&type=track&limit=5`
+2. Pick the best match from `result.tracks.items` (check `name` and `artists[].name`; if the user named an artist, put it in `q`, e.g. `q=track:Clocks artist:Coldplay`).
+3. `POST /api/play {"uri": "<track uri>"}`. The response is the new status; confirm `track.name`.
+4. If it fails with a 404 mentioning no active device (connect backend): `GET /api/devices`, then `POST /api/devices/transfer {"device": "<name or id>", "play": false}`, and retry step 3. If `/api/devices` is empty, no Spotify app is open on the account; a human has to open one.
+
+To play an album, playlist, artist or podcast, search with that `type` and `POST /api/play {"uri": "<its uri>"}`. To start a playlist at a particular song: `POST /api/play {"context": "<playlist uri>", "offset": "<track uri>"}` or `POST /api/playlists/{id}/play {"offset": 4}`.
+
+### Play something next without interrupting
+
+`POST /api/queue {"uri": "<track uri>"}`. Then `POST /api/next` if the user wants it now.
+
+### Add the current song to a playlist
+
+1. `GET /api/now-playing` and take `uri` (null means nothing is playing).
+2. `GET /api/playlists?limit=50` and find the playlist by `name` (page with `offset` if `next` is true). Only playlists the user owns (`owner` equals `GET /api/me` `name`) or that are `collaborative` can be edited.
+3. `POST /api/playlists/{id}/items {"uris": ["<uri>"]}`.
+4. Optionally check for duplicates first: `GET /api/playlists/{id}/items` and compare `uri`s.
+
+If the playlist doesn't exist yet: `POST /api/playlists {"name": "..."}`, then use its `id`.
+
+### Like or unlike the current song
+
+`PATCH /api/tracks/current {"saved": true}` (or `false`). `GET /api/tracks/current` shows `saved`.
+
+### Show lyrics
+
+1. `GET /api/lyrics`.
+2. If `instrumental` is true, say so. If `synced` is non-empty, `synced[line].text` is the current line (show a few lines around it); otherwise show `plain`.
+3. To follow along live, re-fetch `GET /api/lyrics` (it's cached server-side after the first lookup) or compute the line from `status.position_ms` and `synced[].time_ms` using the `status` SSE event.
+
+### What's playing / what was played
+
+- Now: `GET /api/status` (track, artist, position, device, volume).
+- Up next: `GET /api/queue`.
+- Earlier: `GET /api/recent?limit=10`.
+
+### Volume and sleep
+
+- Spotify volume: `POST /api/volume {"delta": -10}` or `{"volume": 40}`.
+- If Spotify is at 100 and it's still too quiet (or the device doesn't support remote volume), use the computer's mixer: `POST /api/system/volume {"delta": 10}`.
+- Stop in 30 minutes with a 1-minute fade: `POST /api/sleep {"minutes": 30, "fade": 60}`.
+
+### Manage tokens
+
+- See who has access: `GET /api/tokens` (your own token has `current: true`).
+- Give a new device or person access: `POST /api/tokens {"name": "front-desk iPad"}`, then hand over `result.token` (shown only once). For the web remote, the link `https://music.pinewoodrobotics.org/?token=<token>` signs the browser in.
+- Revoke: `DELETE /api/tokens/{id}`. Effective on the next request.
+- Rotate your own token: create a new one, switch to it, then `DELETE` the old one by `id` (deleting the token you're using also works, but then your next request is 401).
+- `409` on delete means it's the last token; create a replacement first.
+
+### Spotify login missing or expired
+
+If a Web API call fails with 412 and a message pointing at `/auth/login` ("not logged in to the Spotify Web API", "Spotify login expired or was revoked", or "... needs the Spotify Web API"), an agent can't fix it alone. Ask a human to open `https://music.pinewoodrobotics.org/auth/login?token=<token>` in a browser and log in with Spotify. If the redirect lands on an `http://127.0.0.1:8765/auth/callback?...` page that doesn't load, they copy that whole URL into the box on the login page (or send it with `POST /auth/paste {"url": "..."}`).
+
+---
+
+## 6. Limits and gotchas
+
+### Spotify Web API (development-mode app, 2026 rules)
+
+- Search returns at most 10 results per type per request. Page with `offset`, or make `q` more specific.
+- Playlist items can only be read for playlists the user owns or collaborates on. Any playlist can still be played by URI, and its details (`GET /api/playlists/{id}`) still work.
+- The Spotify app allows at most 5 users, and its owner needs Premium.
+- Removed by Spotify and not available here (not even through `/api/spotify/*`): browse/categories, new releases, featured playlists, artist top tracks, recommendations, related artists, audio features/analysis, popularity, and batch lookups of several IDs at once.
+- Saving and removing goes through Spotify's generic library endpoint (`PUT/DELETE /api/library`), max 40 URIs per call.
+- Spotify rate limits (`429`) are retried once automatically when the wait is 5 s or less; otherwise the 429 is returned.
+
+### Playback backends
+
+The server uses one of two backends; `GET /api/backend` says which.
+
+- `connect`: controls whatever Spotify Connect device is active on the account (Spotify desktop app, phone, speaker) through the Web API. Needs the Web API login, Premium on the account, and a device that is online. With no active device, play commands fail (Spotify 404, "no active device"); transfer to a device first. Status is polled every 2 s while someone listens to events. Previous-queue history isn't available. The public server runs on macOS, where this is normally the backend.
+- `soloist`: plays through a local Spotify Soloist daemon (Linux) over its WebSocket API, with push events and no Web API rate limits. Status, transport, volume, shuffle, repeat, seek, queue reading and queueing tracks work without the Web API. These fall back to the Web API (aimed at the Soloist device): playing with `uris`, `context`, `offset` or `position`; playing an artist or show URI; queueing episodes; listing other devices; transferring to another device. The queue includes previous items and up to 80 upcoming, each tagged `context`, `queue` or `autoplay`. `POST /api/backend/soloist/activate` makes it the active device. Soloist errors mentioning auth come back as 409; Soloist not running is 503; no answer is 504.
+
+### Quiet hours
+
+Default window 21:00-08:00, local time on the server. Music that's playing when it starts keeps going, and playback works normally (grace) until no audio has played from any source for 5 continuous minutes; then the speakers lock until the window ends. While locked, `POST /api/play`, `/api/play-url`, `/api/playpause` (when it would play), `/api/next`, `/api/previous`, `/api/back`, `/api/queue/jump`, `/api/playlists/{id}/play`, `/api/app/library/songs/play`, `/api/devices/transfer` with `play: true`, the Slack bot and `/api/spotify/me/player/{play,next,previous}` return `423 quiet_hours` with `until`. Pause, volume, search, playlists, the Library and queue editing still work. Sound effects (`POST /api/effects/{name}/play`) keep playing while locked by default, without unlocking anything or counting as activity; if an admin has turned off `play_during_quiet_hours`, they are refused the same way. Managing effects and `POST /api/effects/stop` always work. Only admins can override it (the admin page or `POST /api/admin/quiet-hours/override`); the lock mutes the speakers at the OS level. Tell the user it's quiet hours until `until`; don't retry. The lock also turns the AirPlay receiver off and mutes the speakers at the OS level.
+
+### AirPlay
+
+People can play to the speakers from an iPhone or Mac over AirPlay. That pauses Spotify; while it lasts, `play` (no body), `pause`, `playpause`, `next`, `previous` and `back` control the AirPlay sender instead (`409 airplay_remote_unavailable` if the sender can't be remote controlled), and the rest of Spotify transport (`play` with a track, `seek`, `queue/jump`, `devices/transfer`, `/api/spotify/me/player/...`) returns `409 airplay_active` with `sender`. Queueing, removing from the queue, search, playlists and the Library work. Don't stop someone's AirPlay session (`POST /api/airplay/stop`) unless the user asks.
+
+### Other gotchas
+
+- `uri` in `/api/play` and URIs in library/playlist bodies must be URIs or links; a bare ID there is a 400 ("not a Spotify URI or link"). Path parameters are the opposite: bare IDs only.
+- `offset` in `/api/play` is a position if it's a number or a digit string (`3` or `"3"`), otherwise a track URI, link or ID.
+- `PUT /api/playlists/{id}/items` with `uris` replaces the whole playlist.
+- `DELETE /api/playlists/{id}/items` removes every occurrence of each URI.
+- On the connect backend Spotify can take a moment to apply a command, so the status returned right after it may still show the old state. Re-check after a second (or watch the next `status` event).
+- `GET /api` isn't wrapped in `{"result": ...}`.
+- The sleep timer and lyrics cache live in server memory and reset when the server restarts.
+- The server holds a single Spotify login: everything (library, playlists, history) is that one account's.
+
+---
+
+## 7. Errors
+
+| Status | Typical `error` | Meaning / what to do |
+|---|---|---|
+| 400 | `bad request: 'q'`, `bad request: not a Spotify URI or link: ...`, `bad request: give uris`, `invalid JSON body` | Missing or malformed parameter; fix the request |
+| 401 | `unauthorized` | Missing or wrong API token |
+| 412 | `not logged in to the Spotify Web API; open /auth/login`, `Spotify login expired or was revoked ...` | Server's Spotify login missing or expired; a human must log in (section 5) |
+| 403 | `Spotify 403: ...` | Spotify refused: e.g. Premium required, playlist not yours, user not on the app's allowlist |
+| 404 | `not found`, `nothing playing`, `no lyrics found`, `device '...' not found`, `Spotify 404: ... (NO_ACTIVE_DEVICE)` | Missing thing; for no active device, transfer playback first |
+| 405 | `method not allowed` | Path exists, wrong method |
+| 409 | `refusing to revoke the last token ...`, Soloist auth errors, `airplay_active`, `airplay_inactive`, `exists` (sound effect name taken) | Conflict; see message. `airplay_active`: someone is playing over AirPlay, Spotify control is held until it ends |
+| 423 | `quiet_hours` | Quiet hours are locked until `until`; playback can't start (nor sound effects, if an admin turned off `play_during_quiet_hours`). Library, search, playlists and the queue still work |
+| 412 | `... needs the Spotify Web API; log in at /auth/login`, `no Spotify Client ID ...` | Feature needs the Web API login, which isn't set up |
+| 429 | `Spotify 429: ...` | Spotify rate limit; wait and retry |
+| 501 | `no supported system mixer ...`, `output switching needs PipeWire or PulseAudio`, `ffmpeg_missing`, `no_player` | Not supported on this host |
+| 502 | `Spotify 5xx: ...`, `cannot reach Spotify: ...`, `lrclib: ...` | Upstream failure; retry later |
+| 503 / 504 | `Soloist not connected`, `Soloist did not answer ...` | Soloist daemon down or slow |
+
+Other Spotify 4xx errors are passed through with their status and a message of the form `Spotify <code>: <message> (<reason>)`.
+
+---
+
+## 8. Deployment (for maintainers)
+
+- Code: a Python 3.9+ stdlib-only server (`server.py`), installed at `~/.local/share/music-api-v2` on a Raspberry Pi 3 B+ (Debian 13, user `ubuntu`). No dependencies.
+- systemd user units: `soloist.service` (Spotify Soloist, audio to the USB speakers via PipeWire), `music-api.service` (`server.py --host 0.0.0.0 --public`, settings from `~/.config/music-api/env`), `soloist-update.timer` (daily build refresh), `airplay.service` (shairport-sync AirPlay 2 receiver, `AIRPLAY_NAME`), `quiet-hours.timer` (every minute: `quiet_hours.py sync`, the OS-level quiet-hours lock), `auto-update.timer` (every 15 minutes: `updater.py auto`, the nightly auto-update). System service `nqptp` (AirPlay 2 timing).
+- Quiet hours: `QUIET_HOURS=21:00-08:00` in the env file (or `off`) is the default; admins can change it at runtime (`<data-dir>/quiet-hours-settings.json`). State in `<data-dir>/quiet-hours.json`.
+- Admins added at runtime: `<data-dir>/admins.json`. Deployed commit: `BUILD.json` in the app dir.
+- Updates: `deploy/deploy-pi.sh` from a Mac, or from GitHub with `updater.py` (admin page > Updates), which fetches the tested `pi-build` branch that `.github/workflows/pi-build.yml` publishes on every push to main.
+- System service `cloudflared` (config `/etc/cloudflared/config.yml`) maps `music.pinewoodrobotics.org` to `http://127.0.0.1:8765`.
+- Restart: `systemctl --user restart music-api`. Logs: `journalctl --user-unit soloist --user-unit music-api -f`.
+- Data directory `~/.local/share/music-api`: `spotify-tokens.json` (Spotify login), `api-tokens.json` (hashed API tokens), `token` (bootstrap token file), `effects/` (sound effect WAVs and `index.json`).
+- Sound effects need `pw-play` (apt `pipewire-bin`) to play and `ffmpeg` to accept mp3/ogg/flac; `deploy/deploy-pi.sh` and `deploy/install-linux.sh` install both.
+- First start with auth required and no tokens yet: if `<data-dir>/token` exists (the v1 token was migrated there) it's imported as a token named "v1 token" and the plaintext file is deleted; otherwise a new token is generated and written to `<data-dir>/token` (mode 600) for the admin to read.
+- Spotify login through the public URL needs `https://music.pinewoodrobotics.org/auth/callback` listed as a Redirect URI in the Spotify app and the server started with `--redirect-uri` set to it; otherwise use the paste flow.
+- v1 (Music.app-based, `~/Developer/music-api`) is retired.

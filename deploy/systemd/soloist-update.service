@@ -1,0 +1,6 @@
+[Unit]
+Description=Update Spotify Soloist build
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/share/music-api-v2/deploy/update-soloist.sh
