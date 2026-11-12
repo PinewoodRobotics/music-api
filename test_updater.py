@@ -1,4 +1,5 @@
 import contextlib
+import datetime
 import io
 import json
 import os
@@ -67,6 +68,16 @@ class Rig:
         self.healthy = [True]
         self.clock = Clock()
         self.enabled = {"music-display.service"}
+        self.slacked = []
+
+    def slack(self, token, method, params):
+        self.slacked.append((method, params))
+        if method == "users.lookupByEmail":
+            return {"ok": True, "user": {"id": "U_ADA"}}
+        return {"ok": True}
+
+    def dms(self):
+        return [p for m, p in self.slacked if m == "chat.postMessage"]
 
     def commit(self, subject, changes):
         self.files.update(changes)
@@ -95,6 +106,9 @@ class Rig:
         return 0, ""
 
     def updater(self, **kw):
+        kw.setdefault("environ", {})
+        kw.setdefault("slack", self.slack)
+        kw.setdefault("safe", lambda: (True, "nothing is playing"))
         u = up.Updater(app_dir=self.app, data_dir=self.data, repo_dir=os.path.join(self.tmp, "repo.git"),
                        remote=self.origin, unit_dir=self.units, run=self.run, health=lambda: self.healthy[0],
                        clock=self.clock, sleep=self.clock.sleep, which=lambda c: "/usr/bin/" + c, **kw)
@@ -312,6 +326,263 @@ class UpdaterTest(unittest.TestCase):
         self.assertEqual(self.rig.calls[-1][:3], ["ssh-keygen", "-t", "ed25519"])
         self.assertTrue(u.configured())
         self.assertIn("IdentitiesOnly=yes", u._ssh_command())
+
+
+def at(hour, minute, days=0):
+    d = datetime.date.today() + datetime.timedelta(days=days)
+    return datetime.datetime.combine(d, datetime.time(hour, minute)).timestamp()
+
+
+class AutoUpdateTest(unittest.TestCase):
+    def setUp(self):
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.rig = Rig(self.tmpdir.name)
+        self.rig.clock.t = at(3, 5)
+        self.out = contextlib.redirect_stdout(io.StringIO())
+        self.out.__enter__()
+        self.err = contextlib.redirect_stderr(io.StringIO())
+        self.err.__enter__()
+
+    def tearDown(self):
+        self.err.__exit__(None, None, None)
+        self.out.__exit__(None, None, None)
+        self.tmpdir.cleanup()
+
+    def new_build(self, files=None):
+        self.rig.commit("Server v2", files or {"server.py": "print('v2')\n"})
+        return self.rig.publish()
+
+    def test_settings_default_and_validation(self):
+        u = self.rig.updater()
+        self.assertEqual({k: u.auto_settings()[k] for k in ("enabled", "time")}, {"enabled": True, "time": "03:00"})
+        s = u.save_auto_settings(False, "4:30", {"id": "U1", "name": "Ada"})
+        self.assertEqual((s["enabled"], s["time"], s["updated_by"]["name"]), (False, "04:30", "Ada"))
+        for bad in ("25:00", "3pm", "", 3):
+            with self.assertRaises(up.UpdateError) as e:
+                u.save_auto_settings(at=bad)
+            self.assertEqual(e.exception.status, 400)
+        self.assertEqual(u.status(fetch=False)["auto"]["time"], "04:30")
+
+    def test_auto_does_nothing_when_disabled(self):
+        self.new_build()
+        u = self.rig.updater()
+        u.save_auto_settings(enabled=False)
+        self.assertIsNone(u.auto())
+        self.assertEqual((u.history(), self.rig.read("server.py")), ([], "print('v1')\n"))
+
+    def test_auto_only_in_the_window(self):
+        u = self.rig.updater()
+        self.assertEqual(u.auto_night("03:00", at(3, 59)), datetime.date.today().isoformat())
+        self.assertIsNone(u.auto_night("03:00", at(4, 0)))
+        self.assertIsNone(u.auto_night("03:00", at(2, 59)))
+        self.assertEqual(u.auto_night("23:30", at(0, 10, days=1)), datetime.date.today().isoformat())
+        self.rig.clock.t = at(12, 0)
+        self.new_build()
+        self.assertIsNone(u.auto())
+        self.assertEqual(u.history(), [])
+
+    def test_auto_skips_when_up_to_date_once_a_night(self):
+        u = self.rig.updater()
+        entry = u.auto()
+        self.assertEqual((entry["outcome"], entry["result"], entry["auto"]), ("skipped", "Already up to date", True))
+        self.rig.clock.t += 15 * 60
+        self.assertIsNone(u.auto())
+        self.rig.clock.t = at(3, 5, days=1)
+        u.auto()
+        hist = u.history()
+        self.assertEqual((len(hist), hist[0]["count"]), (1, 2))
+
+    def test_auto_skips_when_unsafe(self):
+        self.new_build()
+        u = self.rig.updater(safe=lambda: (False, "music is playing"))
+        entry = u.auto()
+        self.assertEqual(entry["outcome"], "skipped")
+        self.assertIn("music is playing", entry["result"])
+        self.assertEqual(self.rig.read("server.py"), "print('v1')\n")
+        self.assertEqual(self.rig.restarts(), [])
+        self.assertEqual(self.rig.dms(), [])
+
+    def test_auto_skips_until_the_build_is_ready(self):
+        self.rig.commit("Not built yet", {"server.py": "print('v2')\n"})
+        entry = self.rig.updater().auto()
+        self.assertIn("still building", entry["result"])
+
+    def test_auto_skips_when_deployed_is_newer(self):
+        v2 = self.new_build()
+        u = self.rig.updater()
+        u.fetch()
+        write(self.rig.app, {"BUILD.json": json.dumps({"commit": v2})})
+        git(self.rig.work, "reset", "-q", "--hard", self.rig.v1)
+        git(self.rig.work, "push", "-q", "-f", "origin", "HEAD:main")
+        self.rig.files = dict(V1)
+        self.rig.publish()
+        self.assertIn("isn't newer", u.auto()["result"])
+
+    def test_auto_skips_an_unknown_deployed_commit(self):
+        self.new_build()
+        write(self.rig.app, {"BUILD.json": json.dumps({"commit": "f" * 40})})
+        self.assertIn("isn't a commit on GitHub", self.rig.updater().auto()["result"])
+
+    def test_auto_updates_when_safe(self):
+        sha = self.new_build()
+        u = self.rig.updater()
+        st = u.auto()
+        self.assertEqual((st["state"], st["auto"], st["to"]), ("succeeded", True, sha))
+        self.assertEqual(self.rig.read("server.py"), "print('v2')\n")
+        h = u.history()[0]
+        self.assertEqual((h["outcome"], h["auto"], h["by"], h["from"], h["to"]), ("updated", True, None, self.rig.v1, sha))
+        self.assertEqual(self.rig.dms(), [])
+        self.assertIsNone(u.auto())
+
+    def test_auto_rollback_alerts_admins(self):
+        self.new_build()
+        write(self.rig.data, {"admins.json": json.dumps([{"key": "u_bob", "id": "U_BOB", "email": None}])})
+        self.rig.healthy[0] = False
+        u = self.rig.updater(environ={"SLACK_BOT_TOKEN": "xoxb-1", "SLACK_ADMINS": "U_CAL, ada@example.com"})
+        real = u.health
+        u.health = lambda: real() if self.rig.read("server.py") == "print('v2')\n" else True
+        st = u.auto()
+        self.assertEqual(st["state"], "rolled_back")
+        self.assertEqual(u.history()[0]["outcome"], "rolled_back")
+        self.assertEqual(sorted(d["channel"] for d in self.rig.dms()), ["U_ADA", "U_BOB", "U_CAL"])
+        self.assertIn("rolled back", self.rig.dms()[0]["text"])
+
+    def test_auto_failure_alerts_and_manual_failure_does_not(self):
+        self.new_build({"server.py": "x\n"})
+        self.rig.healthy[0] = False
+        env = {"SLACK_BOT_TOKEN": "xoxb-1", "SLACK_ADMINS": "U_CAL"}
+        st = self.rig.updater(environ=env).update()
+        self.assertEqual((st["state"], self.rig.dms()), ("failed", []))
+        self.rig.clock.t = at(3, 5)
+        st = self.rig.updater(environ=env).auto()
+        self.assertEqual(st["state"], "failed")
+        self.assertEqual([d["channel"] for d in self.rig.dms()], ["U_CAL"])
+
+    def test_slack_env_file_and_unconfigured(self):
+        self.new_build()
+        self.rig.healthy[0] = False
+        env_file = os.path.join(self.rig.tmp, "env")
+        write(self.rig.tmp, {"env": "# comment\nSLACK_BOT_TOKEN='xoxb-2'\nSLACK_ADMINS=U_DEE\n"})
+        u = self.rig.updater(env_file=env_file)
+        self.assertEqual(u.alert("hi"), 1)
+        self.assertEqual(self.rig.dms(), [{"channel": "U_DEE", "text": "hi"}])
+        u = self.rig.updater(env_file=os.path.join(self.rig.tmp, "missing"))
+        self.assertEqual(u.alert("hi"), 0)
+        self.assertEqual(len(self.rig.slacked), 1)
+
+    def test_sudo_notes_alert_on_manual_update(self):
+        self.new_build({"deploy/install-linux.sh": "#!/bin/sh\nnew\n"})
+        u = self.rig.updater(environ={"SLACK_BOT_TOKEN": "xoxb-1", "SLACK_ADMINS": "U_CAL"})
+        u.state = None
+        st = u.update()
+        self.assertEqual(st["state"], "succeeded")
+        self.assertEqual(len(self.rig.dms()), 1)
+        self.assertIn("install-linux.sh", self.rig.dms()[0]["text"])
+        self.assertTrue(any("sudo" in n for n in u.history()[0]["notes"]))
+
+    def test_history_is_capped_and_records_outcomes(self):
+        self.new_build()
+        u = self.rig.updater()
+        u.update()
+        self.rig.commit("Broken", {"server.py": "x\n"})
+        self.rig.publish()
+        self.rig.healthy[0] = False
+        u.update()
+        self.assertEqual([h["outcome"] for h in u.history()], ["failed", "updated"])
+        for i in range(12):
+            u.record({"id": str(i), "outcome": "skipped", "auto": True, "result": f"r{i}"}, collapse=True)
+        hist = u.history()
+        self.assertEqual(len(hist), up.HISTORY_MAX)
+        self.assertEqual(hist[0]["id"], "11")
+
+    def test_revert_to_previous(self):
+        u = self.rig.updater()
+        self.assertIsNone(u.status(fetch=False)["previous"])
+        with self.assertRaises(up.UpdateError) as e:
+            u.start(action="revert")
+        self.assertIn("no previous version", str(e.exception))
+        self.assertEqual(u.update(action="revert")["state"], "failed")
+        v2 = self.new_build()
+        u.update()
+        self.assertEqual(u.previous()["commit"], self.rig.v1)
+        st = u.update(action="revert")
+        self.assertEqual(st["state"], "succeeded", st["log"])
+        self.assertEqual((st["from"], st["to"]), (v2, self.rig.v1))
+        self.assertEqual(self.rig.read("server.py"), "print('v1')\n")
+        self.assertEqual(u.previous()["commit"], v2)
+        self.assertEqual(self.rig.restarts(), ["music-api", "music-api"])
+        self.assertEqual(u.history()[0]["outcome"], "reverted")
+
+    def test_revert_that_fails_health_swaps_back(self):
+        v2 = self.new_build()
+        u = self.rig.updater()
+        u.update()
+        u.health = lambda: self.rig.read("server.py") == "print('v2')\n"
+        st = u.update(action="revert")
+        self.assertEqual(st["state"], "failed")
+        self.assertEqual(json.loads(self.rig.read("BUILD.json"))["commit"], v2)
+        self.assertEqual(u.previous()["commit"], self.rig.v1)
+
+    def test_start_revert_spawns(self):
+        self.new_build()
+        u = self.rig.updater()
+        u.update()
+        u.which = lambda c: None
+        spawned = []
+        u.spawn = lambda cmd, env: spawned.append(cmd)
+        run = u.start({"id": "U1", "name": "Ada"}, action="revert")
+        self.assertEqual((run["action"], run["to"]), ("revert", self.rig.v1))
+        self.assertEqual(spawned[0][-3:], ["revert", "--run-id", run["id"]])
+        self.assertEqual(u.update(run["id"])["state"], "succeeded")
+
+    def test_plan_installs_and_enables_the_auto_units(self):
+        self.new_build({"server.py": "print('v2')\n", "deploy/systemd/auto-update.service": "[Service]\n",
+                        "deploy/systemd/auto-update.timer": "[Timer]\n"})
+        u = self.rig.updater()
+        plan = u.status(fetch=True)["changes"]
+        self.assertEqual(plan["enable"], list(up.AUTO_UNITS))
+        self.assertFalse(any("auto-update" in n for n in plan["notes"]))
+        u.update()
+        self.assertTrue(os.path.exists(os.path.join(self.rig.units, "auto-update.timer")))
+        self.assertIn(["systemctl", "--user", "enable", "--now", "auto-update.timer"], self.rig.calls)
+        self.assertEqual(u.status(fetch=False)["changes"]["enable"], [])
+
+
+class SafeToUpdateTest(unittest.TestCase):
+    def setUp(self):
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.data = self.tmpdir.name
+        self.now = at(3, 0)
+
+    def tearDown(self):
+        self.tmpdir.cleanup()
+
+    def state(self, **kw):
+        write(self.data, {"quiet-hours.json": json.dumps({"locked_until": None, "idle_since": None, "heartbeat": None,
+                                                          "override": None, **kw})})
+
+    def safe(self, flowing=False):
+        with mock.patch.dict(os.environ, {"QUIET_HOURS": "21:00-08:00"}), \
+                mock.patch.object(up.quiet_hours, "audio_flowing", lambda: flowing):
+            return up.safe_to_update(self.data, self.now)
+
+    def test_locked_quiet_hours_are_safe_even_with_audio(self):
+        self.state(locked_until=self.now + 3600, heartbeat=self.now)
+        self.assertEqual(self.safe(flowing=True)[0], True)
+
+    def test_music_playing(self):
+        self.state(heartbeat=self.now - 30)
+        self.assertEqual(self.safe(), (False, "music is playing"))
+
+    def test_idle_server_but_sound_effect(self):
+        self.state(heartbeat=self.now - 30, idle_since=self.now - 60)
+        self.assertEqual(self.safe(flowing=True), (False, "audio is playing"))
+        self.assertEqual(self.safe()[0], True)
+
+    def test_server_down_judged_by_sinks(self):
+        self.state(heartbeat=self.now - 3600)
+        self.assertEqual(self.safe()[0], True)
+        self.assertEqual(self.safe(flowing=True)[0], False)
 
 
 if __name__ == "__main__":

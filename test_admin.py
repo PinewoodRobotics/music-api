@@ -370,6 +370,16 @@ class RoutesTest(unittest.TestCase):
         self.assertEqual(self.call("POST", "/api/admin/update")[0], 503)
         self.assertEqual(self.call("POST", "/api/admin/update/check")[1]["result"]["configured"], False)
 
+    def test_auto_update_settings_and_revert_routes(self):
+        code, res = self.call("PUT", "/api/admin/update/settings", {"auto": False, "time": "4:15"})
+        self.assertEqual((code, res["result"]["auto"]["enabled"], res["result"]["auto"]["time"]), (200, False, "04:15"))
+        self.assertEqual(self.call("GET", "/api/admin/update")[1]["result"]["auto"]["time"], "04:15")
+        self.assertEqual(self.call("PUT", "/api/admin/update/settings", {"time": "nope"})[0], 400)
+        self.assertEqual(self.call("PUT", "/api/admin/update/settings", {"auto": True}, sid=self.bob)[0], 403)
+        code, res = self.call("POST", "/api/admin/update/revert")
+        self.assertEqual(code, 409)
+        self.assertIn("no previous version", res["error"])
+
 
 if __name__ == "__main__":
     unittest.main()

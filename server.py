@@ -1225,8 +1225,12 @@ def _admin_update(q, b):
     """Update status (admins only): {configured, setup_hint, deployed {commit, short, subject, date, built_at},
     latest {commit, short, subject, date} (origin/main), build {commit, short, built_at, ready} (the pi-build branch
     GitHub Actions publishes), behind, commits [{commit, short, subject, author, date}] newest first,
-    changes {files, restarts, units, notes}, fetched_at, fetch_error, run {id, state: running|succeeded|rolled_back|failed,
-    started_at, finished_at, from, to, result, log [{t, msg, level}]}}. Fetches from GitHub if the last fetch is over 10 min old"""
+    changes {files, restarts, units, enable, notes}, fetched_at, fetch_error, run {id, action: update|revert, auto,
+    state: running|succeeded|rolled_back|failed, started_at, finished_at, from, to, result, by, log [{t, msg, level}]},
+    auto {enabled, time: "HH:MM", updated_by, updated_at} (nightly auto-update), history [{id, action: update|revert,
+    auto, outcome: updated|rolled_back|failed|skipped|reverted, result, from, to, started_at, at, by, notes, count}]
+    (last 10 runs, newest first; count = nights a repeated automatic skip covers), previous {commit, short, subject,
+    built_at} or null (the tree in music-api-v2.prev)}. Fetches from GitHub if the last fetch is over 10 min old"""
     return updates.status()
 
 
@@ -1243,6 +1247,25 @@ def _admin_update_start(q, b):
     and rolls back if that fails. Poll GET for run.state and run.log; expect the API to drop for a few seconds.
     409 if already up to date or an update is running"""
     run = updates.start(_by())
+    return {**updates.status(fetch=False), "run": run}
+
+
+@route("PUT", "/api/admin/update/settings")
+def _admin_update_settings(q, b):
+    """Body {auto?: bool, time?: "HH:MM"} (admins only): turn the nightly auto-update on or off and set when it runs
+    (local time, default 03:00; it updates within the hour after, only when a tested build is newer than the deployed
+    one and quiet hours have the speakers locked or nothing is playing). Saved in the data dir. Returns the same as
+    GET /api/admin/update"""
+    updates.save_auto_settings(b.get("auto"), b.get("time"), _by())
+    return updates.status(fetch=False)
+
+
+@route("POST", "/api/admin/update/revert")
+def _admin_update_revert(q, b):
+    """Roll back to the previous version (admins only): swaps music-api-v2.prev back in with the same restarts and
+    health check as an update (the current version becomes the previous one). Runs in the background like POST
+    /api/admin/update. 409 if there's no previous version or an update is running"""
+    run = updates.start(_by(), action="revert")
     return {**updates.status(fetch=False), "run": run}
 
 

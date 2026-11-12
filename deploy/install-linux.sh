@@ -27,7 +27,8 @@ chmod 600 "$CONF/env"
 
 cp "$REPO"/deploy/systemd/music-api.service "$REPO"/deploy/systemd/music-display.service \
   "$REPO"/deploy/systemd/airplay.service "$REPO"/deploy/systemd/quiet-hours.service \
-  "$REPO"/deploy/systemd/quiet-hours.timer "$HOME/.config/systemd/user/"
+  "$REPO"/deploy/systemd/quiet-hours.timer "$REPO"/deploy/systemd/auto-update.service \
+  "$REPO"/deploy/systemd/auto-update.timer "$HOME/.config/systemd/user/"
 if [ -z "${NO_AIRPLAY:-}" ]; then
   sh "$REPO/deploy/install-airplay.sh"
 fi
@@ -49,6 +50,7 @@ fi
 systemctl --user enable music-api.service
 systemctl --user enable music-display.service
 systemctl --user enable --now quiet-hours.timer
+systemctl --user enable --now auto-update.timer
 if [ -z "${NO_AIRPLAY:-}" ]; then
   systemctl --user enable --now airplay.service
 fi
