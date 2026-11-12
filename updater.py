@@ -106,7 +106,6 @@ def summarize(files):
 
 
 def tree_diff(a, b):
-    """Relative paths that differ between two directory trees (content, or present on one side only)."""
     def files(root):
         out = {}
         for d, dirs, names in os.walk(root):
@@ -774,7 +773,6 @@ class Updater:
         return keys
 
     def alert(self, text):
-        """DM every admin through the Slack bot. Quietly does nothing when Slack isn't configured."""
         token = self._env("SLACK_BOT_TOKEN")
         if not token:
             return 0
