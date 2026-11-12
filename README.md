@@ -4,7 +4,7 @@ A shared jukebox for a room full of people. One Spotify account, one set of spea
 and control playback from a web app, Slack, an AirPlay device or plain HTTP.
 
 The server is a single Python 3.9+ program with **no dependencies** (stdlib only, no `pip install`). It runs on a
-Raspberry Pi in production and on macOS for development. Live instance: <https://music.pinewoodrobotics.org>.
+Raspberry Pi in production and on macOS for development.
 
 ![Library with the Up next panel](docs/images/library.jpg)
 
@@ -33,7 +33,7 @@ Raspberry Pi in production and on macOS for development. Live instance: <https:/
 - **Sound effects.** Named clips played over the music, e.g. for a match timer.
 - **HDMI now-playing screen** drawn straight to the framebuffer, no desktop needed.
 - **Self-updating.** The admin page pulls new builds from GitHub without stopping the music.
-- **Agent-friendly API.** Every endpoint is documented in [`/llms-full.txt`](https://music.pinewoodrobotics.org/llms-full.txt), so you can point an LLM at it.
+- **Agent-friendly API.** Every endpoint is documented in [`llms-full.txt`](llms-full.txt) (served at `/llms-full.txt`), so you can point an LLM at it.
 
 ## Contents
 
@@ -234,7 +234,7 @@ Set `SLACK_SIGNING_SECRET` (Basic Information > Signing Secret) and invite the b
 <details>
 <summary><b>Slack app manifest</b></summary>
 
-Replace `music.pinewoodrobotics.org` with your host.
+Replace `music.example.org` with your host.
 
 ```yaml
 display_information:
@@ -246,7 +246,7 @@ features:
     always_online: true
   slash_commands:
     - command: /music
-      url: https://music.pinewoodrobotics.org/slack/commands
+      url: https://music.example.org/slack/commands
       description: Search, queue and control the lab speakers
       usage_hint: "[song, artist, link | now | queue | play | pause | skip | help]"
       should_escape: false
@@ -258,17 +258,17 @@ features:
     - youtu.be
 oauth_config:
   redirect_urls:
-    - https://music.pinewoodrobotics.org/auth/slack/callback
+    - https://music.example.org/auth/slack/callback
   scopes:
     user: [openid, profile, email]
     bot: [users:read, chat:write, commands, links:read, links:write]
 settings:
   event_subscriptions:
-    request_url: https://music.pinewoodrobotics.org/slack/events
+    request_url: https://music.example.org/slack/events
     bot_events: [link_shared]
   interactivity:
     is_enabled: true
-    request_url: https://music.pinewoodrobotics.org/slack/interactions
+    request_url: https://music.example.org/slack/interactions
   org_deploy_enabled: false
   socket_mode_enabled: false
   token_rotation_enabled: false
@@ -316,7 +316,7 @@ it's UTC.
 
 ### Public access with a Cloudflare tunnel
 
-The production host is a named tunnel run by a system `cloudflared` service on the Pi. The API runs with `--public`,
+For access from outside the network, run a named Cloudflare tunnel as a system `cloudflared` service on the Pi. The API runs with `--public`,
 because tunnelled requests arrive from `127.0.0.1` and would otherwise skip the token check. Install `cloudflared`
 from [pkg.cloudflare.com](https://pkg.cloudflare.com/index.html), then:
 
@@ -530,9 +530,9 @@ and pass it with `--redirect-uri`. Otherwise use the paste flow.
 
 | | |
 |---|---|
-| [`/llms.txt`](https://music.pinewoodrobotics.org/llms.txt) | Short index in the [llms.txt](https://llmstxt.org) format |
-| [`/llms-full.txt`](https://music.pinewoodrobotics.org/llms-full.txt) | The whole reference in one file: endpoints, response shapes, curl examples, workflows, limits |
-| [`/API.md`](https://music.pinewoodrobotics.org/API.md) | One row per endpoint, generated from the route docstrings ([in the repo](API.md)) |
+| [`/llms.txt`](llms.txt) | Short index in the [llms.txt](https://llmstxt.org) format |
+| [`/llms-full.txt`](llms-full.txt) | The whole reference in one file: endpoints, response shapes, curl examples, workflows, limits |
+| [`/API.md`](API.md) | One row per endpoint, generated from the route docstrings |
 
 A few routes that go beyond Spotify's own API:
 
