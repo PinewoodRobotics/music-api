@@ -1,141 +1,240 @@
-# Music API v2 (Spotify)
+# Robotics Music
 
-HTTP API and web remote for Spotify. It's the successor to the Music.app-only v1.
-Python 3.9+ stdlib only, no `pip install`. Runs on headless Linux (Raspberry Pi) and macOS.
+A shared jukebox for a room full of people. One Spotify account, one set of speakers, and everyone can search, queue
+and control playback from a web app, Slack, an AirPlay device or plain HTTP.
 
-```
+The server is a single Python 3.9+ program with **no dependencies** (stdlib only, no `pip install`). It runs on a
+Raspberry Pi in production and on macOS for development. Live instance: <https://music.pinewoodrobotics.org>.
+
+![Library with the Up next panel](docs/images/library.jpg)
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/images/now-playing.jpg" alt="Now Playing view"></td>
+    <td width="50%"><img src="docs/images/admin.jpg" alt="Admin page, System tab"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>Now Playing, with who queued each song</sub></td>
+    <td align="center"><sub>Admin page: Pi health, quiet hours, updates</sub></td>
+  </tr>
+</table>
+
+## Features
+
+- **Web app.** Library, search, playlists, queue, synced lyrics, Now Playing. Works on phones, and can be embedded
+  in another app's touch panel.
+- **Credit for everything.** Every play, skip and queued song shows who did it, in the app and in Slack.
+- **Sign in with Slack or Google.** Admins, personal API tokens and bans per person.
+- **Slack bot.** A live "Now playing" feed, `/music` search and controls, and Play / Queue buttons on shared links.
+- **Links from anywhere.** Spotify, Apple Music and YouTube / YouTube Music links (songs, albums, playlists) are
+  matched to Spotify and can be played, queued or imported as playlists.
+- **AirPlay receiver.** Anyone can AirPlay to the speakers; Spotify pauses and picks up where it left off afterwards.
+- **Quiet hours.** The speakers lock in the evening once the room has been quiet for a few minutes.
+- **Sound effects.** Named clips played over the music, e.g. for a match timer.
+- **HDMI now-playing screen** drawn straight to the framebuffer, no desktop needed.
+- **Self-updating.** The admin page pulls new builds from GitHub without stopping the music.
+- **Agent-friendly API.** Every endpoint is documented in [`/llms-full.txt`](https://music.pinewoodrobotics.org/llms-full.txt), so you can point an LLM at it.
+
+## Contents
+
+- [Quick start](#quick-start)
+- [How it fits together](#how-it-fits-together)
+- [Authentication](#authentication)
+- [Web app and accounts](#web-app-and-accounts)
+- [Slack bot](#slack-bot)
+- [Raspberry Pi setup](#raspberry-pi-setup)
+- [Running on the Pi](#running-on-the-pi): admin page, updates, quiet hours, AirPlay, sound effects, HDMI display
+- [Running on macOS](#running-on-macos)
+- [API reference](#api-reference)
+- [Development](#development)
+
+## Quick start
+
+```sh
 python3 server.py --client-id <spotify app client id>     # http://127.0.0.1:8765/
-python3 server.py auth                                     # log in to the Web API from a terminal / over SSH
-python3 server.py --host 0.0.0.0 --token SECRET            # LAN access
+python3 server.py auth                                     # log in to the Web API from a terminal or over SSH
+python3 server.py --host 0.0.0.0 --token SECRET            # allow other devices on your network
 ```
 
-`GET /api` lists every endpoint. See [API.md](API.md) for the full reference (regenerate it with `python3 gen_api_md.py > API.md`).
-Production lives at https://music.pinewoodrobotics.org: a Raspberry Pi 3 B+ running Soloist into USB speakers, behind a
-Cloudflare tunnel (see [Raspberry Pi setup](#raspberry-pi-setup-soloist)).
+Create the Spotify app at [developer.spotify.com/dashboard](https://developer.spotify.com/dashboard) and add
+`http://127.0.0.1:8765/auth/callback` as a Redirect URI. Open <http://127.0.0.1:8765/> for the web app, or
+`GET /api` for the endpoint list. `python3 server.py --help` lists every flag.
 
-## Docs
-
-All of these are served without a token, so you can point an LLM agent straight at them:
-
-- [`/llms.txt`](https://music.pinewoodrobotics.org/llms.txt): short index in the [llms.txt](https://llmstxt.org) format.
-- [`/llms-full.txt`](https://music.pinewoodrobotics.org/llms-full.txt) (also `/LLMS.md`): the whole reference in one file, written so an agent can drive the API with no other context. Endpoints, response shapes, curl examples, workflows, limits.
-- [`/API.md`](https://music.pinewoodrobotics.org/API.md): one table row per endpoint, generated from the route docstrings.
-- `/README.md`: this file.
-
-`llms.txt` and `llms-full.txt` are written by hand. Update them when you add or change a route.
+On a Mac this plays through the Spotify desktop app (or any other Connect device). For a dedicated speaker box, see
+[Raspberry Pi setup](#raspberry-pi-setup).
 
 ## How it fits together
 
 ```
- phone / web remote / scripts ──HTTP+SSE──► server.py (this) ──┬─ WebSocket (127.0.0.1) ─► Spotify Soloist ─► PipeWire ─► USB speakers
-                                                               ├─ HTTPS ─► Spotify Web API  (search, library, playlists,   ▲
-                                                               │                             history, any Connect device) │
- iPhone / Mac ──AirPlay──► shairport-sync ────────────────────────────────────────────────────────────────────────────────────┘
-                                   ├─ metadata pipe ─► server.py (now playing, pauses Spotify while AirPlay plays)
-                                   └─ D-Bus RemoteControl ◄─ server.py (play/pause/next/previous back to the sender)
+ web app / Slack / scripts ──HTTP+SSE──► server.py ──┬─ WebSocket (127.0.0.1) ─► Spotify Soloist ─► PipeWire ─► speakers
+                                                     ├─ HTTPS ─► Spotify Web API  (search, library, playlists,   ▲
+                                                     │                             history, any Connect device) │
+ iPhone / Mac ──AirPlay──► shairport-sync ──────────────────────────────────────────────────────────────────────┘
+                                 ├─ metadata pipe ─► server.py (now playing, pauses Spotify while AirPlay plays)
+                                 └─ D-Bus RemoteControl ◄─ server.py (play/pause/next/previous back to the sender)
 ```
 
 There are two playback backends, chosen with `--backend auto|soloist|connect`:
 
 | | `soloist` (Linux) | `connect` (anywhere) |
 |---|---|---|
-| Plays audio | Locally, through Spotify Soloist | On any Spotify Connect device: Spotify desktop app, phone, speaker, librespot |
-| Control path | Soloist's local WebSocket: push events, no polling, no rate limits | Web API `/me/player` (polled every 2 s while someone is listening) |
+| Plays audio | Locally, through Spotify Soloist | On any Spotify Connect device: desktop app, phone, speaker, librespot |
+| Control path | Soloist's local WebSocket: push events, no polling, no rate limits | Web API `/me/player`, polled every 2 s while someone is listening |
 | Needs | Soloist API key (Premium) and a one-time pairing | Web API login, Premium on the listening account |
 | Queue | Previous + up to 80 upcoming, each tagged context / queue / autoplay | Upcoming only |
 
-`auto` picks Soloist if it's running (or has ever run) on this machine, otherwise `connect`.
-Anything the Soloist socket can't do falls back to the Web API, targeted at the Soloist device.
-That covers starting a playlist at a given track, playing an artist, playing a list of URIs, and listing other devices.
+`auto` picks Soloist if it's running (or has ever run) on this machine, otherwise `connect`. Anything the Soloist
+socket can't do (starting a playlist at a given track, playing an artist or a list of URIs, listing other devices)
+falls back to the Web API, targeted at the Soloist device.
 
-## Authentication: five separate layers
+### Project layout
 
-1. **Soloist API key.** Generate it at developer.spotify.com/dashboard → *Spotify Soloist API Key*.
-   The generating account must have Premium. It's passed on every start (`--api-key`), so the
-   [run script](deploy/run-soloist.sh) reads it from `~/.config/music-api/env` (mode 600). It's per person: don't share it or commit it.
-2. **Soloist's Connect session.** There's no username or password. Start Soloist, open the Spotify app on the
-   same network, and pick the device. Soloist stores that session in its data directory
-   (`~/.local/share/soloist`) and restores it on restart. Free accounts can connect once it's set up.
-   Re-pair with `soloist --pair`.
-3. **Web API (OAuth Authorization Code + PKCE).** Needed for search, library, playlists, history and the `connect` backend.
-   Create an app at developer.spotify.com/dashboard. Add `http://127.0.0.1:8765/auth/callback` (or your tunnel's
-   `https://…/auth/callback`) as a Redirect URI and start the server with `--client-id`. No client secret is involved.
-   Then either:
-   - open `/auth/login` in a browser, or
-   - on a headless box, run `python3 server.py auth` over SSH, or open `/auth/login` from your phone. Spotify will redirect
-     to `127.0.0.1`, which won't load on the phone. Paste that URL into the box on the page.
-   Tokens (with a refresh token) go to `~/.local/share/music-api/spotify-tokens.json` (mode 600) and refresh automatically.
-4. **This server's own API tokens.** Send `Authorization: Bearer <token>` (or `?token=` for `EventSource`, `<img>` and links).
-   Required off-localhost, with `--public` (even from localhost), and as soon as any token exists. See [API tokens](#api-tokens).
-   Soloist's WebSocket has *no* auth at all, so it stays bound to `127.0.0.1`, and this server is the only door in.
-5. **Sign in with Slack** for the web app. See [Web app accounts](#web-app-accounts-sign-in-with-slack).
+| Path | What's there |
+|---|---|
+| `server.py` | HTTP server, routing, auth, the `auth` subcommand |
+| `player.py`, `soloist.py`, `spotify.py` | Playback backends and the Web API client |
+| `accounts.py`, `tokens.py` | Slack / Google sessions, admins, bans, API tokens |
+| `slack_bot.py` | Slack feed, `/music`, link unfurls and buttons |
+| `links.py`, `yt.py` | Apple Music and YouTube link metadata |
+| `airplay.py`, `quiet_hours.py`, `effects.py` | AirPlay receiver, quiet hours, sound effects |
+| `system_stats.py`, `updater.py` | Admin page system info and self-update |
+| `display/` | HDMI now-playing screen |
+| `web/` | The web app (React + Vite + Tailwind) |
+| `deploy/` | Install scripts, systemd units, shairport-sync config, macOS launchd agent |
+| `test_*.py` | Python tests |
+
+## Authentication
+
+There are five separate layers.
+
+1. **Soloist API key.** Generate it at developer.spotify.com/dashboard > *Spotify Soloist API Key* with a Premium
+   account. It's passed on every start (`--api-key`), so the [run script](deploy/run-soloist.sh) reads it from
+   `~/.config/music-api/env` (mode 600). It's per person: don't share or commit it.
+2. **Soloist's Connect session.** No username or password: start Soloist, open the Spotify app on the same network
+   and pick the device. Soloist stores the session in `~/.local/share/soloist` and restores it on restart. Free
+   accounts can connect once it's set up. Re-pair with `soloist --pair`.
+3. **Spotify Web API** (OAuth Authorization Code + PKCE, no client secret). Needed for search, library, playlists,
+   history and the `connect` backend. Add `http://127.0.0.1:8765/auth/callback` (or your public
+   `https://…/auth/callback`) as a Redirect URI and start with `--client-id`. Then either open `/auth/login` in a
+   browser, or on a headless box run `python3 server.py auth` over SSH. You can also open `/auth/login` from your
+   phone: Spotify redirects to `127.0.0.1`, which won't load there, so paste that URL into the box on the page.
+   Tokens are saved to `~/.local/share/music-api/spotify-tokens.json` (mode 600) and refresh automatically.
+4. **This server's API tokens.** `Authorization: Bearer <token>`, or `?token=` for `EventSource`, `<img>` and links.
+   Required off-localhost, with `--public` (even from localhost), and as soon as any token exists. Soloist's
+   WebSocket has no auth at all, so it stays bound to `127.0.0.1` and this server is the only way in.
+5. **Sign in with Slack or Google** for the web app. See [Web app and accounts](#web-app-and-accounts).
 
 ### API tokens
 
 Tokens have no scopes: every token can do everything, including managing tokens.
 
-- `GET /api/tokens` lists them: `id`, `name`, `prefix` (the first few characters, to recognize one), `created`, `last_used`, and `current` (the one you're calling with).
-- `POST /api/tokens {name?}` creates one (`mapi_…`). The response is the only time the token itself is shown.
-- `DELETE /api/tokens/{id}` revokes one immediately. Any token can revoke any token, including itself. Revoking the last one is refused (409), so you can't lock yourself out.
+| Route | |
+|---|---|
+| `GET /api/tokens` | `id`, `name`, `prefix` (to recognize one), `created`, `last_used`, `current` (the one you're calling with) |
+| `POST /api/tokens {name?}` | Creates a `mapi_…` token. The response is the only time it's shown. |
+| `DELETE /api/tokens/{id}` | Revokes immediately. Revoking the last one is refused (409), so you can't lock yourself out. |
 
-Only SHA-256 hashes are stored, in `<data-dir>/api-tokens.json` (mode 600; data dir defaults to `~/.local/share/music-api`).
-On the first start that requires auth, `<data-dir>/token` is imported as "v1 token" if it exists (that's where the v1 token was migrated),
-then deleted, so only its hash remains. If there's no such file either, a token is generated and written to `<data-dir>/token` (mode 600) for you to read.
-`--token` / `$MUSIC_API_TOKEN` still works as an extra static token. It isn't listed and can't be revoked through the API.
-To hand someone the web remote, create a token and send them `https://…/?token=<token>`; the page remembers it.
+Only SHA-256 hashes are stored, in `<data-dir>/api-tokens.json` (mode 600; the data dir defaults to
+`~/.local/share/music-api`). On the first start that requires auth, an existing `<data-dir>/token` is imported and
+deleted; if there isn't one, a new token is written there for you to read. `--token` / `$MUSIC_API_TOKEN` also works
+as an extra static token that isn't listed and can't be revoked through the API.
+
+To hand someone the web app, create a token and send them `https://…/?token=<token>`; the page remembers it. API
+tokens act as admins and show up as "Field" in the app and the activity feed.
+
+## Web app and accounts
+
+The web app lives in [`web/`](web) and is served by `server.py` from `web/dist`.
+
+**Accounts.** People sign in with their Slack account in the workspace and appear under their Slack display name.
+The session is an HttpOnly cookie (30 days, stored hashed in `<data-dir>/sessions.json`). Everyone signed in also
+gets a personal API token (`mapu_…`, account menu > API) that acts as them; regenerating it revokes the old one.
+
+**Admins and permissions.** Slack users are admins if their user ID or email is in `SLACK_ADMINS` (comma-separated)
+or an admin added them on the [admin page](#admin-page). Non-admins can control playback, search, queue, lyrics and
+the app's playlists, but get 403 on tokens, the Spotify login, the raw passthrough, the account's library and history,
+and hidden playlists. Cookie-authenticated writes from another origin are refused.
+
+**Bans.** Admins can ban someone by Slack ID or email (Admin > Admins). A banned person is locked out of the web
+app, their API token, sign-in and the Slack bot. Stored in `<data-dir>/bans.json`.
+
+**Credits.** Every play and queue action is credited to whoever did it (`credit` on `/api/status`, `added_by` on the
+queue), saved in `<data-dir>/credits.json` and shown in the app and the Slack feed.
+
+**Playlists.** The app shows every playlist on the Spotify account except those in
+`~/.config/music-api/hidden-playlists.json` (`{"playlists": ["<id>" or {"id", "name"}, ...]}`). Playlists created or
+imported in the app are credited to their creator (`<data-dir>/app-playlists.json`); only they or an admin can rename
+or delete them, and anyone can add or remove tracks. Importing copies a *public* playlist into a new private one.
+Spotify only exposes the first 100 tracks of playlists the account doesn't own, so that's the cap.
+
+**Apple Music and YouTube links** are read for titles, artists and lengths only (`links.py`, `yt.py`) and matched to
+Spotify songs; nothing plays from them. YouTube / YouTube Music songs, albums and public or unlisted playlists (up to
+500 songs) work from `youtube.com`, `music.youtube.com`, `youtu.be`, Shorts and embed links. Metadata comes from
+YouTube Music's public InnerTube endpoints with oEmbed as the fallback for single videos; if YouTube starts rejecting
+requests, bump `yt.CLIENT_VERSION`. Private lists, mixes and channel links are refused.
+
+<details>
+<summary><b>Embedding the app in another page</b></summary>
+
 Add `&embed=<host>` when another app frames the web app with its own player bar: the bottom player bar, top bar and
-the New playlist/Import buttons are hidden and Up next opens by default. `embed=fms` (the FMS touch panel) also swaps
+New playlist / Import buttons are hidden and Up next opens by default. `embed=fms` (the FMS touch panel) also swaps
 the icons for SF Symbols (`web/src/embed`, font rebuilt by `web/scripts/subset-sf-font.sh`), enlarges everything for
 touch, uses the panel's black and green, and posts swipes that start on the top edge to the panel so it can slide the
-app away. Only `MUSIC_API_FRAME_ANCESTORS` (CSP `frame-ancestors`, default the field laptop's Cheesy Arena on
-`localhost:8080`/`fms.local:8080`) may frame the app. API tokens show up as "Field" in the app and the activity feed.
+app away.
 
-### Web app accounts (Sign in with Slack)
+Only origins in `MUSIC_API_FRAME_ANCESTORS` (CSP `frame-ancestors`, default `localhost:8080` and `fms.local:8080`)
+may frame the app.
+</details>
 
-People sign in to the web app with their Slack account in the pinewoodrobotics workspace and appear under their Slack
-display name. The session is an HttpOnly cookie (30 days, stored hashed in `<data-dir>/sessions.json`).
-API tokens keep working and act as **Admin**. Slack users are admins if their user ID or email is in `SLACK_ADMINS` (comma-separated) or an admin added them on the [admin page](#admin-page).
-Everyone signed in with Slack also gets a personal API token (`mapu_…`, account menu → API) that acts as them; regenerating it revokes the old one.
-Every play and queue action is credited to whoever did it (`credit` on `/api/status`, `added_by` on the queue), saved in `<data-dir>/credits.json` and shown in the web app and the Slack feed.
-Non-admins can control playback, search, queue, lyrics and the app's playlists, but get 403 on tokens, the Spotify login,
-the raw passthrough, the account's library/history and hidden playlists. Cookie-authenticated writes from another origin are refused.
+<details>
+<summary><b>Setting up Sign in with Slack</b></summary>
 
-The app shows every playlist in the Spotify account *except* those listed in `~/.config/music-api/hidden-playlists.json`
-(`{"playlists": ["<id>" or {"id", "name"}, ...]}`, kept only on the Pi). Playlists created or imported in the app are
-credited to whoever made them (`<data-dir>/app-playlists.json`); only they or an admin can rename or delete them, and
-anyone can add or remove tracks. Importing copies a *public* playlist into a new private playlist on the account. Spotify
-only exposes the first 100 tracks of playlists the account doesn't own (through the public embed page), so that's the cap.
+Create a Slack app from the [manifest below](#slack-bot), install it to the workspace, and put
+`SLACK_CLIENT_ID`, `SLACK_CLIENT_SECRET`, `SLACK_BOT_TOKEN` (`xoxb-…`) and `SLACK_REDIRECT_URI` in
+`~/.config/music-api/env`. The bot token is used for `users.info` (display names), `auth.test` (the workspace ID
+sign-ins must match) and the Slack bot.
+</details>
 
-Apple Music and YouTube links are read for titles, artists and lengths only (`links.py`, `yt.py`) and matched to Spotify songs; nothing plays from them.
-YouTube / YouTube Music songs, albums and public or unlisted playlists (up to 500 songs) work from `youtube.com`, `music.youtube.com`,
-`youtu.be`, Shorts and embed links. Metadata comes from YouTube Music's public InnerTube endpoints (the client version lives in
-`yt.CLIENT_VERSION`; bump it if YouTube starts rejecting requests) with oEmbed as the fallback for single videos. Plain uploads
-get their "Artist - Title (Official Video)" noise cleaned up first. Private lists, mixes and channel links are refused.
+<details>
+<summary><b>Setting up Sign in with Google</b></summary>
 
-Setup: create a Slack app from this manifest at api.slack.com/apps, install it to the workspace, and put
-`SLACK_CLIENT_ID`, `SLACK_CLIENT_SECRET`, `SLACK_BOT_TOKEN` (`xoxb-…`) and `SLACK_REDIRECT_URI` in `~/.config/music-api/env`.
-The bot token is used for `users.info` (display names), `auth.test` (the workspace ID sign-ins must match), and the Slack bot below.
+An alternative for accounts in one Google Workspace domain (`GET /auth/google/login`, callback
+`/auth/google/callback`; `GET /auth/methods` returns `{"slack": bool, "google": bool}`). The Google email is mapped to
+the Slack user with the same email (`users.lookupByEmail`), so the session, name, avatar, admin rights and personal
+token are identical to signing in with Slack. Accounts that aren't verified, aren't in the allowed domain, or aren't
+in the Slack workspace are refused.
 
-**Sign in with Google.** An alternative for `@pinewood.edu` accounts (`GET /auth/google/login`, callback `/auth/google/callback`, `GET /auth/methods` returns
-`{"slack": bool, "google": bool}`). The Google email is mapped to the Slack user with the same email (`users.lookupByEmail`), so the session, name, avatar,
-admin rights and personal token are identical to signing in with Slack. Accounts that aren't verified, not in the allowed domain, or not in the Slack workspace are refused.
 1. Google Cloud console > APIs & Services > Credentials > Create credentials > OAuth client ID > Web application.
-   Authorized redirect URI: `https://music.pinewoodrobotics.org/auth/google/callback`.
-2. OAuth consent screen: user type **Internal** if available (Workspace), scopes `openid email profile`.
-3. In `~/.config/music-api/env` set `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` and optionally `GOOGLE_REDIRECT_URI`
-   (default `<MUSIC_API_URL>/auth/google/callback`, else `http://127.0.0.1:<port>/auth/google/callback`) and `GOOGLE_ALLOWED_DOMAIN` (default `pinewood.edu`).
-4. Add the bot scope `users:read.email` to the Slack app and reinstall it (without it Google sign-in shows "isn't fully set up yet").
+   Authorized redirect URI: `https://<your host>/auth/google/callback`.
+2. OAuth consent screen: user type **Internal** if available, scopes `openid email profile`.
+3. In `~/.config/music-api/env` set `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, and optionally `GOOGLE_REDIRECT_URI`
+   (default `<MUSIC_API_URL>/auth/google/callback`, else `http://127.0.0.1:<port>/auth/google/callback`) and
+   `GOOGLE_ALLOWED_DOMAIN` (default `pinewood.edu`).
+4. Add the bot scope `users:read.email` to the Slack app and reinstall it. Without it, Google sign-in shows "isn't
+   fully set up yet".
+</details>
 
-**Slack bot ("Robotics Music").** Set `SLACK_SIGNING_SECRET` (Basic Information > Signing Secret) and invite the bot to the channel
-(`SLACK_MUSIC_CHANNEL`, default #music). Without the secret the bot stays off and the server starts normally.
-- *Live feed:* every track change posts one "Now playing" message (art, title, who queued it, the next 3 songs with art, Play/Pause, Skip, More Controls).
-  It is edited on pause/resume and queue changes (at most every 5 s) and shrinks to a compact "Played" line when the track changes.
-- `/music <query>` searches (Add to queue / Play buttons), `/music now`, `/music queue`, `/music play|pause|skip`, `/music help`.
-  Pasting a Spotify link after `/music` works too. Skips, pauses and plays are announced in the channel with who did them.
-- Tracks queued from Slack are credited to that person, so the web app's Up Next shows "Added by".
-- Spotify, Apple Music and YouTube / YouTube Music song, album and playlist links shared in Slack (or after `/music`) unfurl with Add to queue / Play / Import as playlist buttons.
-- A Spotify, Apple Music or YouTube link posted in the music channel gets one threaded reply (also sent to the channel) with a card per link (up to 3): Play now, Queue, and Add to Library / Import to Library. Clicks update that same message with who did what.
-- `/slack/*` requests are verified with the signing secret (v0 HMAC, 5 minute window) and only accepted from the workspace.
+## Slack bot
+
+Set `SLACK_SIGNING_SECRET` (Basic Information > Signing Secret) and invite the bot to the channel
+(`SLACK_MUSIC_CHANNEL`, default `#music`). Without the secret the bot stays off and the server starts normally.
+
+- **Live feed.** Every track change posts one "Now playing" message: art, title, who queued it, the next 3 songs,
+  and Play/Pause, Skip and More Controls buttons. It's edited on pause, resume and queue changes (at most every 5 s)
+  and shrinks to a compact "Played" line when the track changes.
+- **`/music`.** `/music <query>` searches with Add to queue / Play buttons; also `now`, `queue`, `play`, `pause`,
+  `skip` and `help`. A Spotify link after `/music` works too. Skips, pauses and plays are announced with who did them.
+- **Links.** Spotify, Apple Music and YouTube links shared in Slack unfurl with Add to queue / Play / Import as
+  playlist buttons. A link posted in the music channel gets one threaded reply with a card per link (up to 3): Play
+  now, Queue, and Add to Library / Import to Library.
+- **Credit.** Tracks queued from Slack are credited to that person, so the web app shows "Added by".
+- **Security.** `/slack/*` requests are verified with the signing secret (v0 HMAC, 5 minute window) and only accepted
+  from the workspace.
+
+<details>
+<summary><b>Slack app manifest</b></summary>
+
+Replace `music.pinewoodrobotics.org` with your host.
 
 ```yaml
 display_information:
@@ -174,57 +273,63 @@ settings:
   socket_mode_enabled: false
   token_rotation_enabled: false
 ```
-After changing scopes, reinstall the app to the workspace so the bot token picks them up.
-For an app that already exists, add `youtube.com`, `music.youtube.com` and `youtu.be` under *Event Subscriptions > App Unfurl Domains* in the Slack app settings (the manifest above only applies to new apps); without them YouTube links won't unfurl or get channel cards.
 
-### Web API limits (development-mode apps, 2026 rules)
+After changing scopes, reinstall the app so the bot token picks them up. The manifest only applies to new apps: for
+an existing one, add any missing domains under *Event Subscriptions > App Unfurl Domains*, or those links won't
+unfurl.
+</details>
 
-- The app owner needs Premium. A new app gets at most 5 users (add them under *User Management*).
-- Search returns at most 10 results per type per page. Page with `offset`.
-- Playlist **items** only come back for playlists you own or collaborate on. Any playlist can still be *played* by URI.
-- Removed by Spotify, so not available here: browse/categories, new releases, artist top tracks, recommendations,
-  audio features, related artists, popularity, batch lookups.
-- Saving and removing goes through the generic `/me/library` (`PUT/DELETE /api/library {uris}`, max 40 per call).
+## Raspberry Pi setup
 
-## Raspberry Pi setup (Soloist)
+Tested on a **Pi 3 B+** (also fine: Pi 4/5, Zero 2 W) with **Raspberry Pi OS Lite 64-bit** and USB speakers. No
+cooling needed, but use a proper 5 V / 2.5 A supply (`vcgencmd get_throttled` should print `0x0`).
 
-Tested target: Pi 3 B+ or newer (incl. Zero 2 W) on **Raspberry Pi OS Lite 64-bit**, USB speakers. No cooling needed
-for audio; use a proper 5 V / 2.5 A supply (`vcgencmd get_throttled` should print `0x0`).
-
-1. Copy this repo to the Pi (e.g. `scp -r music-api-v2 pi@music.local:`), then on the Pi:
-   `cd music-api-v2 && sh deploy/install-linux.sh`
-2. Create a Soloist API key (developer.spotify.com/dashboard → Spotify Soloist API Key, Premium account) and fill in
-   `~/.config/music-api/env`: `SOLOIST_API_KEY`, `DEVICE_NAME`, `SPOTIFY_CLIENT_ID`.
-3. Pick the output: `wpctl status`, find the USB speakers under *Sinks*, then `wpctl set-default <id>`
-   (or put the node name in `SOLOIST_PIPEWIRE_DEVICE`).
-4. `systemctl --user start soloist music-api`, then in the Spotify app on the same Wi-Fi pick `DEVICE_NAME` once
-   to pair Soloist. `soloist ctl status` should now say logged in. Use the desktop or mobile app; the web player only
-   lists devices that are already logged in. Pairing relies on mDNS, so the app must be on the Pi's subnet; see
+1. Copy the repo to the Pi and run the installer:
+   ```sh
+   scp -r music-api pi@music.local:
+   ssh pi@music.local 'cd music-api && sh deploy/install-linux.sh'
+   ```
+   It installs PipeWire, the AirPlay receiver (`NO_AIRPLAY=1` skips it), `ffmpeg` and `pw-play`, enables lingering
+   so user services run without a login, installs systemd user units (Soloist, the API, AirPlay, the display, the
+   quiet-hours timer and a daily Soloist update) and creates `~/.config/music-api/env`.
+2. Fill in `~/.config/music-api/env`: `SOLOIST_API_KEY`, `DEVICE_NAME`, `SPOTIFY_CLIENT_ID`
+   (see [`deploy/env.example`](deploy/env.example) for everything else).
+3. Pick the output: `wpctl status`, find the speakers under *Sinks*, then `wpctl set-default <id>` (or put the node
+   name in `SOLOIST_PIPEWIRE_DEVICE`).
+4. `systemctl --user start soloist music-api`, then pick `DEVICE_NAME` once in the Spotify desktop or mobile app on
+   the same Wi-Fi to pair Soloist (the web player only lists devices that are already logged in).
+   `soloist ctl status` should say logged in. Pairing uses mDNS, so the app must be on the Pi's subnet; see
    [Pairing from another subnet](#pairing-from-another-subnet) if it isn't.
-5. Log in to the Web API over SSH: `python3 ~/.local/share/music-api-v2/server.py auth --client-id <id>` and paste the
-   redirected URL (`auth` doesn't read the env file, hence `--client-id`).
-   It doesn't open a port, so the service can keep running; afterwards `systemctl --user restart music-api` so it picks up the login.
-6. Your first API token: `cat ~/.local/share/music-api/token`. Test with
-   `curl -H "Authorization: Bearer <token>" http://music.local:8765/api/status`; it should say `"backend": "soloist"`.
-   Then manage tokens with `/api/tokens` and delete that file.
-7. Logs: `journalctl --user-unit soloist --user-unit music-api -f` (Pi OS keeps the journal in RAM, so `journalctl --user` finds nothing).
+5. Log in to the Web API over SSH:
+   `python3 ~/.local/share/music-api-v2/server.py auth --client-id <id>` and paste the redirected URL. It doesn't open
+   a port, so the service can keep running; then `systemctl --user restart music-api`.
+6. Get your first API token with `cat ~/.local/share/music-api/token` and test it:
+   ```sh
+   curl -H "Authorization: Bearer <token>" http://music.local:8765/api/status   # "backend": "soloist"
+   ```
+   From then on, manage tokens with `/api/tokens` and delete that file.
+7. Logs: `journalctl --user-unit soloist --user-unit music-api -f`. Pi OS keeps the journal in RAM, so plain
+   `journalctl --user` finds nothing.
 
-### Cloudflare tunnel
+Set the Pi's timezone (`sudo timedatectl set-timezone America/Los_Angeles`) for quiet hours; the installer warns if
+it's UTC.
 
-`music.pinewoodrobotics.org` is a named tunnel run by a system `cloudflared` service on the Pi.
-The API service runs with `--public`, because tunnelled requests arrive from `127.0.0.1` and would otherwise skip the token check.
-To set it up again (install `cloudflared` from [pkg.cloudflare.com](https://pkg.cloudflare.com/index.html) first):
+### Public access with a Cloudflare tunnel
 
-```
-cloudflared tunnel login                                    # pick the pinewoodrobotics.org zone in the browser
+The production host is a named tunnel run by a system `cloudflared` service on the Pi. The API runs with `--public`,
+because tunnelled requests arrive from `127.0.0.1` and would otherwise skip the token check. Install `cloudflared`
+from [pkg.cloudflare.com](https://pkg.cloudflare.com/index.html), then:
+
+```sh
+cloudflared tunnel login                                    # pick your zone in the browser
 cloudflared tunnel create music-api
-cloudflared tunnel route dns -f music-api music.pinewoodrobotics.org
+cloudflared tunnel route dns -f music-api music.example.org
 sudo mkdir -p /etc/cloudflared && sudo cp ~/.cloudflared/<tunnel-id>.json /etc/cloudflared/
 sudo tee /etc/cloudflared/config.yml <<EOF
 tunnel: <tunnel-id>
 credentials-file: /etc/cloudflared/<tunnel-id>.json
 ingress:
-  - hostname: music.pinewoodrobotics.org
+  - hostname: music.example.org
     service: http://127.0.0.1:8765
   - service: http_status:404
 EOF
@@ -235,11 +340,11 @@ Logs: `journalctl -u cloudflared -f`.
 
 ### Pairing from another subnet
 
-Spotify apps find unpaired Connect devices over mDNS, which doesn't cross routers. If your computer is on a different
-subnet from the Pi but can reach it by IP, relay Soloist's pairing port through the computer and advertise it there
-(macOS shown; get the port and path with `avahi-browse -rt _spotify-connect._tcp` on the Pi):
+Spotify apps find unpaired Connect devices over mDNS, which doesn't cross routers. If your computer is on another
+subnet but can reach the Pi by IP, relay Soloist's pairing port through the computer and advertise it there (macOS
+shown; get the port and path with `avahi-browse -rt _spotify-connect._tcp` on the Pi):
 
-```
+```sh
 ssh -N -g -L 0.0.0.0:<port>:127.0.0.1:<port> ubuntu@<pi-ip> &
 dns-sd -R "PEARL Speakers" _spotify-connect._tcp local <port> Stack=SP VERSION=1.0 CPath=/zc
 ```
@@ -247,182 +352,223 @@ dns-sd -R "PEARL Speakers" _spotify-connect._tcp local <port> Stack=SP VERSION=1
 Restart the Spotify desktop app, pick the device, then stop both commands. Advertising the Pi's own address
 (`dns-sd -P … <pi-ip>`) doesn't work: the app ignores devices that resolve to another subnet.
 
-### Raspberry Pi notes
+### Hardware notes
 
-- **Pi Zero W / Pi 1 (ARMv6) can't run Soloist.** Spotify only ships armv7 (`arm32`), arm64 and x86_64 builds.
-  You have two options:
-  - Get a **Pi Zero 2 W**. It's the same size and price class, and its armv7/arm64 CPU runs the official builds.
-  - On the Zero W, run the API with `--backend connect` and use a community **librespot** build for ARMv6 as the speaker.
-    librespot is unofficial and not supported by Spotify. Raspotify dropped ARMv6, so you'd build librespot yourself
-    with its armv6hf Docker image.
-- **USB speakers.** Soloist outputs through PipeWire (falling back to PulseAudio). Find the speakers with `wpctl status`.
-  Then either set `SOLOIST_PIPEWIRE_DEVICE` in the env file, or make them the default with `POST /api/system/outputs {id}`.
-- **Install.** On the Pi, run `sh deploy/install-linux.sh`. It installs PipeWire, enables lingering so user services run
-  without a login, installs the AirPlay receiver (the distro `shairport-sync` package), installs systemd user units for Soloist, the API, AirPlay, the
-  quiet-hours timer and a daily Soloist update, and creates `~/.config/music-api/env`.
-- **Build expiry.** Soloist builds expire 90 days after they're built (exit code 10).
+- **Pi Zero W and Pi 1 (ARMv6) can't run Soloist.** Spotify only ships armv7, arm64 and x86_64 builds. Use a Pi
+  Zero 2 W instead, or run the API with `--backend connect` and build an unofficial
+  [librespot](https://github.com/librespot-org/librespot) for ARMv6 as the speaker.
+- **Soloist builds expire** 90 days after they're built (exit code 10).
   [`deploy/update-soloist.sh`](deploy/update-soloist.sh) runs daily and pulls the current build from Spotify's CDN.
   Spotify asks that the binary not be redistributed, so it's never committed here.
+- **Speakers.** Soloist outputs through PipeWire (falling back to PulseAudio). Set `SOLOIST_PIPEWIRE_DEVICE`, or
+  make them the default with `POST /api/system/outputs {id}`.
 
-### Quiet hours
-
-From `QUIET_HOURS` (env file or `--quiet-hours`, default `21:00-08:00`, local time, may wrap midnight, `off` disables it):
-
-- When the window starts nothing is cut off. Whatever is playing (Spotify or AirPlay) keeps going and people can keep
-  playing, skipping and starting new AirPlay sessions. That's the **grace** phase.
-- Once no audio has come from any source for 5 continuous minutes (counted from the window start if it was already
-  quiet, so an idle evening locks at 21:05), the speakers **lock** until the window ends: play, resume, skip, jump and
-  transfer-with-play are refused with `423 {"error": "quiet_hours", "until": "08:00", "message": ...}` from every
-  route, the Slack bot and the raw `/api/spotify/me/player/...` passthrough. Pause, volume, search, playlists, the
-  Library and queue editing keep working. The AirPlay receiver stops advertising and every output sink is muted.
-  At the end of the window both are restored (the mute state each sink had before). Sound effects still play unless
-  an admin turns that off, see [Sound effects](#sound-effects).
-- `GET /api/quiet-hours` and `status.quiet_hours` report `{window, phase: open|grace|locked, idle_since, locks_at, until}`.
-- The lock and the idle clock live in `<data-dir>/quiet-hours.json`, so restarts and reboots keep them. A reboot during
-  the window comes up locked if it was locked, otherwise in grace with the persisted idle clock (so a box that was idle
-  locks right away, and one that had been playing locks 5 minutes after boot unless something plays).
-- OS-level backstop, independent of the server: `quiet-hours.timer` runs `quiet_hours.py sync` every minute, which
-  applies the lock (receiver stopped, sinks muted) and undoes it in the morning. If the server's heartbeat in that
-  file is older than 150 s it also judges idleness itself from PipeWire sink activity (`pactl list short sinks`,
-  RUNNING = audio) and locks on its own. `airplay.service` has `quiet_hours.py receiver-allowed` as its
-  `ExecCondition`, so it can't come back while locked (boot, crash restart or a manual start).
-- Set the Pi's timezone (`sudo timedatectl set-timezone America/Los_Angeles`); the installer warns if it's UTC.
-- Admins can change the window and grace period at runtime on the admin page. That's saved in
-  `<data-dir>/quiet-hours-settings.json`, takes precedence over `QUIET_HOURS` (Reset goes back to it) and is read by the
-  watchdog and the receiver's `ExecCondition` too. Admins can also skip tonight's quiet hours (unlock until the window
-  ends) or lock right away during the window.
+## Running on the Pi
 
 ### Admin page
 
-Admins (`SLACK_ADMINS`, people added on the page itself in `<data-dir>/admins.json`, and API tokens) get **Admin** in
-the account menu (`/admin`), backed by `/api/admin/*` (403 for everyone else):
+Admins get **Admin** in the account menu (`/admin`), backed by `/api/admin/*`:
 
-- **System:** CPU (overall and per core) and temperature with 10 minute sparklines, load, under-voltage and throttling
-  (now and since boot, from the firmware's `get_throttled` via sysfs or `vcgencmd`, else the `rpi_volt` hwmon alarm and
-  kernel log), memory, disk, Wi-Fi, service states and versions. A sampler thread reads `/proc/stat` and the thermal zone
-  every 5 s; subprocesses (`systemctl`, `iw`, `journalctl`) are cached, so polling every 2 s is cheap on a Pi 3.
-- **Quiet hours:** see above. **Sound effects:** "Same as media" (effects follow the music slider) or a separate
-  effects volume, and "Play during quiet hours", see [Sound effects](#sound-effects). **Admins:** add people who have signed in, or by Slack ID / email; config admins can't be
-  removed here, and nobody can remove themselves as the last admin.
-- **Updates:** compares the deployed commit (`BUILD.json`) with GitHub and updates without stopping the music, below.
-- **Services:** restart Soloist, AirPlay or the display (with a confirmation) and read each unit's recent journal.
+| Tab | |
+|---|---|
+| **System** | CPU (overall and per core) and temperature with 10 minute sparklines, load, under-voltage and throttling (now and since boot), memory, disk, Wi-Fi, service states and versions. Sampled every 5 s and cached, so polling every 2 s is cheap on a Pi 3. |
+| **Quiet hours** | Change the window and grace period, skip tonight, or lock now. See [Quiet hours](#quiet-hours). |
+| **Sound effects** | Effects volume and whether they play during quiet hours. See [Sound effects](#sound-effects). |
+| **Admins** | Add admins (people who have signed in, or by Slack ID / email) and ban or unban people. Config admins can't be removed here, and nobody can remove the last admin. |
+| **Updates** | Compares the deployed commit with GitHub and updates without stopping the music. |
+| **Services** | Restart Soloist, AirPlay or the display, and read each unit's recent journal. |
 
-#### Updates from GitHub
+### Updates from GitHub
 
-`.github/workflows/pi-build.yml` runs the Python tests on every push to `main`, builds `web/dist` and force-pushes the
-deployable tree (what `deploy-pi.sh` copies, plus `BUILD.json`) to the `pi-build` branch, using the workflow's own token.
-On the Pi, `updater.py` keeps a bare clone (`~/.local/share/music-api-repo.git`) that fetches `main` and `pi-build`
-with a read-only deploy key (`~/.ssh/music-api-deploy`). An update stages `pi-build` in `music-api-v2.new`, swaps it in
-(the old tree stays as `music-api-v2.prev`), installs changed unit files that are already installed (`daemon-reload`),
-restarts music-api only if Python files changed and music-display only if its files changed, then checks `/api/status`.
-If that fails it swaps back and restarts again. Soloist and the AirPlay receiver are never restarted, and anything that
-needs sudo (apt packages, `install-airplay.sh`) is listed as a note instead of being run. It runs as a transient
-`systemd-run --user` unit so it survives the music-api restart; progress goes to `<data-dir>/update.json`.
+On every push to `main`, [`.github/workflows/pi-build.yml`](.github/workflows/pi-build.yml) runs the Python tests,
+builds `web/dist` and force-pushes the deployable tree (plus `BUILD.json`) to the `pi-build` branch.
 
-One-time setup on the Pi: `python3 ~/.local/share/music-api-v2/updater.py setup` creates the key and the bare repo and
-prints the public key. Add it on GitHub (repo Settings > Deploy keys, read-only), then `python3 updater.py status`.
-`python3 updater.py update` does the same as the button. `deploy/deploy-pi.sh` keeps working and writes `BUILD.json` too.
+On the Pi, `updater.py` keeps a bare clone (`~/.local/share/music-api-repo.git`) that fetches with a read-only deploy
+key. An update:
+
+1. stages `pi-build` in `music-api-v2.new` and swaps it in (the old tree stays as `music-api-v2.prev`),
+2. installs changed unit files that are already installed,
+3. restarts `music-api` only if Python files changed, and `music-display` only if its files changed,
+4. checks `/api/status`, and swaps back if that fails.
+
+Soloist and the AirPlay receiver are never restarted, and anything that needs sudo is listed as a note instead of
+being run. The update runs as a transient `systemd-run --user` unit so it survives the restart; progress goes to
+`<data-dir>/update.json`.
+
+One-time setup: `python3 ~/.local/share/music-api-v2/updater.py setup` creates the key and the bare repo and prints
+the public key. Add it on GitHub (Settings > Deploy keys, read-only), then check with `python3 updater.py status`.
+`python3 updater.py update` does the same as the button. [`deploy/deploy-pi.sh`](deploy/deploy-pi.sh) still works for
+copying straight from a laptop.
+
+### Quiet hours
+
+Set by `QUIET_HOURS` (env file or `--quiet-hours`; default `21:00-08:00` local time, may wrap midnight, `off`
+disables it).
+
+1. **Grace.** When the window starts nothing is cut off. Whatever is playing keeps going, and people can keep
+   playing, skipping and starting AirPlay sessions.
+2. **Locked.** Once no audio has come from any source for 5 minutes (counted from the window start if it was already
+   quiet, so an idle evening locks at 21:05), the speakers lock until the window ends. Play, resume, skip, jump and
+   transfer-with-play return `423 {"error": "quiet_hours", "until": "08:00", ...}` from every route, the Slack bot
+   and the raw passthrough. Pause, volume, search, playlists and queue editing keep working. The AirPlay receiver
+   stops advertising and every output is muted.
+3. **Morning.** Both are restored, with each output's previous mute state.
+
+`GET /api/quiet-hours` and `status.quiet_hours` report `{window, phase: open|grace|locked, idle_since, locks_at, until}`.
+
+<details>
+<summary><b>How the lock survives restarts</b></summary>
+
+- The lock and the idle clock live in `<data-dir>/quiet-hours.json`. A reboot during the window comes up locked if
+  it was locked, otherwise in grace with the saved idle clock.
+- `quiet-hours.timer` runs `quiet_hours.py sync` every minute as an OS-level backstop: it applies or undoes the lock,
+  and if the server's heartbeat is older than 150 s it judges idleness itself from PipeWire sink activity and locks
+  on its own.
+- `airplay.service` has `quiet_hours.py receiver-allowed` as its `ExecCondition`, so the receiver can't come back
+  while locked.
+- Settings changed on the admin page are saved in `<data-dir>/quiet-hours-settings.json` and take precedence over
+  `QUIET_HOURS` (Reset goes back to it).
+</details>
 
 ### AirPlay receiver
 
-The Pi also shows up as an AirPlay speaker named `AIRPLAY_NAME` (default "PEARL Speakers"), using classic AirPlay (no
-multi-room, no AirPlay 2). AirPlay completely overrides Spotify:
+The Pi also shows up as an AirPlay speaker named `AIRPLAY_NAME` (default "PEARL Speakers"), using classic AirPlay
+(no multi-room). AirPlay takes over from Spotify:
 
-- A session starting pauses Soloist (track, position and queue stay put) and remembers whether it was playing.
-- While it lasts, `/api/status` shows the AirPlay song (`source: "airplay"`, title, artist, album, art at
-  `/api/airplay/artwork`, progress, `airplay.sender`). Queue and library editing still work. AirPlay doesn't carry
-  the sender's queue, so there's no Up Next for it.
-- Play, pause, play/pause, next and previous (`/api/play` with no body, `/api/pause`, `/api/playpause`, `/api/next`,
-  `/api/previous`, the web app and the Slack bot) control the AirPlay sender instead of Spotify. They go through
-  shairport-sync's D-Bus `RemoteControl` interface, which finds the sender's DACP service and uses its Active-Remote
-  token. If the sender has no remote control (some apps and Android senders) they fail with
-  `409 airplay_remote_unavailable`. Everything else in Spotify transport (play a track, seek, jump, transfer) is refused
-  with `409 {"error": "airplay_active", "sender": ...}`.
-- The Slack #music feed posts AirPlay songs too once they have a title, artist and cover art (no art usually means a video
-  or podcast, which isn't posted): same card, credited to the sender's device name, no Up next. The cover is served
-  without a token at `/airplay-art/<12-hex content hash>` (the last 8 covers are kept) so Slack can fetch it.
-- When it ends (the sender stops or disconnects, or someone presses Stop AirPlay / `POST /api/airplay/stop`, which
-  restarts the receiver to drop the sender, who can reconnect a few seconds later), Spotify resumes right where it
-  left off if it was playing before, and stays paused otherwise. It doesn't resume if quiet hours have locked.
+- A session starting pauses Spotify (track, position and queue stay put).
+- While it lasts, `/api/status` shows the AirPlay song (`source: "airplay"`, art at `/api/airplay/artwork`,
+  `airplay.sender`), and the Slack feed posts it, credited to the sender's device.
+- Play, pause, next and previous (from the API, the web app and Slack) control the sender through shairport-sync's
+  D-Bus `RemoteControl`. Senders without remote control get `409 airplay_remote_unavailable`. Other Spotify transport
+  (play a track, seek, transfer) returns `409 airplay_active`.
+- When it ends (the sender stops, or someone presses Stop AirPlay / `POST /api/airplay/stop`), Spotify resumes if it
+  was playing before, unless quiet hours have locked.
 
-How it's installed (`deploy/install-airplay.sh`, run by `install-linux.sh`; `NO_AIRPLAY=1` skips it): the distro
-`shairport-sync` package (Ubuntu 24.04: 3.3.8, Debian 13: 4.3.7) is classic AirPlay and is built with PulseAudio
-output, the metadata pipe, D-Bus/MPRIS and MQTT. The script installs it, disables the package's system service,
-checks those features, and removes the AirPlay 2 build (NQPTP, `/usr/local/bin/shairport-sync`) an earlier version of
-the script installed. shairport-sync runs as the `airplay.service` user unit (it has to, to reach the user's
-PipeWire and session bus), with [`deploy/shairport-sync.conf`](deploy/shairport-sync.conf): PulseAudio output,
-metadata and cover art to `/tmp/shairport-sync-metadata`, D-Bus on the session bus. The server reads that pipe
-(`--airplay-pipe`); a missing pipe (macOS, receiver not installed) is fine, and shairport-sync restarts are picked up.
-Remote control needs `busctl` (systemd) and `dbus-user-session`. A server restart mid-song loses the session until the
-next song starts (classic AirPlay has no heartbeat to rejoin it).
+<details>
+<summary><b>How it's installed</b></summary>
+
+[`deploy/install-airplay.sh`](deploy/install-airplay.sh) installs the distro `shairport-sync` package (built with
+PulseAudio output, the metadata pipe, D-Bus/MPRIS and MQTT), disables its system service and checks those features.
+shairport-sync then runs as the `airplay.service` user unit, so it can reach the user's PipeWire and session bus, with
+[`deploy/shairport-sync.conf`](deploy/shairport-sync.conf): metadata and cover art go to
+`/tmp/shairport-sync-metadata`, which the server reads (`--airplay-pipe`). A missing pipe is fine (macOS, or no
+receiver installed). Remote control needs `busctl` and `dbus-user-session`. A server restart mid-song loses the
+session until the next song starts.
+
 Logs: `journalctl --user-unit airplay -f`.
+</details>
 
 ### Sound effects
 
-Register short clips by name and play them over whatever else is playing, e.g. for the practice field's match timer (`/api/effects`; reference in [API.md](API.md) and `llms-full.txt`).
+Register short clips by name and play them over whatever else is playing, e.g. for a match timer.
 
-- `POST /api/effects?name=match-start` with the audio as the body (`Content-Type: audio/wav`, mp3, ogg or flac, or multipart, or JSON `{name, url}`) registers a clip; `GET/PATCH/DELETE /api/effects/{name}` read, rename and delete it. Registering and deleting are admin-only.
-- `POST /api/effects/{name}/play {volume?, duck?, duck_level?}` returns immediately. `POST /api/effects/stop` stops every playing effect.
-- Effects follow the music volume slider (Spotify's volume, `/api/volume`): a play runs at `volume` x slider / 100, reported as `slider_volume` and `effective_volume` (`volume_source: "media"`). The slider is read from Soloist's local state, or the last value seen in a status or volume change (connect mode, AirPlay, idle), never from the Web API at play time. It is persisted in `<data-dir>/effects/slider.json`; until one has been seen it is 50.
-- Admins can unhook effects from the music volume (Admin > Sound effects: uncheck **Same as media**, then set **Sound effects volume**; `/api/admin/effects-volume`). Plays then run at `volume` x that level / 100 and report it as `slider_volume` with `volume_source: "fixed"`. Saved in `<data-dir>/effects/volume.json`; applies to the next play.
-- Playing is one `pw-play` process per play: its own PipeWire stream, mixed with Spotify and AirPlay, which keep playing untouched. Plays may overlap (16 at most). Nothing is transcoded at play time: at registration ffmpeg converts the upload to 48 kHz stereo 16-bit WAV (PipeWire's rate) and it is stored as `<data-dir>/effects/<name>.wav` with `index.json`. Without ffmpeg only PCM WAV uploads are accepted, as they are.
-- `duck: true` lowers the other PipeWire streams (`pactl set-sink-input-volume`) to `duck_level` % (default 30) while the effect plays and restores them when the last ducking effect ends, or at the next server start if it died mid-duck. Streams that begin during the duck aren't lowered, and the music's own volume setting is not touched.
-- Quiet hours: effects keep playing while the speakers are locked (Admin > Sound effects > **Play during quiet hours**, on by default; `play_during_quiet_hours` in `/api/admin/effects-volume`, saved in `<data-dir>/effects/volume.json`). The lock mutes every sink at the OS level, so a quiet-hours play unmutes the sinks the lock muted (not ones that were muted before) for the effect's length plus 2 s and mutes them again when the last one ends; the play response has `quiet_hours: true`. `quiet_hours.py sync` leaves the sinks alone until then (`effects_until` in `<data-dir>/quiet-hours-os.json`) and re-mutes if the server dies mid-effect. Music stays refused, the AirPlay receiver stays off, Spotify is not resumed and the lock and idle clock are untouched: effects never count as playback. With the setting off, effects get `423 quiet_hours` while locked, like play. Either way they play normally during the grace phase and outside the window, and managing and stopping effects always works.
-- The Pi needs `pw-play` (`pipewire-bin`) and `ffmpeg`; `install-linux.sh` and `deploy-pi.sh` install them if missing. Plays are not written to the activity feed.
+```sh
+curl -X POST -H "Authorization: Bearer $T" -H "Content-Type: audio/wav" \
+     --data-binary @start.wav "https://music.example.org/api/effects?name=match-start"
+curl -X POST -H "Authorization: Bearer $T" https://music.example.org/api/effects/match-start/play \
+     -d '{"volume": 100, "duck": true}'
+```
+
+- Register with the audio as the body (wav, mp3, ogg or flac, or multipart, or JSON `{name, url}`);
+  `GET/PATCH/DELETE /api/effects/{name}` read, rename and delete. Registering and deleting are admin-only.
+- `POST /api/effects/{name}/play {volume?, duck?, duck_level?}` returns immediately; `POST /api/effects/stop` stops
+  everything. Up to 16 plays can overlap, each its own `pw-play` stream mixed with the music.
+- Volume follows the music slider by default (`volume` x slider / 100). Admins can switch to a fixed effects volume.
+- `duck: true` lowers the other streams to `duck_level` % (default 30) while the effect plays.
+- Uploads are converted once with ffmpeg to 48 kHz stereo WAV and stored in `<data-dir>/effects/`. Without ffmpeg
+  only PCM WAV is accepted.
+- By default effects still play while quiet hours are locked (briefly unmuting only the outputs the lock muted).
+  They never count as playback. Turn this off on the admin page to get `423 quiet_hours` instead.
 
 ### HDMI now-playing display
 
-`display/now_playing_display.py` draws a now-playing screen (blurred artwork background, big cover, title, progress, "Playing Next") straight into `/dev/fb0` on a Pi with no desktop. It needs only `python3-pil` and `fonts-inter`, follows `/api/events`, and redraws the progress bar at most every 2 s.
+[`display/now_playing_display.py`](display/now_playing_display.py) draws a now-playing screen (blurred artwork
+background, big cover, title, progress, "Playing Next") straight into `/dev/fb0`, with no desktop. It needs only
+`python3-pil` and `fonts-inter` and follows `/api/events`.
 
-- AirPlay sessions show the sender's art and song with "AirPlay from <sender>". As soon as nothing is playing (paused, stopped, quiet-hours locked, logged out) it draws black and powers the HDMI output down with the `FBIOBLANK` ioctl on `/dev/fb0` (the DRM connector goes to DPMS Off so the monitor enters standby; the `video` group can do this, no udev rule or root needed). Anything playing wakes it at once and redraws the full scene; a 1.5 s debounce keeps track changes from flickering.
-- Future option: cutting USB power to the screen with `uhubctl` isn't viable on a Pi 3 B+ because its USB ports switch together and would also cut the USB speakers; it would need a per-port-switchable hub or a smart plug.
-- It reads the framebuffer size at runtime, so it works at any resolution (16 or 32 bpp). `vt.global_cursor_default=0 consoleblank=0 quiet logo.nologo` keeps the text console quiet.
-- Pin the monitor's EDID. If the Pi can't read it when the monitor wakes, the kernel falls back to 1024x768 while the framebuffer stays 1920x1080, so the monitor shows a stretched, clipped top-left corner. Save the EDID while the mode is right and load it from firmware:
-  ```
-  sudo mkdir -p /lib/firmware/edid && sudo cp /sys/class/drm/card0-HDMI-A-1/edid /lib/firmware/edid/acer.bin
-  # append to the single line in /boot/firmware/cmdline.txt:
-  drm.edid_firmware=HDMI-A-1:edid/acer.bin video=HDMI-A-1:1920x1080@60D
-  ```
-  Also add an `/etc/initramfs-tools/hooks/edid` hook that copies the file into `$DESTDIR/lib/firmware/edid/`, then run `sudo update-initramfs -u` and reboot. `kmsprint` should show the CRTC at 1920x1080.
-- `install-linux.sh` disables `getty@tty1`, lets the `video` group hide the tty1 cursor, silences console kernel messages, and enables the `music-display` user unit. Create its token once: `POST /api/tokens {"name": "pi display"}` into `~/.config/music-api/display-token` (mode 600).
+- AirPlay shows the sender's song with "AirPlay from <sender>".
+- When nothing is playing it powers the HDMI output down (`FBIOBLANK`, so the monitor goes to standby) and wakes
+  instantly when something plays.
+- It works at any resolution (16 or 32 bpp).
+- Create its token once: `POST /api/tokens {"name": "pi display"}` into `~/.config/music-api/display-token` (mode 600).
 - Preview without a framebuffer: `python3 display/now_playing_display.py --render-png /tmp/shot.png --size 1920x1080`.
 
-## Running on macOS (launchd + Cloudflare tunnel)
+<details>
+<summary><b>Monitor shows a stretched, clipped image after waking</b></summary>
 
-This is how it ran in production on the lab Mac before moving to the Pi (the agent is saved in
-[`deploy/macos/`](deploy/macos/org.pinewoodrobotics.music-api.plist); copy it to `~/Library/LaunchAgents/` and
-`launchctl bootstrap gui/$(id -u) <plist>` to bring it back). Two launchd agents, both `RunAtLoad` + `KeepAlive`:
+If the Pi can't read the monitor's EDID when it wakes, the kernel falls back to 1024x768 while the framebuffer stays
+1920x1080. Pin the EDID while the mode is right:
 
-- `~/Library/LaunchAgents/org.pinewoodrobotics.music-api.plist` runs `python3 server.py --public --client-id <id>`
-  from `~/Developer/music-api-v2`. Output goes to `server.log` in the repo directory (gitignored).
-  On a Mac there's no Soloist, so `auto` picks the `connect` backend: play on the Spotify desktop app or any other Connect device.
-- `org.pinewoodrobotics.music-api-tunnel` runs `cloudflared` with `~/.cloudflared/music-api.yml`, which maps
-  `music.pinewoodrobotics.org` to `http://127.0.0.1:8765`.
-
+```sh
+sudo mkdir -p /lib/firmware/edid && sudo cp /sys/class/drm/card0-HDMI-A-1/edid /lib/firmware/edid/monitor.bin
+# append to the single line in /boot/firmware/cmdline.txt:
+drm.edid_firmware=HDMI-A-1:edid/monitor.bin video=HDMI-A-1:1920x1080@60D
 ```
+
+Also add an `/etc/initramfs-tools/hooks/edid` hook that copies the file into `$DESTDIR/lib/firmware/edid/`, run
+`sudo update-initramfs -u` and reboot. `kmsprint` should show the CRTC at 1920x1080.
+</details>
+
+## Running on macOS
+
+There's no Soloist on a Mac, so `auto` picks the `connect` backend and plays on the Spotify desktop app or any other
+Connect device. To keep it running, use the launchd agent in
+[`deploy/macos/`](deploy/macos/org.pinewoodrobotics.music-api.plist): copy it to `~/Library/LaunchAgents/`, adjust the
+paths and client ID, and `launchctl bootstrap gui/$(id -u) <plist>`. It runs
+`python3 server.py --public --client-id <id>` with output in `server.log`.
+
+```sh
 launchctl kickstart -k gui/$(id -u)/org.pinewoodrobotics.music-api    # restart after a code change
-tail -f ~/Developer/music-api-v2/server.log
 ```
 
-`--public` makes every request need a token, because tunnelled requests arrive from `127.0.0.1` too.
-For Web API login through the public URL, add `https://music.pinewoodrobotics.org/auth/callback` as a Redirect URI
-in the Spotify app and add `--redirect-uri` with that URL to the plist. Otherwise use the paste flow.
-v1 (Music.app) lived in `~/Developer/music-api` and is retired.
+For Web API login through a public URL, add `https://<your host>/auth/callback` as a Redirect URI in the Spotify app
+and pass it with `--redirect-uri`. Otherwise use the paste flow.
 
-## Beyond Spotify's APIs
+## API reference
 
-- `GET /api/lyrics`: synced lyrics from [LRCLIB](https://lrclib.net), with the current line index.
-- `POST /api/sleep {minutes, fade}`: sleep timer that fades out, pauses and restores the volume.
-- `GET/POST /api/system/volume`, `/api/system/outputs`: the machine's own mixer (PipeWire / PulseAudio / macOS).
-- `GET /api/artwork?proxy=1`: cover image bytes, for e-ink and other microcontroller clients that can't do HTTPS.
-- `ANY /api/spotify/{path}`: raw Web API passthrough using the stored login, for anything not wrapped yet.
-- `GET /api/airplay`, `GET /api/airplay/artwork`, `POST /api/airplay/stop`: the AirPlay receiver (see above).
-- `GET /api/quiet-hours`: the quiet-hours window and lock state.
-- `/api/effects`: named sound effects played over the music (see [Sound effects](#sound-effects)).
+`GET /api` lists every endpoint. These docs are served without a token, so an LLM agent can read them directly:
 
-## Status
+| | |
+|---|---|
+| [`/llms.txt`](https://music.pinewoodrobotics.org/llms.txt) | Short index in the [llms.txt](https://llmstxt.org) format |
+| [`/llms-full.txt`](https://music.pinewoodrobotics.org/llms-full.txt) | The whole reference in one file: endpoints, response shapes, curl examples, workflows, limits |
+| [`/API.md`](https://music.pinewoodrobotics.org/API.md) | One row per endpoint, generated from the route docstrings ([in the repo](API.md)) |
 
-- Tested against a real Spotify account (via the `connect` backend): every read endpoint, playlist create/edit/add/
-  reorder/remove/delete, library save/remove, lyrics, tokens, the public URL through the tunnel.
-- Soloist backend running on a Pi 3 B+ (Soloist 1.3.9.5): pairing, status, play/pause, position, and audio out through
-  the tunnel. `soloist ctl trace` shows the raw events to compare against `soloist.py`.
+A few routes that go beyond Spotify's own API:
+
+| Route | |
+|---|---|
+| `GET /api/events` | Server-sent events for status, queue and activity |
+| `GET /api/lyrics` | Synced lyrics from [LRCLIB](https://lrclib.net), with the current line |
+| `POST /api/sleep {minutes, fade}` | Sleep timer that fades out, pauses and restores the volume |
+| `/api/system/volume`, `/api/system/outputs` | The machine's own mixer (PipeWire / PulseAudio / macOS) |
+| `GET /api/artwork?proxy=1` | Cover image bytes, for microcontroller clients that can't do HTTPS |
+| `ANY /api/spotify/{path}` | Raw Web API passthrough using the stored login |
+| `/api/airplay`, `/api/quiet-hours`, `/api/effects` | See the sections above |
+
+### Spotify Web API limits
+
+Development-mode apps (2026 rules):
+
+- The app owner needs Premium, and a new app gets at most 5 users (add them under *User Management*).
+- Search returns at most 10 results per type per page; page with `offset`.
+- Playlist items only come back for playlists you own or collaborate on. Any playlist can still be played by URI.
+- Removed by Spotify, so not available here: browse/categories, new releases, artist top tracks, recommendations,
+  audio features, related artists, popularity and batch lookups.
+
+## Development
+
+```sh
+python3 -m unittest discover -p 'test_*.py'      # Python tests (also run in CI)
+python3 gen_api_md.py > API.md                   # regenerate API.md after changing a route
+
+cd web && npm install
+npm run dev                                      # Vite dev server
+npm run build                                    # writes web/dist, which server.py serves
+npm run lint
+```
+
+Open the dev server with `?mock=full` to run the web app against built-in fake data, with no backend
+(`web/src/dev/mock.ts`; other modes: `signedout`, `writes`, `down`). The screenshots above come from it.
+
+`llms.txt` and `llms-full.txt` are written by hand: update them when you add or change a route.
