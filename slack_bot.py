@@ -335,7 +335,7 @@ class SlackBot:
         self.activity = activity
         self.users, self.users_lock = {}, threading.Lock()
         self.warned = set()
-        self.banned = lambda user: False
+        self.ban_for = lambda user: None
         self.pause_until = 0
         self.seen_events = {}
         self.st, self.upcoming = {}, []
@@ -488,12 +488,21 @@ class SlackBot:
     def ephemeral(self, url, blocks, text, replace=False):
         self.respond(url, {"response_type": "ephemeral", "replace_original": replace, "text": text, "blocks": blocks})
 
-    def is_banned(self, uid):
-        return bool(uid) and self.banned(self.user(uid))
+    def ban_notice(self, uid):
+        """The reply for a banned user, or None if they aren't banned."""
+        ban = self.ban_for(self.user(uid)) if uid else None
+        if not ban:
+            return None
+        until = ban.get("until")
+        when = (f"until <!date^{until}^{{date_short_pretty}} at {{time}}|{time.strftime('%Y-%m-%d %H:%M', time.localtime(until))}>"
+                if until else "permanently")
+        quoted = "\n".join("> " + line for line in (ban.get("reason") or "").splitlines())
+        return f"You're banned from the music bot {when}.\n{quoted}".rstrip()
 
     def run_command(self, verb, arg, uid, uname, url):
-        if self.is_banned(uid):
-            return self.respond(url, {"response_type": "ephemeral", "text": "You're banned from the music bot."})
+        notice = self.ban_notice(uid)
+        if notice:
+            return self.respond(url, {"response_type": "ephemeral", "text": notice})
         try:
             if verb in ("play", "pause", "skip") and not (verb == "play" and arg):
                 text = self.transport(verb, uid)
@@ -599,9 +608,9 @@ class SlackBot:
         url = p.get("response_url")
         ephemeral = bool((p.get("container") or {}).get("is_ephemeral"))
         act = a.get("action_id")
-        if self.is_banned(uid):
-            return self.respond(url, {"response_type": "ephemeral", "replace_original": False,
-                                      "text": "You're banned from the music bot."})
+        notice = self.ban_notice(uid)
+        if notice:
+            return self.respond(url, {"response_type": "ephemeral", "replace_original": False, "text": notice})
         try:
             if act in ("playpause", "skip"):
                 playing = self.player.status(fresh=True).get("state") in PLAYING
@@ -803,7 +812,7 @@ class SlackBot:
         ts = e.get("message_ts")
         if not ts or ts in self.replied or (e.get("user") and e["user"] == self.own_user_id()):
             return
-        if self.is_banned(e.get("user")):
+        if e.get("user") and self.ban_for(self.user(e["user"])):
             return
         self.replied.add(ts)
         if len(self.replied) > 200:

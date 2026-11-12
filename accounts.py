@@ -298,24 +298,38 @@ class Admins:
 
 
 class Bans:
-    """People blocked from the web app, the API and the Slack bot (<data-dir>/bans.json), by Slack user ID or email."""
+    """People blocked from the web app, the API and the Slack bot (<data-dir>/bans.json), by Slack user ID or email,
+    permanently or until a time. The reason is markdown and is shown to the banned person."""
 
-    def __init__(self, data_dir):
+    MAX_REASON = 2000
+
+    def __init__(self, data_dir, clock=time.time):
         self.path = os.path.join(data_dir, "bans.json")
+        self.clock = clock
         self.lock = threading.Lock()
         self.entries = _read_json(self.path, [])
 
-    def is_banned(self, user):
+    def _live(self):
+        now = self.clock()
+        return [e for e in self.entries if not e.get("until") or e["until"] > now]
+
+    def ban_for(self, user):
         keys = Admins._keys(user or {})
+        if not keys:
+            return None
         with self.lock:
-            return bool(keys) and any(e["key"] in keys for e in self.entries)
+            return next((dict(e) for e in self._live() if e["key"] in keys), None)
+
+    def is_banned(self, user):
+        return self.ban_for(user) is not None
 
     def list(self):
         with self.lock:
-            return [dict(e) for e in self.entries]
+            return [dict(e) for e in self._live()]
 
-    def add(self, by, id=None, email=None, name=None, reason=None):
+    def add(self, by, id=None, email=None, name=None, reason=None, until=None):
         id, email = (id or "").strip(), (email or "").strip().lower()
+        reason = (reason or "").strip()
         if email and ("@" not in email or " " in email):
             raise AccountError("that doesn't look like an email address")
         if id and not id.replace("_", "").isalnum():
@@ -323,21 +337,33 @@ class Bans:
         key = (id or email).lower()
         if not key:
             raise AccountError("give a Slack user ID or an email")
+        if not reason:
+            raise AccountError("give a reason; the banned person sees it")
+        if len(reason) > self.MAX_REASON:
+            raise AccountError(f"keep the reason under {self.MAX_REASON} characters")
+        if until is not None:
+            if isinstance(until, bool) or not isinstance(until, (int, float)):
+                raise AccountError("until must be a Unix timestamp in seconds, or null for a permanent ban")
+            if until <= self.clock():
+                raise AccountError("the ban would already be over; pick a time in the future")
+            until = int(until)
         if key in Admins._keys(by):
             raise AccountError("you can't ban yourself", 409)
         with self.lock:
-            if any(e["key"] == key for e in self.entries):
+            live = self._live()
+            if any(e["key"] == key for e in live):
                 raise AccountError("already banned", 409)
-            self.entries.append({"key": key, "id": id.upper() or None, "email": email or None, "name": name,
-                                 "reason": reason or None, "banned_by": {k: by.get(k) for k in ("id", "name")},
-                                 "banned": int(time.time())})
+            self.entries = [e for e in live if e["key"] != key] + [{
+                "key": key, "id": id.upper() or None, "email": email or None, "name": name, "reason": reason,
+                "until": until, "banned_by": {k: by.get(k) for k in ("id", "name")}, "banned": int(self.clock())}]
             _write_json(self.path, self.entries)
 
     def remove(self, key):
         key = (key or "").strip().lower()
         with self.lock:
-            rest = [e for e in self.entries if e["key"] != key]
-            if len(rest) == len(self.entries):
+            live = self._live()
+            rest = [e for e in live if e["key"] != key]
+            if len(rest) == len(live):
                 raise AccountError("not banned", 404)
             self.entries = rest
             _write_json(self.path, self.entries)

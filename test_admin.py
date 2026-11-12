@@ -98,21 +98,38 @@ class BansTest(unittest.TestCase):
     def test_ban_by_email_or_id(self):
         with tempfile.TemporaryDirectory() as d:
             bans = Bans(d)
-            bans.add(ADA, email="Bob@Pinewood.edu", reason="spam")
-            bans.add(ADA, id="u3")
-            self.assertTrue(bans.is_banned(BOB))
+            bans.add(ADA, email="Bob@Pinewood.edu", reason="**spam**")
+            bans.add(ADA, id="u3", reason="r")
+            self.assertEqual(bans.ban_for(BOB)["reason"], "**spam**")
             self.assertTrue(bans.is_banned(OLD))
             self.assertFalse(bans.is_banned(ADA))
             self.assertFalse(bans.is_banned({}))
             with self.assertRaises(AccountError):
-                bans.add(ADA, email="bob@pinewood.edu")
+                bans.add(ADA, email="bob@pinewood.edu", reason="r")
             with self.assertRaises(AccountError):
-                bans.add(ADA, id="U1")
+                bans.add(ADA, id="U1", reason="r")
             self.assertTrue(Bans(d).is_banned(BOB))
             bans.remove("bob@pinewood.edu")
             self.assertFalse(Bans(d).is_banned(BOB))
             with self.assertRaises(AccountError):
                 bans.remove("bob@pinewood.edu")
+
+    def test_reason_required_and_expiry(self):
+        now = [1000.0]
+        with tempfile.TemporaryDirectory() as d:
+            bans = Bans(d, clock=lambda: now[0])
+            for kw in ({}, {"reason": "  "}, {"reason": "x" * 2001}, {"reason": "r", "until": 999},
+                       {"reason": "r", "until": "soon"}, {"reason": "r", "until": True}):
+                with self.assertRaises(AccountError):
+                    bans.add(ADA, email="bob@pinewood.edu", **kw)
+            bans.add(ADA, email="bob@pinewood.edu", reason="r", until=2000)
+            self.assertEqual(bans.list()[0]["until"], 2000)
+            now[0] = 2000
+            self.assertFalse(bans.is_banned(BOB))
+            self.assertEqual(bans.list(), [])
+            bans.add(ADA, email="bob@pinewood.edu", reason="again")
+            self.assertEqual(len(bans.entries), 1)
+            self.assertIsNone(bans.ban_for(BOB)["until"])
 
 
 class Player:
@@ -197,11 +214,14 @@ class RoutesTest(unittest.TestCase):
     def test_ban_blocks_sessions(self):
         server.admins.add({"id": "x"}, id="U1")
         self.assertEqual(self.call("POST", "/api/admin/bans", {"email": "bob@pinewood.edu"}, self.bob)[0], 403)
-        status, out = self.call("POST", "/api/admin/bans", {"email": "Bob@pinewood.edu", "reason": "spam"}, self.ada)
+        self.assertEqual(self.call("POST", "/api/admin/bans", {"email": "bob@pinewood.edu"}, self.ada)[0], 400)
+        status, out = self.call("POST", "/api/admin/bans", {"email": "Bob@pinewood.edu", "reason": "*spam*"}, self.ada)
         self.assertEqual(status, 200)
         self.assertEqual(out["result"]["bans"][0]["key"], "bob@pinewood.edu")
         status, out = self.call("GET", "/api/status", sid=self.bob)
-        self.assertEqual((status, out["error"]), (403, "you're banned from the music API"))
+        self.assertEqual(status, 403)
+        self.assertEqual(out["error"], "you're banned from the music API")
+        self.assertEqual((out["ban"]["reason"], out["ban"]["until"]), ("*spam*", None))
         self.assertEqual(self.call("DELETE", "/api/admin/bans/bob@pinewood.edu", sid=self.ada)[1]["result"], {"bans": []})
         self.assertNotEqual(self.call("GET", "/api/admin/bans", sid=self.bob)[1].get("error"),
                             "you're banned from the music API")
