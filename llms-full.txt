@@ -596,6 +596,14 @@ GET returns `{settings {enabled, start, end, grace_min, source: admin|env, env_w
 #### GET /api/admin/update, POST /api/admin/update/check, POST /api/admin/update
 Deployed commit vs `origin/main` on GitHub with the commits in between, the tested build GitHub Actions published (`build.ready` when it matches main), what an update would restart and any manual steps (`changes.notes`). POST /api/admin/update runs the update in the background: Soloist and AirPlay keep playing, music-api restarts (so expect a few seconds of 502s), and it rolls back if the new server fails its health check. Poll GET for `run.state` (`running`, `succeeded`, `rolled_back`, `failed`) and `run.log`. `409` if already up to date or running; `503` only when the update remote is SSH and its deploy key isn't set up.
 
+GET also returns `auto {enabled, time: "HH:MM", updated_by, updated_at}`, `history` (the last 10 runs, newest first: `{id, action: update|revert, auto, outcome: updated|rolled_back|failed|skipped|reverted, result, from, to, started_at, at, by, notes, count?}`; `count` is how many nights a repeated automatic skip covers) and `previous {commit, short, subject, built_at}` (the tree kept in `music-api-v2.prev`, or null). `run` also has `action`, `auto` and `by`.
+
+#### PUT /api/admin/update/settings
+Body `{auto?: bool, time?: "HH:MM"}`. The nightly auto-update (`auto-update.timer`, default on at 03:00 local time): within an hour after `time`, once a night, it updates if the tested build is newer than the deployed commit and quiet hours have the speakers locked or nothing is playing (Spotify, AirPlay or a sound effect); otherwise it adds a `skipped` history entry with the reason. Saved in `<data-dir>/update-settings.json`. `400` for a bad time. Returns the same as GET /api/admin/update.
+
+#### POST /api/admin/update/revert
+Roll back to `previous`: swaps `music-api-v2.prev` back in with the same restarts and health check as an update, in the background (poll GET for `run`, `run.action` is `revert`). The current tree becomes the previous one. `409` if there's no previous version or an update is running. Automatic updates that roll back or fail, and updates whose notes need sudo, DM every admin on Slack when `SLACK_BOT_TOKEN` is set.
+
 #### POST /api/admin/services/{name}/restart, GET /api/admin/logs/{name}
 Restart `soloist` (interrupts the music for a few seconds), `airplay` (disconnects the AirPlay sender) or `music-display`. Logs take any service name from the system list, `?lines=` up to 1000, and return `{name, unit, lines, error}`.
 
@@ -839,7 +847,7 @@ Other Spotify 4xx errors are passed through with their status and a message of t
 ## 8. Deployment (for maintainers)
 
 - Code: a Python 3.9+ stdlib-only server (`server.py`), installed at `~/.local/share/music-api-v2` on a Raspberry Pi 3 B+ (Debian 13, user `ubuntu`). No dependencies.
-- systemd user units: `soloist.service` (Spotify Soloist, audio to the USB speakers via PipeWire), `music-api.service` (`server.py --host 0.0.0.0 --public`, settings from `~/.config/music-api/env`), `soloist-update.timer` (daily build refresh), `airplay.service` (shairport-sync AirPlay 2 receiver, `AIRPLAY_NAME`), `quiet-hours.timer` (every minute: `quiet_hours.py sync`, the OS-level quiet-hours lock). System service `nqptp` (AirPlay 2 timing).
+- systemd user units: `soloist.service` (Spotify Soloist, audio to the USB speakers via PipeWire), `music-api.service` (`server.py --host 0.0.0.0 --public`, settings from `~/.config/music-api/env`), `soloist-update.timer` (daily build refresh), `airplay.service` (shairport-sync AirPlay 2 receiver, `AIRPLAY_NAME`), `quiet-hours.timer` (every minute: `quiet_hours.py sync`, the OS-level quiet-hours lock), `auto-update.timer` (every 15 minutes: `updater.py auto`, the nightly auto-update). System service `nqptp` (AirPlay 2 timing).
 - Quiet hours: `QUIET_HOURS=21:00-08:00` in the env file (or `off`) is the default; admins can change it at runtime (`<data-dir>/quiet-hours-settings.json`). State in `<data-dir>/quiet-hours.json`.
 - Admins added at runtime: `<data-dir>/admins.json`. Deployed commit: `BUILD.json` in the app dir.
 - Updates: `deploy/deploy-pi.sh` from a Mac, or from GitHub with `updater.py` (admin page > Updates), which fetches the tested `pi-build` branch that `.github/workflows/pi-build.yml` publishes on every push to main.
