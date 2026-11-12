@@ -335,6 +335,7 @@ class SlackBot:
         self.activity = activity
         self.users, self.users_lock = {}, threading.Lock()
         self.warned = set()
+        self.banned = lambda user: False
         self.pause_until = 0
         self.seen_events = {}
         self.st, self.upcoming = {}, []
@@ -465,7 +466,7 @@ class SlackBot:
         try:
             p = self.fetch_user(uid)
             u = {"id": uid, "name": p.get("display_name") or p.get("real_name") or fallback or uid,
-                 "avatar": p.get("image_72") or p.get("image_192")}
+                 "avatar": p.get("image_72") or p.get("image_192"), "email": (p.get("email") or "").lower() or None}
         except (AccountError, KeyError) as e:
             self._warn(("users.info", str(e)[:60]), f"users.info failed: {e}")
             return hit[0] if hit else {"id": uid, "name": fallback or uid, "avatar": None}
@@ -487,7 +488,12 @@ class SlackBot:
     def ephemeral(self, url, blocks, text, replace=False):
         self.respond(url, {"response_type": "ephemeral", "replace_original": replace, "text": text, "blocks": blocks})
 
+    def is_banned(self, uid):
+        return bool(uid) and self.banned(self.user(uid))
+
     def run_command(self, verb, arg, uid, uname, url):
+        if self.is_banned(uid):
+            return self.respond(url, {"response_type": "ephemeral", "text": "You're banned from the music bot."})
         try:
             if verb in ("play", "pause", "skip") and not (verb == "play" and arg):
                 text = self.transport(verb, uid)
@@ -593,6 +599,9 @@ class SlackBot:
         url = p.get("response_url")
         ephemeral = bool((p.get("container") or {}).get("is_ephemeral"))
         act = a.get("action_id")
+        if self.is_banned(uid):
+            return self.respond(url, {"response_type": "ephemeral", "replace_original": False,
+                                      "text": "You're banned from the music bot."})
         try:
             if act in ("playpause", "skip"):
                 playing = self.player.status(fresh=True).get("state") in PLAYING
@@ -793,6 +802,8 @@ class SlackBot:
         """Links posted in the music channel get one threaded card (also sent to the channel) instead of an unfurl."""
         ts = e.get("message_ts")
         if not ts or ts in self.replied or (e.get("user") and e["user"] == self.own_user_id()):
+            return
+        if self.is_banned(e.get("user")):
             return
         self.replied.add(ts)
         if len(self.replied) > 200:

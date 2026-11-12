@@ -297,6 +297,52 @@ class Admins:
             _write_json(self.path, self.added)
 
 
+class Bans:
+    """People blocked from the web app, the API and the Slack bot (<data-dir>/bans.json), by Slack user ID or email."""
+
+    def __init__(self, data_dir):
+        self.path = os.path.join(data_dir, "bans.json")
+        self.lock = threading.Lock()
+        self.entries = _read_json(self.path, [])
+
+    def is_banned(self, user):
+        keys = Admins._keys(user or {})
+        with self.lock:
+            return bool(keys) and any(e["key"] in keys for e in self.entries)
+
+    def list(self):
+        with self.lock:
+            return [dict(e) for e in self.entries]
+
+    def add(self, by, id=None, email=None, name=None, reason=None):
+        id, email = (id or "").strip(), (email or "").strip().lower()
+        if email and ("@" not in email or " " in email):
+            raise AccountError("that doesn't look like an email address")
+        if id and not id.replace("_", "").isalnum():
+            raise AccountError("Slack user IDs look like U012ABCDEF")
+        key = (id or email).lower()
+        if not key:
+            raise AccountError("give a Slack user ID or an email")
+        if key in Admins._keys(by):
+            raise AccountError("you can't ban yourself", 409)
+        with self.lock:
+            if any(e["key"] == key for e in self.entries):
+                raise AccountError("already banned", 409)
+            self.entries.append({"key": key, "id": id.upper() or None, "email": email or None, "name": name,
+                                 "reason": reason or None, "banned_by": {k: by.get(k) for k in ("id", "name")},
+                                 "banned": int(time.time())})
+            _write_json(self.path, self.entries)
+
+    def remove(self, key):
+        key = (key or "").strip().lower()
+        with self.lock:
+            rest = [e for e in self.entries if e["key"] != key]
+            if len(rest) == len(self.entries):
+                raise AccountError("not banned", 404)
+            self.entries = rest
+            _write_json(self.path, self.entries)
+
+
 class Sessions:
     def __init__(self, data_dir):
         self.path = os.path.join(data_dir, "sessions.json")

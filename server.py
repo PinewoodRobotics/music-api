@@ -30,7 +30,7 @@ import links
 import slack_bot
 import system_stats
 import updater as updater_mod
-from accounts import ADMIN, SESSION_COOKIE_AGE, AccountError, Admins, Credits, PersonalTokens, Google, Playlists, Sessions, Slack
+from accounts import ADMIN, SESSION_COOKIE_AGE, AccountError, Admins, Bans, Credits, PersonalTokens, Google, Playlists, Sessions, Slack
 from effects import EffectsError
 from extras import ExtrasError
 from guard import Guard
@@ -47,7 +47,7 @@ SEARCH_TYPES = "track,album,artist,playlist,show,episode,audiobook"
 auth = api = player = soloist = tokens = slack = google = sessions = app_playlists = bot = personal = library = None
 credits = activity = None
 guard = airplay = quiet = effects = None
-admins = stats = updates = None
+admins = bans = stats = updates = None
 DATA_DIR = None
 QUIET_DEFAULT = quiet_hours.DEFAULT_WINDOW
 _req = threading.local()  # per-request context: the token entry and the user that authenticated it
@@ -1175,6 +1175,45 @@ def _admin_add(q, b):
     return _admins_out()
 
 
+def _check_not_banned(user):
+    if bans and bans.is_banned(user):
+        raise AccountError("you're banned from the music API", 403)
+
+
+def _bans_out():
+    return {"bans": sorted(bans.list(), key=lambda e: -(e.get("banned") or 0))}
+
+
+@route("GET", "/api/admin/bans")
+def _admin_bans(q, b):
+    """Banned people (admins only): {bans: [{key, id, email, name, reason, banned_by {id, name}, banned}]}. A banned
+    person gets 403 on every API request and sign-in, including their personal API token, and the Slack bot ignores
+    them"""
+    return _bans_out()
+
+
+@route("POST", "/api/admin/bans")
+def _admin_ban(q, b):
+    """Body {id} (Slack user ID) or {email}, optional {reason} (admins only): ban someone, saved in the data dir. 409
+    if they already are or it's you. Returns the same as GET"""
+    ident = (b.get("id") or "").strip()
+    email = (b.get("email") or "").strip() or (ident if "@" in ident else "")
+    uid = "" if "@" in ident else ident
+    u = (_known_users().get(uid.upper()) or (None,))[0] if uid else None
+    if not u and email:
+        u = next((k for k, _ in _known_users().values() if (k.get("email") or "").lower() == email.lower()), None)
+    bans.add(_by() | {"email": _req.user.get("email")}, id=uid, email=email, name=(u or {}).get("name"),
+             reason=(b.get("reason") or "").strip()[:200])
+    return _bans_out()
+
+
+@route("DELETE", "/api/admin/bans/{key}")
+def _admin_unban(q, b, key):
+    """Lift a ban (admins only); key from GET. Returns the same as GET"""
+    bans.remove(key)
+    return _bans_out()
+
+
 @route("DELETE", "/api/admin/admins/{key}")
 def _admin_remove(q, b, key):
     """Remove an admin added here (admins only); key from GET. 409 for config admins and for removing yourself as
@@ -1321,6 +1360,8 @@ class Handler(BaseHTTPRequestHandler):
         return False
 
     def _forbidden(self, method, path):
+        if bans and bans.is_banned(_req.user):
+            return "you're banned from the music API"
         if _req.user.get("admin"):
             return None
         if not _req.bearer and method not in ("GET", "HEAD"):
@@ -1421,6 +1462,7 @@ class Handler(BaseHTTPRequestHandler):
                 if query.get("error"):
                     return self._result(("redirect", "/"))
                 user, next_path = slack.finish(query.get("code"), query.get("state"))
+                _check_not_banned(user)
                 personal.refresh(user)
                 return self._send(302, b"", "text/plain", [("Location", next_path),
                                                            self._set_cookie(sessions.create(user), SESSION_COOKIE_AGE)])
@@ -1430,6 +1472,7 @@ class Handler(BaseHTTPRequestHandler):
                 if query.get("error"):
                     return self._result(("redirect", "/"))
                 user, next_path = google.finish(query.get("code"), query.get("state"))
+                _check_not_banned(user)
                 personal.refresh(user)
                 return self._send(302, b"", "text/plain", [("Location", next_path),
                                                            self._set_cookie(sessions.create(user), SESSION_COOKIE_AGE)])
@@ -1616,7 +1659,7 @@ def main():
         ap.error(str(e))
 
     global auth, api, player, soloist, tokens, slack, google, sessions, app_playlists, bot, personal, credits, activity, library
-    global guard, airplay, quiet, effects, admins, stats, updates, DATA_DIR, QUIET_DEFAULT
+    global guard, airplay, quiet, effects, admins, bans, stats, updates, DATA_DIR, QUIET_DEFAULT
     os.makedirs(a.data_dir, mode=0o700, exist_ok=True)
     auth = Auth(a.data_dir, a.client_id, a.redirect_uri or f"http://127.0.0.1:{a.port}/auth/callback")
     api = WebAPI(auth)
@@ -1631,6 +1674,7 @@ def main():
     tokens = Tokens(a.data_dir, a.token)
     DATA_DIR, QUIET_DEFAULT = a.data_dir, a.quiet_hours
     admins = Admins(a.data_dir, os.environ.get("SLACK_ADMINS", "").split(","))
+    bans = Bans(a.data_dir)
     stats = system_stats.Stats()
     threading.Thread(target=stats.loop, daemon=True).start()
     updates = updater_mod.Updater(data_dir=a.data_dir, port=a.port)
@@ -1686,6 +1730,7 @@ def main():
                              importer=lambda url, user: app_playlists.import_link(api, user, url),
                              add_album=lambda url, user: library.add_album(api, user, url),
                              state_path=os.path.join(a.data_dir, "slack-feed.json"), activity=activity)
+    bot.banned = bans.is_banned
     bot.start()
 
     Handler.require_token = require

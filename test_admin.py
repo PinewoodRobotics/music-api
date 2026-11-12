@@ -17,7 +17,7 @@ import system_stats
 import test_system_stats as fake
 from test_effects import beep
 import updater
-from accounts import AccountError, Admins, PersonalTokens, Sessions, Slack
+from accounts import AccountError, Admins, Bans, PersonalTokens, Sessions, Slack
 from effects import Effects
 from guard import Guard
 from quiet_hours import QuietHours, parse_window
@@ -94,6 +94,27 @@ class AdminsTest(unittest.TestCase):
         self.assertEqual((u["email"], u["admin"]), ("ada@pinewood.edu", True))
 
 
+class BansTest(unittest.TestCase):
+    def test_ban_by_email_or_id(self):
+        with tempfile.TemporaryDirectory() as d:
+            bans = Bans(d)
+            bans.add(ADA, email="Bob@Pinewood.edu", reason="spam")
+            bans.add(ADA, id="u3")
+            self.assertTrue(bans.is_banned(BOB))
+            self.assertTrue(bans.is_banned(OLD))
+            self.assertFalse(bans.is_banned(ADA))
+            self.assertFalse(bans.is_banned({}))
+            with self.assertRaises(AccountError):
+                bans.add(ADA, email="bob@pinewood.edu")
+            with self.assertRaises(AccountError):
+                bans.add(ADA, id="U1")
+            self.assertTrue(Bans(d).is_banned(BOB))
+            bans.remove("bob@pinewood.edu")
+            self.assertFalse(Bans(d).is_banned(BOB))
+            with self.assertRaises(AccountError):
+                bans.remove("bob@pinewood.edu")
+
+
 class Player:
     def spotify_status(self):
         return {"state": "paused"}
@@ -141,7 +162,7 @@ class RoutesTest(unittest.TestCase):
         cls.srv.shutdown()
         cls.srv.server_close()
         cls.logs.__exit__(None, None, None)
-        server.admins = server.effects = None
+        server.admins = server.bans = server.effects = None
         cls.tmp.cleanup()
 
     def setUp(self):
@@ -152,6 +173,8 @@ class RoutesTest(unittest.TestCase):
             except FileNotFoundError:
                 pass
         server.admins.added = []
+        server.bans = Bans(self.tmp.name)
+        server.bans.entries = []
         self.quiet.configure(parse_window("21:00-08:00"), qh.GRACE)
         self.quiet.locked_until = self.quiet.override = None
         self.now[0] = datetime.datetime(2026, 10, 13, 12).timestamp()
@@ -170,6 +193,18 @@ class RoutesTest(unittest.TestCase):
                 return res.status, json.loads(res.read())
         except urllib.error.HTTPError as e:
             return e.code, json.loads(e.read())
+
+    def test_ban_blocks_sessions(self):
+        server.admins.add({"id": "x"}, id="U1")
+        self.assertEqual(self.call("POST", "/api/admin/bans", {"email": "bob@pinewood.edu"}, self.bob)[0], 403)
+        status, out = self.call("POST", "/api/admin/bans", {"email": "Bob@pinewood.edu", "reason": "spam"}, self.ada)
+        self.assertEqual(status, 200)
+        self.assertEqual(out["result"]["bans"][0]["key"], "bob@pinewood.edu")
+        status, out = self.call("GET", "/api/status", sid=self.bob)
+        self.assertEqual((status, out["error"]), (403, "you're banned from the music API"))
+        self.assertEqual(self.call("DELETE", "/api/admin/bans/bob@pinewood.edu", sid=self.ada)[1]["result"], {"bans": []})
+        self.assertNotEqual(self.call("GET", "/api/admin/bans", sid=self.bob)[1].get("error"),
+                            "you're banned from the music API")
 
     def test_web_app_may_only_be_framed_by_the_fms_panel(self):
         with urllib.request.urlopen(f"http://127.0.0.1:{self.srv.server_address[1]}/library") as res:
