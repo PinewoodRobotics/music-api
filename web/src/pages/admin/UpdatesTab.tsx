@@ -1,10 +1,13 @@
-import { AlertTriangle, CheckCircle2, CloudDownload, GitCommitHorizontal, Info, Loader2, RefreshCw, Undo2, XCircle } from 'lucide-react'
-import { useEffect, useRef, useState } from 'react'
-import { Button, Modal } from '../../components/Modal'
-import { api, type UpdateRun } from '../../lib/api'
+import { AlertTriangle, ArrowRight, CheckCircle2, CloudDownload, GitCommitHorizontal, History, Info, Loader2, MinusCircle, RefreshCw, Undo2, XCircle } from 'lucide-react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { Button, Field, fieldClass, Modal } from '../../components/Modal'
+import { api, type UpdateAuto, type UpdateHistoryEntry, type UpdateInfo, type UpdateRun } from '../../lib/api'
+import { clockLabel } from '../../lib/playback'
 import { useToast } from '../../state/toast'
 import { ErrorState, PageSpinner } from '../Message'
-import { ago, Banner, Card, Chip, dateTime, duration, usePoll } from './kit'
+import { ago, Banner, Card, Chip, dateTime, duration, Toggle, usePoll, type Tone } from './kit'
+
+const short = (sha: string | null | undefined) => sha?.slice(0, 7) ?? null
 
 function RunLog({ run, restarting }: { run: UpdateRun; restarting: boolean }) {
   const box = useRef<HTMLDivElement>(null)
@@ -27,16 +30,21 @@ function RunLog({ run, restarting }: { run: UpdateRun; restarting: boolean }) {
 
 function RunCard({ run, restarting }: { run: UpdateRun; restarting: boolean }) {
   const running = run.state === 'running'
+  const revert = run.action === 'revert'
   const elapsed = (run.finished_at ?? Date.now() / 1000) - run.started_at
   return (
-    <Card title="Update">
+    <Card title={revert ? 'Rollback' : run.auto ? 'Automatic update' : 'Update'}>
       {running ? (
-        <Banner tone="neutral" icon={<Loader2 className="animate-spin" />} title={restarting ? 'Restarting the server...' : 'Updating'}>
+        <Banner tone="neutral" icon={<Loader2 className="animate-spin" />} title={restarting ? 'Restarting the server...' : revert ? 'Rolling back' : 'Updating'}>
           {restarting ? 'The page reconnects on its own. The music keeps playing.' : `${duration(elapsed)} elapsed. Keep this page open or come back later.`}
         </Banner>
       ) : run.state === 'succeeded' ? (
-        <Banner tone="good" icon={<CheckCircle2 />} title="Update finished">
-          {run.result ?? `Now running ${run.to?.slice(0, 7) ?? 'the latest version'}.`}
+        <Banner tone="good" icon={<CheckCircle2 />} title={revert ? 'Rollback finished' : 'Update finished'}>
+          {run.result ?? `Now running ${short(run.to) ?? 'the latest version'}.`}
+        </Banner>
+      ) : revert ? (
+        <Banner tone="bad" icon={<XCircle />} title="Rollback failed">
+          {run.result ?? 'See the log below.'}
         </Banner>
       ) : run.state === 'rolled_back' ? (
         <Banner tone="warn" icon={<Undo2 />} title="Update rolled back">
@@ -52,12 +60,129 @@ function RunCard({ run, restarting }: { run: UpdateRun; restarting: boolean }) {
   )
 }
 
+function AutoUpdateCard({ auto, busy, onSave }: { auto: UpdateAuto; busy: boolean; onSave: (body: { auto: boolean; time: string }) => void }) {
+  const [enabled, setEnabled] = useState(auto.enabled)
+  const [time, setTime] = useState(auto.time)
+  const dirty = enabled !== auto.enabled || time !== auto.time
+
+  return (
+    <Card title="Automatic updates">
+      <form
+        className="space-y-4"
+        onSubmit={(e) => {
+          e.preventDefault()
+          if (time && dirty) onSave({ auto: enabled, time })
+        }}
+      >
+        <div className="flex items-center justify-between gap-4">
+          <div>
+            <div className="text-sm font-semibold">Update every night</div>
+            <div className="text-xs text-dim">Only when nothing is playing or quiet hours have the speakers locked. Otherwise it tries again the next night.</div>
+          </div>
+          <Toggle on={enabled} onChange={setEnabled} label="Automatic updates enabled" />
+        </div>
+        <Field label="Time">
+          <input type="time" required value={time} onChange={(e) => setTime(e.target.value)} disabled={!enabled} className={`${fieldClass} disabled:opacity-50 sm:max-w-40`} />
+        </Field>
+        {enabled && time && <p className="text-sm text-dim">Checks for a new version between {clockLabel(time)} and an hour later.</p>}
+        <div className="flex flex-wrap items-center gap-3 pt-1">
+          <Button type="submit" disabled={busy || !time || !dirty}>
+            Save
+          </Button>
+          {auto.updated_at ? (
+            <span className="text-xs text-dim">
+              Changed{auto.updated_by ? ` by ${auto.updated_by.name}` : ''} {ago(auto.updated_at)}.
+            </span>
+          ) : null}
+        </div>
+      </form>
+    </Card>
+  )
+}
+
+const OUTCOMES: Record<UpdateHistoryEntry['outcome'], { label: string; tone: Tone; icon: ReactNode }> = {
+  updated: { label: 'Updated', tone: 'good', icon: <CheckCircle2 /> },
+  reverted: { label: 'Rolled back by hand', tone: 'neutral', icon: <History /> },
+  rolled_back: { label: 'Rolled back', tone: 'warn', icon: <Undo2 /> },
+  failed: { label: 'Failed', tone: 'bad', icon: <XCircle /> },
+  skipped: { label: 'Skipped', tone: 'neutral', icon: <MinusCircle /> },
+}
+
+const toneIcon: Record<Tone, string> = { good: 'text-[#34c759]', warn: 'text-[#ffb340]', bad: 'text-danger', neutral: 'text-faint' }
+
+function HistoryCard({ history }: { history: UpdateHistoryEntry[] }) {
+  return (
+    <Card title="History">
+      {history.length === 0 ? (
+        <p className="text-sm text-dim">No updates yet.</p>
+      ) : (
+        <ul className="divide-y divide-white/[0.07]">
+          {history.map((h) => {
+            const o = OUTCOMES[h.outcome] ?? OUTCOMES.failed
+            const from = short(h.from)
+            const to = short(h.to)
+            return (
+              <li key={`${h.id}-${h.at}`} className="flex items-start gap-3 py-2.5">
+                <span className={`mt-0.5 shrink-0 [&>svg]:size-4 ${toneIcon[o.tone]}`}>{o.icon}</span>
+                <div className="min-w-0 flex-1">
+                  <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                    <Chip tone={o.tone}>{o.label}</Chip>
+                    {(from || to) && (
+                      <span className="inline-flex items-center gap-1 font-mono text-xs text-dim">
+                        {from ?? 'unknown'}
+                        <ArrowRight className="size-3" />
+                        {to ?? 'unknown'}
+                      </span>
+                    )}
+                  </div>
+                  {h.result && <div className="mt-1 text-sm leading-snug">{h.result}</div>}
+                  <div className="mt-0.5 text-xs text-faint">
+                    {h.auto ? 'Automatic' : h.by?.name ? `By ${h.by.name}` : 'By hand'}
+                    {h.at ? `, ${dateTime(h.at)}` : ''}
+                    {h.count && h.count > 1 ? ` (${h.count} nights in a row)` : ''}
+                  </div>
+                </div>
+              </li>
+            )
+          })}
+        </ul>
+      )}
+    </Card>
+  )
+}
+
+function PreviousCard({ data, disabled, onRevert }: { data: UpdateInfo; disabled: boolean; onRevert: () => void }) {
+  const prev = data.previous
+  return (
+    <Card title="Previous version">
+      <div className="flex flex-wrap items-center gap-4">
+        <div className="min-w-0 flex-1">
+          {prev ? (
+            <>
+              <div className="font-mono text-sm font-semibold">{prev.short ?? 'Unknown commit'}</div>
+              {prev.subject && <div className="mt-0.5 text-sm leading-snug text-dim">{prev.subject}</div>}
+              {prev.built_at ? <div className="mt-0.5 text-xs text-faint">Built {dateTime(prev.built_at)}</div> : null}
+            </>
+          ) : (
+            <p className="text-sm text-dim">There's no previous version on the Pi yet. One is kept after each update.</p>
+          )}
+        </div>
+        <Button variant="ghost" className="h-9 bg-white/10 px-4" disabled={!prev || disabled} onClick={onRevert}>
+          <Undo2 className="size-4" />
+          Roll back to previous version
+        </Button>
+      </div>
+    </Card>
+  )
+}
+
 export function UpdatesTab({ active }: { active: boolean }) {
   const [fast, setFast] = useState(false)
   const { data, setData, error, failures, reload } = usePoll(api.adminUpdate, fast ? 1500 : null, active)
   const toast = useToast()
-  const [busy, setBusy] = useState<'check' | 'update' | null>(null)
+  const [busy, setBusy] = useState<'check' | 'update' | 'revert' | 'settings' | null>(null)
   const [confirm, setConfirm] = useState(false)
+  const [confirmRevert, setConfirmRevert] = useState(false)
 
   const running = data?.run?.state === 'running'
   useEffect(() => setFast(running), [running])
@@ -80,6 +205,30 @@ export function UpdatesTab({ active }: { active: boolean }) {
     try {
       setData(await api.startUpdate())
       setConfirm(false)
+    } catch (err) {
+      toast.error(err)
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const revert = async () => {
+    setBusy('revert')
+    try {
+      setData(await api.revertUpdate())
+      setConfirmRevert(false)
+    } catch (err) {
+      toast.error(err)
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const saveAuto = async (body: { auto: boolean; time: string }) => {
+    setBusy('settings')
+    try {
+      setData(await api.saveAutoUpdate(body))
+      toast.show('Automatic updates saved')
     } catch (err) {
       toast.error(err)
     } finally {
@@ -185,6 +334,12 @@ export function UpdatesTab({ active }: { active: boolean }) {
         </>
       )}
 
+      <AutoUpdateCard key={JSON.stringify(data.auto)} auto={data.auto} busy={busy !== null} onSave={(body) => void saveAuto(body)} />
+
+      <PreviousCard data={data} disabled={busy !== null || running} onRevert={() => setConfirmRevert(true)} />
+
+      <HistoryCard history={data.history} />
+
       {confirm && (
         <Modal title="Update the music server?" onClose={() => busy === null && setConfirm(false)} dismissable={busy === null}>
           <p className="text-sm leading-relaxed text-dim">
@@ -198,6 +353,23 @@ export function UpdatesTab({ active }: { active: boolean }) {
             <Button onClick={() => void start()} disabled={busy !== null}>
               <CloudDownload className="size-4" />
               Update
+            </Button>
+          </div>
+        </Modal>
+      )}
+
+      {confirmRevert && (
+        <Modal title="Roll back to the previous version?" onClose={() => busy === null && setConfirmRevert(false)} dismissable={busy === null}>
+          <p className="text-sm leading-relaxed text-dim">
+            This puts {data.previous?.short ?? 'the previous version'} back in place of {deployed?.short ?? 'the current version'} and restarts what changed between them. The music keeps playing. If the previous version fails its health check, the current one is put back.
+          </p>
+          <div className="mt-6 flex justify-end gap-2">
+            <Button variant="ghost" onClick={() => setConfirmRevert(false)} disabled={busy !== null}>
+              Cancel
+            </Button>
+            <Button onClick={() => void revert()} disabled={busy !== null}>
+              <Undo2 className="size-4" />
+              Roll back
             </Button>
           </div>
         </Modal>

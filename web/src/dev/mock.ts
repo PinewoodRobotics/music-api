@@ -1,4 +1,4 @@
-import type { ActivityEntry, AdminEntry, AdminList, BanEntry, AppPlaylist, EffectsVolume, KnownUser, LibraryAlbum, Lyrics, QuietAdmin, QuietHours, QuietSettings, Queue, ServiceInfo, Status, SystemInfo, Track, UpdateInfo, UpdateRun } from '../lib/api'
+import type { ActivityEntry, AdminEntry, AdminList, BanEntry, AppPlaylist, EffectsVolume, KnownUser, LibraryAlbum, Lyrics, QuietAdmin, QuietHours, QuietSettings, Queue, ServiceInfo, Status, SystemInfo, Track, UpdateAuto, UpdateHistoryEntry, UpdateInfo, UpdateRun } from '../lib/api'
 import fixtures from './fixtures.json'
 
 type Mode = 'full' | 'signedout' | 'signedout-slack' | 'signedout-google' | 'writes' | 'down' | 'banned'
@@ -520,6 +520,23 @@ const updateCommits = [
   { commit: '7a5d8c33', short: '7a5d8c3', subject: 'Queue: keep the autoplay credit when skipping', author: 'Maya Lindqvist', date: sec() - 2 * 86400 },
 ]
 let updateRunStart: number | null = null
+let updateAction: 'update' | 'revert' = 'update'
+let reverted = false
+const autoUpdate: UpdateAuto = { enabled: true, time: '03:00', updated_by: null, updated_at: null }
+const night = (n: number, h = 3, m = 0) => {
+  const d = new Date()
+  d.setDate(d.getDate() - n)
+  d.setHours(h, m, 0, 0)
+  return Math.floor(d.getTime() / 1000)
+}
+const updateHistory: UpdateHistoryEntry[] = [
+  { id: 'auto-1', action: 'update', auto: true, outcome: 'skipped', result: 'Not safe to restart: music is playing', from: 'e801f38c', to: 'd41c0b7a', started_at: night(0, 3, 1), at: night(0, 3, 1), by: null, notes: [] },
+  { id: 'auto-2', action: 'update', auto: true, outcome: 'updated', result: 'Updated to e801f38: Docs: sound effects in README', from: '5c2a9e14', to: 'e801f38c', started_at: night(1), at: night(1) + 40, by: null, notes: [] },
+  { id: 'auto-3', action: 'update', auto: true, outcome: 'skipped', result: 'Already up to date', from: '5c2a9e14', to: '5c2a9e14', started_at: night(2), at: night(2), by: null, notes: [], count: 3 },
+  { id: 'run-4', action: 'update', auto: false, outcome: 'updated', result: 'Updated to 5c2a9e1: Effects: duck the music under sound effects', from: '0b77d2f9', to: '5c2a9e14', started_at: night(5, 14, 12), at: night(5, 14, 13), by: { id: adam.id, name: adam.name }, notes: ['deploy/install-linux.sh changed: check it for new packages or setup steps and run them on the Pi by hand (they need sudo)'] },
+  { id: 'auto-5', action: 'update', auto: true, outcome: 'rolled_back', result: 'Rolled back to 0b77d2f; the failed build is kept in music-api-v2.failed', from: '0b77d2f9', to: '9f13ab02', started_at: night(6), at: night(6) + 75, by: null, notes: [] },
+  { id: 'run-6', action: 'revert', auto: false, outcome: 'reverted', result: 'Rolled back to 0b77d2f; 3e9c5d1 is kept as the previous version', from: '3e9c5d10', to: '0b77d2f9', started_at: night(8, 18, 40), at: night(8, 18, 41), by: { id: adam.id, name: adam.name }, notes: [] },
+]
 const UPDATE_STEPS: [number, string, 'info' | 'warn' | 'error'][] = [
   [0.2, 'Downloading build d41c0b7 from GitHub', 'info'],
   [1.2, 'Verifying checksum', 'info'],
@@ -539,6 +556,9 @@ function updateInfo(): UpdateInfo {
     const elapsed = sec() - updateRunStart
     run = {
       id: 'run-1',
+      action: updateAction,
+      auto: false,
+      by: { id: adam.id, name: adam.name },
       state: done ? 'succeeded' : 'running',
       started_at: updateRunStart,
       finished_at: done ? updateRunStart + UPDATE_DONE : null,
@@ -556,11 +576,34 @@ function updateInfo(): UpdateInfo {
     build: { commit: updateCommits[0].commit, short: updateCommits[0].short, built_at: updateCommits[0].date + 600, ready: true },
     behind,
     commits: behind ? updateCommits : [],
-    changes: { files: ['server.py', 'web/src'], restarts: behind ? ['music-api'] : [], units: [], notes: behind ? ['Run sh deploy/install-airplay.sh on the Pi to pick up the new AirPlay hooks.'] : [] },
+    changes: { files: ['server.py', 'web/src'], restarts: behind ? ['music-api'] : [], units: [], enable: [], notes: behind ? ['Run sh deploy/install-airplay.sh on the Pi to pick up the new AirPlay hooks.'] : [] },
     fetched_at: sec() - 90,
     fetch_error: null,
     run,
+    auto: autoUpdate,
+    history: updateHistory,
+    previous: reverted ? null : { commit: '5c2a9e14', short: '5c2a9e1', subject: 'Effects: duck the music under sound effects', built_at: night(5, 14, 0) },
   }
+}
+
+function finishMockRun() {
+  if (updateRunStart === null || sec() - updateRunStart < UPDATE_DONE || updateHistory[0]?.id === `run-${updateRunStart}`) return
+  const revert = updateAction === 'revert'
+  updateHistory.unshift({
+    id: `run-${updateRunStart}`,
+    action: updateAction,
+    auto: false,
+    outcome: revert ? 'reverted' : 'updated',
+    result: revert ? 'Rolled back to 5c2a9e1; e801f38 is kept as the previous version' : 'Now running d41c0b7.',
+    from: 'e801f38c',
+    to: revert ? '5c2a9e14' : 'd41c0b7a',
+    started_at: updateRunStart,
+    at: updateRunStart + UPDATE_DONE,
+    by: { id: adam.id, name: adam.name },
+    notes: [],
+  })
+  updateHistory.splice(10)
+  if (revert) reverted = true
 }
 
 function serviceLog(name: string) {
@@ -646,13 +689,27 @@ function handleAdmin(method: string, p: string, body: Record<string, unknown>): 
     return ok(adminList())
   }
   if (route === 'GET /api/admin/update') {
+    finishMockRun()
     const info = updateInfo()
     if (info.run?.state === 'running' && sec() - updateRunStart! > 3.6 && sec() - updateRunStart! < 5.2) return fail(502, 'Bad gateway')
     return ok(info)
   }
   if (route === 'POST /api/admin/update/check') return ok(updateInfo())
   if (route === 'POST /api/admin/update') {
+    updateAction = 'update'
     updateRunStart = sec()
+    return ok(updateInfo())
+  }
+  if (route === 'POST /api/admin/update/revert') {
+    if (reverted) return fail(409, "there's no previous version to roll back to")
+    updateAction = 'revert'
+    updateRunStart = sec()
+    return ok(updateInfo())
+  }
+  if (route === 'PUT /api/admin/update/settings') {
+    const { auto, time } = body as { auto?: boolean; time?: string }
+    if (time !== undefined && !/^\d{1,2}:\d{2}$/.test(time)) return fail(400, 'time must look like 03:00')
+    Object.assign(autoUpdate, { ...(auto !== undefined && { enabled: auto }), ...(time !== undefined && { time }), updated_by: { id: adam.id, name: adam.name }, updated_at: sec() })
     return ok(updateInfo())
   }
   const restart = p.match(/^\/api\/admin\/services\/([^/]+)\/restart$/)

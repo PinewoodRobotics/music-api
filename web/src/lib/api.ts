@@ -338,13 +338,33 @@ export type UpdateCommit = { commit: string; short: string; subject: string; aut
 
 export type UpdateRun = {
   id: string
+  action?: 'update' | 'revert'
+  auto?: boolean
   state: 'running' | 'succeeded' | 'rolled_back' | 'failed'
   started_at: number
   finished_at: number | null
   from: string | null
   to: string | null
   result: string | null
+  by?: Actor | null
   log: { t: number; msg: string; level: 'info' | 'warn' | 'error' }[]
+}
+
+export type UpdateAuto = { enabled: boolean; time: string; updated_by: Actor | null; updated_at: number | null }
+
+export type UpdateHistoryEntry = {
+  id: string
+  action: 'update' | 'revert'
+  auto: boolean
+  outcome: 'updated' | 'rolled_back' | 'failed' | 'skipped' | 'reverted'
+  result: string | null
+  from: string | null
+  to: string | null
+  started_at: number | null
+  at: number | null
+  by: Actor | null
+  notes: string[]
+  count?: number
 }
 
 export type UpdateInfo = {
@@ -355,10 +375,13 @@ export type UpdateInfo = {
   build: { commit: string; short: string; built_at: number | null; ready: boolean } | null
   behind: number
   commits: UpdateCommit[]
-  changes: { files: string[]; restarts: string[]; units: string[]; notes: string[] }
+  changes: { files: string[]; restarts: string[]; units: string[]; enable: string[]; notes: string[] }
   fetched_at: number | null
   fetch_error: string | null
   run: UpdateRun | null
+  auto: UpdateAuto
+  history: UpdateHistoryEntry[]
+  previous: { commit: string | null; short: string | null; subject: string | null; built_at: number | null } | null
 }
 
 export type ServiceLogs = { name: string; unit: string; lines: string[]; error: string | null }
@@ -504,6 +527,8 @@ export const api = {
   adminUpdate: () => get<UpdateInfo>('/api/admin/update'),
   checkUpdate: () => post<UpdateInfo>('/api/admin/update/check'),
   startUpdate: () => post<UpdateInfo>('/api/admin/update'),
+  saveAutoUpdate: (body: { auto?: boolean; time?: string }) => request<UpdateInfo>('PUT', '/api/admin/update/settings', body),
+  revertUpdate: () => post<UpdateInfo>('/api/admin/update/revert'),
   restartService: (name: string) => post<{ name: string; state: ServiceState }>(`/api/admin/services/${encodeURIComponent(name)}/restart`),
   serviceLogs: (name: string, lines = 200) => get<ServiceLogs>(`/api/admin/logs/${encodeURIComponent(name)}?${qs({ lines })}`),
 
