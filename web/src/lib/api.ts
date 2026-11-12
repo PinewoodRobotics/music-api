@@ -319,6 +319,18 @@ export type KnownUser = { id: string; name: string; avatar: string | null; email
 
 export type AdminList = { admins: AdminEntry[]; known: KnownUser[] }
 
+export type BanEntry = {
+  key: string
+  id: string | null
+  email: string | null
+  name: string | null
+  reason: string | null
+  banned_by: Actor | null
+  banned: number | null
+}
+
+export type BanList = { bans: BanEntry[] }
+
 export type UpdateCommit = { commit: string; short: string; subject: string; author: string; date: number }
 
 export type UpdateRun = {
@@ -464,6 +476,9 @@ export const api = {
   adminList: () => get<AdminList>('/api/admin/admins'),
   addAdmin: (who: { id: string } | { email: string }) => post<AdminList>('/api/admin/admins', who),
   removeAdmin: (key: string) => request<AdminList>('DELETE', `/api/admin/admins/${encodeURIComponent(key)}`),
+  banList: () => get<BanList>('/api/admin/bans'),
+  ban: (who: ({ id: string } | { email: string }) & { reason?: string }) => post<BanList>('/api/admin/bans', who),
+  unban: (key: string) => request<BanList>('DELETE', `/api/admin/bans/${encodeURIComponent(key)}`),
   adminUpdate: () => get<UpdateInfo>('/api/admin/update'),
   checkUpdate: () => post<UpdateInfo>('/api/admin/update/check'),
   startUpdate: () => post<UpdateInfo>('/api/admin/update'),

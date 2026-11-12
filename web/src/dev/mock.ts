@@ -1,4 +1,4 @@
-import type { ActivityEntry, AdminEntry, AdminList, AppPlaylist, EffectsVolume, KnownUser, LibraryAlbum, Lyrics, QuietAdmin, QuietHours, QuietSettings, Queue, ServiceInfo, Status, SystemInfo, Track, UpdateInfo, UpdateRun } from '../lib/api'
+import type { ActivityEntry, AdminEntry, AdminList, BanEntry, AppPlaylist, EffectsVolume, KnownUser, LibraryAlbum, Lyrics, QuietAdmin, QuietHours, QuietSettings, Queue, ServiceInfo, Status, SystemInfo, Track, UpdateInfo, UpdateRun } from '../lib/api'
 import fixtures from './fixtures.json'
 
 type Mode = 'full' | 'signedout' | 'signedout-slack' | 'signedout-google' | 'writes' | 'down'
@@ -492,6 +492,7 @@ function applyQuietSettings() {
   quiet = { ...quiet, enabled: quietSettings.enabled, window: quietSettings.enabled ? `${quietSettings.start}-${quietSettings.end}` : null, until: quietSettings.end, grace_s: quietSettings.grace_min * 60 }
 }
 
+const bannedUsers: BanEntry[] = []
 const adminUsers: AdminEntry[] = [
   { key: 'email:howard@robotics.example', id: null, email: 'howard@robotics.example', name: 'Howard Kent', avatar: null, source: 'config', added_by: null, added: null, you: false },
   { key: 'U01', id: 'U01', email: 'adam@robotics.example', name: 'Adam Xu', avatar: null, source: 'admin', added_by: { id: 'U03', name: 'Howard Kent' }, added: sec() - 6 * 86400, you: true },
@@ -599,6 +600,23 @@ function handleAdmin(method: string, p: string, body: Record<string, unknown>): 
       setStatus({ state: 'paused' })
     } else quietOverride = null
     return ok(quietAdmin())
+  }
+  if (route === 'GET /api/admin/bans') return ok({ bans: bannedUsers })
+  if (route === 'POST /api/admin/bans') {
+    const known = knownUsers.find((u) => u.id === body.id || (body.email && u.email === body.email))
+    const email = typeof body.email === 'string' ? body.email.toLowerCase() : null
+    const id = typeof body.id === 'string' ? body.id : null
+    const key = (id ?? email ?? '').toLowerCase()
+    if (bannedUsers.some((b) => b.key === key)) return fail(409, 'already banned')
+    bannedUsers.unshift({ key, id, email, name: known?.name ?? null, reason: typeof body.reason === 'string' ? body.reason : null, banned_by: { id: adam.id, name: adam.name }, banned: sec() })
+    return ok({ bans: bannedUsers })
+  }
+  const unbanning = p.match(/^\/api\/admin\/bans\/(.+)$/)
+  if (method === 'DELETE' && unbanning) {
+    const i = bannedUsers.findIndex((b) => b.key === decodeURIComponent(unbanning[1]))
+    if (i < 0) return fail(404, 'not banned')
+    bannedUsers.splice(i, 1)
+    return ok({ bans: bannedUsers })
   }
   if (route === 'GET /api/admin/admins') return ok(adminList())
   if (route === 'POST /api/admin/admins') {

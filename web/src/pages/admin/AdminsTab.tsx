@@ -5,6 +5,7 @@ import { Button, Field, fieldClass, Modal } from '../../components/Modal'
 import { api, type AdminEntry, type AdminList } from '../../lib/api'
 import { useToast } from '../../state/toast'
 import { ErrorState, PageSpinner } from '../Message'
+import { BansCard } from './BansCard'
 import { ago, Card, Chip, usePoll } from './kit'
 
 const label = (a: AdminEntry) => a.name ?? a.email ?? a.id ?? a.key
@@ -144,6 +145,7 @@ export function AdminsTab({ active }: { active: boolean }) {
         </ul>
         <p className="mt-3 text-xs text-faint">Admins can manage quiet hours, other admins, updates and services.</p>
       </Card>
+      <BansCard known={data.known} active={active} />
       {adding && <AddModal list={data} onClose={() => setAdding(false)} onAdded={setData} />}
       {removing && (
         <Modal title={`Remove ${label(removing)}?`} onClose={() => !busy && setRemoving(null)} dismissable={!busy}>
