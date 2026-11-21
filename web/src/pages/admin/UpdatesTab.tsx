@@ -1,7 +1,7 @@
 import { AlertTriangle, ArrowRight, CheckCircle2, CloudDownload, GitCommitHorizontal, History, Info, Loader2, MinusCircle, RefreshCw, Undo2, XCircle } from 'lucide-react'
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { Button, Field, fieldClass, Modal } from '../../components/Modal'
-import { api, type UpdateAuto, type UpdateHistoryEntry, type UpdateInfo, type UpdateRun } from '../../lib/api'
+import { api, type UpdateAuto, type UpdateHistoryEntry, type UpdateInfo, type UpdateRun, type UpdateSettingsBody } from '../../lib/api'
 import { clockLabel } from '../../lib/playback'
 import { useToast } from '../../state/toast'
 import { ErrorState, PageSpinner } from '../Message'
@@ -33,7 +33,7 @@ function RunCard({ run, restarting }: { run: UpdateRun; restarting: boolean }) {
   const revert = run.action === 'revert'
   const elapsed = (run.finished_at ?? Date.now() / 1000) - run.started_at
   return (
-    <Card title={revert ? 'Rollback' : run.auto ? 'Automatic update' : 'Update'}>
+    <Card title={revert ? 'Rollback' : run.trigger === 'boot' ? 'Update on boot' : run.auto ? 'Automatic update' : 'Update'}>
       {running ? (
         <Banner tone="neutral" icon={<Loader2 className="animate-spin" />} title={restarting ? 'Restarting the server...' : revert ? 'Rolling back' : 'Updating'}>
           {restarting ? 'The page reconnects on its own. The music keeps playing.' : `${duration(elapsed)} elapsed. Keep this page open or come back later.`}
@@ -60,10 +60,11 @@ function RunCard({ run, restarting }: { run: UpdateRun; restarting: boolean }) {
   )
 }
 
-function AutoUpdateCard({ auto, busy, onSave }: { auto: UpdateAuto; busy: boolean; onSave: (body: { auto: boolean; time: string }) => void }) {
+function AutoUpdateCard({ auto, busy, onSave }: { auto: UpdateAuto; busy: boolean; onSave: (body: UpdateSettingsBody) => void }) {
   const [enabled, setEnabled] = useState(auto.enabled)
   const [time, setTime] = useState(auto.time)
-  const dirty = enabled !== auto.enabled || time !== auto.time
+  const [onBoot, setOnBoot] = useState(auto.on_boot)
+  const dirty = enabled !== auto.enabled || time !== auto.time || onBoot !== auto.on_boot
 
   return (
     <Card title="Automatic updates">
@@ -71,7 +72,7 @@ function AutoUpdateCard({ auto, busy, onSave }: { auto: UpdateAuto; busy: boolea
         className="space-y-4"
         onSubmit={(e) => {
           e.preventDefault()
-          if (time && dirty) onSave({ auto: enabled, time })
+          if (time && dirty) onSave({ auto: enabled, time, on_boot: onBoot })
         }}
       >
         <div className="flex items-center justify-between gap-4">
@@ -85,6 +86,13 @@ function AutoUpdateCard({ auto, busy, onSave }: { auto: UpdateAuto; busy: boolea
           <input type="time" required value={time} onChange={(e) => setTime(e.target.value)} disabled={!enabled} className={`${fieldClass} disabled:opacity-50 sm:max-w-40`} />
         </Field>
         {enabled && time && <p className="text-sm text-dim">Checks for a new version between {clockLabel(time)} and an hour later.</p>}
+        <div className="flex items-center justify-between gap-4">
+          <div>
+            <div className="text-sm font-semibold">Update on boot</div>
+            <div className="text-xs text-dim">Checks once, a few minutes after the Pi starts up, at any time of day. Same rules: it skips if something is playing.</div>
+          </div>
+          <Toggle on={onBoot} onChange={setOnBoot} label="Update on boot enabled" />
+        </div>
         <div className="flex flex-wrap items-center gap-3 pt-1">
           <Button type="submit" disabled={busy || !time || !dirty}>
             Save
@@ -121,6 +129,7 @@ function HistoryCard({ history }: { history: UpdateHistoryEntry[] }) {
             const o = OUTCOMES[h.outcome] ?? OUTCOMES.failed
             const from = short(h.from)
             const to = short(h.to)
+            const boot = h.trigger === 'boot'
             return (
               <li key={`${h.id}-${h.at}`} className="flex items-start gap-3 py-2.5">
                 <span className={`mt-0.5 shrink-0 [&>svg]:size-4 ${toneIcon[o.tone]}`}>{o.icon}</span>
@@ -137,9 +146,9 @@ function HistoryCard({ history }: { history: UpdateHistoryEntry[] }) {
                   </div>
                   {h.result && <div className="mt-1 text-sm leading-snug">{h.result}</div>}
                   <div className="mt-0.5 text-xs text-faint">
-                    {h.auto ? 'Automatic' : h.by?.name ? `By ${h.by.name}` : 'By hand'}
+                    {boot ? 'On boot' : h.auto ? 'Nightly' : h.by?.name ? `By ${h.by.name}` : 'By hand'}
                     {h.at ? `, ${dateTime(h.at)}` : ''}
-                    {h.count && h.count > 1 ? ` (${h.count} nights in a row)` : ''}
+                    {h.count && h.count > 1 ? ` (${h.count} ${boot ? 'boots' : 'nights'} in a row)` : ''}
                   </div>
                 </div>
               </li>
@@ -224,7 +233,7 @@ export function UpdatesTab({ active }: { active: boolean }) {
     }
   }
 
-  const saveAuto = async (body: { auto: boolean; time: string }) => {
+  const saveAuto = async (body: UpdateSettingsBody) => {
     setBusy('settings')
     try {
       setData(await api.saveAutoUpdate(body))

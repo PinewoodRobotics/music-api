@@ -340,6 +340,7 @@ export type UpdateRun = {
   id: string
   action?: 'update' | 'revert'
   auto?: boolean
+  trigger?: UpdateTrigger
   state: 'running' | 'succeeded' | 'rolled_back' | 'failed'
   started_at: number
   finished_at: number | null
@@ -350,12 +351,17 @@ export type UpdateRun = {
   log: { t: number; msg: string; level: 'info' | 'warn' | 'error' }[]
 }
 
-export type UpdateAuto = { enabled: boolean; time: string; updated_by: Actor | null; updated_at: number | null }
+export type UpdateTrigger = 'manual' | 'nightly' | 'boot'
+
+export type UpdateAuto = { enabled: boolean; time: string; on_boot: boolean; updated_by: Actor | null; updated_at: number | null }
+
+export type UpdateSettingsBody = { auto?: boolean; time?: string; on_boot?: boolean }
 
 export type UpdateHistoryEntry = {
   id: string
   action: 'update' | 'revert'
   auto: boolean
+  trigger?: UpdateTrigger
   outcome: 'updated' | 'rolled_back' | 'failed' | 'skipped' | 'reverted'
   result: string | null
   from: string | null
@@ -527,7 +533,7 @@ export const api = {
   adminUpdate: () => get<UpdateInfo>('/api/admin/update'),
   checkUpdate: () => post<UpdateInfo>('/api/admin/update/check'),
   startUpdate: () => post<UpdateInfo>('/api/admin/update'),
-  saveAutoUpdate: (body: { auto?: boolean; time?: string }) => request<UpdateInfo>('PUT', '/api/admin/update/settings', body),
+  saveAutoUpdate: (body: UpdateSettingsBody) => request<UpdateInfo>('PUT', '/api/admin/update/settings', body),
   revertUpdate: () => post<UpdateInfo>('/api/admin/update/revert'),
   restartService: (name: string) => post<{ name: string; state: ServiceState }>(`/api/admin/services/${encodeURIComponent(name)}/restart`),
   serviceLogs: (name: string, lines = 200) => get<ServiceLogs>(`/api/admin/logs/${encodeURIComponent(name)}?${qs({ lines })}`),

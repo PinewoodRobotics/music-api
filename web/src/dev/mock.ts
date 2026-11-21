@@ -1,4 +1,4 @@
-import type { ActivityEntry, AdminEntry, AdminList, BanEntry, AppPlaylist, EffectsVolume, KnownUser, LibraryAlbum, Lyrics, QuietAdmin, QuietHours, QuietSettings, Queue, ServiceInfo, Status, SystemInfo, Track, UpdateAuto, UpdateHistoryEntry, UpdateInfo, UpdateRun } from '../lib/api'
+import type { ActivityEntry, AdminEntry, AdminList, BanEntry, AppPlaylist, EffectsVolume, KnownUser, LibraryAlbum, Lyrics, QuietAdmin, QuietHours, QuietSettings, Queue, ServiceInfo, Status, SystemInfo, Track, UpdateAuto, UpdateHistoryEntry, UpdateInfo, UpdateRun, UpdateSettingsBody } from '../lib/api'
 import fixtures from './fixtures.json'
 
 type Mode = 'full' | 'signedout' | 'signedout-slack' | 'signedout-google' | 'writes' | 'down' | 'banned'
@@ -522,7 +522,7 @@ const updateCommits = [
 let updateRunStart: number | null = null
 let updateAction: 'update' | 'revert' = 'update'
 let reverted = false
-const autoUpdate: UpdateAuto = { enabled: true, time: '03:00', updated_by: null, updated_at: null }
+const autoUpdate: UpdateAuto = { enabled: true, time: '03:00', on_boot: true, updated_by: null, updated_at: null }
 const night = (n: number, h = 3, m = 0) => {
   const d = new Date()
   d.setDate(d.getDate() - n)
@@ -530,12 +530,14 @@ const night = (n: number, h = 3, m = 0) => {
   return Math.floor(d.getTime() / 1000)
 }
 const updateHistory: UpdateHistoryEntry[] = [
-  { id: 'auto-1', action: 'update', auto: true, outcome: 'skipped', result: 'Not safe to restart: music is playing', from: 'e801f38c', to: 'd41c0b7a', started_at: night(0, 3, 1), at: night(0, 3, 1), by: null, notes: [] },
-  { id: 'auto-2', action: 'update', auto: true, outcome: 'updated', result: 'Updated to e801f38: Docs: sound effects in README', from: '5c2a9e14', to: 'e801f38c', started_at: night(1), at: night(1) + 40, by: null, notes: [] },
-  { id: 'auto-3', action: 'update', auto: true, outcome: 'skipped', result: 'Already up to date', from: '5c2a9e14', to: '5c2a9e14', started_at: night(2), at: night(2), by: null, notes: [], count: 3 },
-  { id: 'run-4', action: 'update', auto: false, outcome: 'updated', result: 'Updated to 5c2a9e1: Effects: duck the music under sound effects', from: '0b77d2f9', to: '5c2a9e14', started_at: night(5, 14, 12), at: night(5, 14, 13), by: { id: adam.id, name: adam.name }, notes: ['deploy/install-linux.sh changed: check it for new packages or setup steps and run them on the Pi by hand (they need sudo)'] },
-  { id: 'auto-5', action: 'update', auto: true, outcome: 'rolled_back', result: 'Rolled back to 0b77d2f; the failed build is kept in music-api-v2.failed', from: '0b77d2f9', to: '9f13ab02', started_at: night(6), at: night(6) + 75, by: null, notes: [] },
-  { id: 'run-6', action: 'revert', auto: false, outcome: 'reverted', result: 'Rolled back to 0b77d2f; 3e9c5d1 is kept as the previous version', from: '3e9c5d10', to: '0b77d2f9', started_at: night(8, 18, 40), at: night(8, 18, 41), by: { id: adam.id, name: adam.name }, notes: [] },
+  { id: 'auto-1', action: 'update', auto: true, trigger: 'nightly', outcome: 'skipped', result: 'Not safe to restart: music is playing', from: 'e801f38c', to: 'd41c0b7a', started_at: night(0, 3, 1), at: night(0, 3, 1), by: null, notes: [] },
+  { id: 'boot-2', action: 'update', auto: true, trigger: 'boot', outcome: 'skipped', result: 'Already up to date', from: 'e801f38c', to: 'e801f38c', started_at: night(1, 9, 42), at: night(1, 9, 42), by: null, notes: [] },
+  { id: 'auto-2', action: 'update', auto: true, trigger: 'nightly', outcome: 'updated', result: 'Updated to e801f38: Docs: sound effects in README', from: '5c2a9e14', to: 'e801f38c', started_at: night(1), at: night(1) + 40, by: null, notes: [] },
+  { id: 'auto-3', action: 'update', auto: true, trigger: 'nightly', outcome: 'skipped', result: 'Already up to date', from: '5c2a9e14', to: '5c2a9e14', started_at: night(2), at: night(2), by: null, notes: [], count: 3 },
+  { id: 'boot-4', action: 'update', auto: true, trigger: 'boot', outcome: 'skipped', result: 'Already up to date', from: '5c2a9e14', to: '5c2a9e14', started_at: night(4, 8, 3), at: night(4, 8, 3), by: null, notes: [] },
+  { id: 'run-4', action: 'update', auto: false, trigger: 'manual', outcome: 'updated', result: 'Updated to 5c2a9e1: Effects: duck the music under sound effects', from: '0b77d2f9', to: '5c2a9e14', started_at: night(5, 14, 12), at: night(5, 14, 13), by: { id: adam.id, name: adam.name }, notes: ['deploy/install-linux.sh changed: check it for new packages or setup steps and run them on the Pi by hand (they need sudo)'] },
+  { id: 'auto-5', action: 'update', auto: true, trigger: 'nightly', outcome: 'rolled_back', result: 'Rolled back to 0b77d2f; the failed build is kept in music-api-v2.failed', from: '0b77d2f9', to: '9f13ab02', started_at: night(6), at: night(6) + 75, by: null, notes: [] },
+  { id: 'run-6', action: 'revert', auto: false, trigger: 'manual', outcome: 'reverted', result: 'Rolled back to 0b77d2f; 3e9c5d1 is kept as the previous version', from: '3e9c5d10', to: '0b77d2f9', started_at: night(8, 18, 40), at: night(8, 18, 41), by: { id: adam.id, name: adam.name }, notes: [] },
 ]
 const UPDATE_STEPS: [number, string, 'info' | 'warn' | 'error'][] = [
   [0.2, 'Downloading build d41c0b7 from GitHub', 'info'],
@@ -558,6 +560,7 @@ function updateInfo(): UpdateInfo {
       id: 'run-1',
       action: updateAction,
       auto: false,
+      trigger: 'manual',
       by: { id: adam.id, name: adam.name },
       state: done ? 'succeeded' : 'running',
       started_at: updateRunStart,
@@ -707,9 +710,9 @@ function handleAdmin(method: string, p: string, body: Record<string, unknown>): 
     return ok(updateInfo())
   }
   if (route === 'PUT /api/admin/update/settings') {
-    const { auto, time } = body as { auto?: boolean; time?: string }
+    const { auto, time, on_boot } = body as UpdateSettingsBody
     if (time !== undefined && !/^\d{1,2}:\d{2}$/.test(time)) return fail(400, 'time must look like 03:00')
-    Object.assign(autoUpdate, { ...(auto !== undefined && { enabled: auto }), ...(time !== undefined && { time }), updated_by: { id: adam.id, name: adam.name }, updated_at: sec() })
+    Object.assign(autoUpdate, { ...(auto !== undefined && { enabled: auto }), ...(time !== undefined && { time }), ...(on_boot !== undefined && { on_boot }), updated_by: { id: adam.id, name: adam.name }, updated_at: sec() })
     return ok(updateInfo())
   }
   const restart = p.match(/^\/api\/admin\/services\/([^/]+)\/restart$/)
