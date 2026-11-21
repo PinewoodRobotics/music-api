@@ -12,6 +12,7 @@ receiver keep running; a music-api restart is safe because both are recovered.
     python3 updater.py update    # update now (also POST /api/admin/update)
     python3 updater.py revert    # swap music-api-v2.prev back in (also POST /api/admin/update/revert)
     python3 updater.py auto      # nightly: update if it's time, a build is ready and nothing is playing (auto-update.timer)
+    python3 updater.py boot      # the same check once, a few minutes after the Pi boots (boot-update.timer)
 """
 import argparse
 import datetime
@@ -43,7 +44,8 @@ HISTORY_FILE = "update-history.json"
 HISTORY_MAX = 10
 DEFAULT_AUTO_TIME = "03:00"
 AUTO_WINDOW = 3600
-AUTO_UNITS = ("auto-update.service", "auto-update.timer")
+BOOT_WINDOW = 900
+AUTO_UNITS = ("auto-update.service", "auto-update.timer", "boot-update.service", "boot-update.timer")
 ENV_FILE = os.path.expanduser("~/.config/music-api/env")
 SLACK_API = "https://slack.com/api"
 FETCH_EVERY = 600
@@ -173,6 +175,14 @@ def slack_call(token, method, params):
         return {"ok": False, "error": str(e)}
 
 
+def system_uptime():
+    try:
+        with open("/proc/uptime") as f:
+            return float(f.read().split()[0])
+    except (OSError, ValueError, IndexError):
+        return None
+
+
 def safe_to_update(data_dir, now):
     """(safe, reason): quiet hours have the speakers locked, or nothing is playing. Spotify and AirPlay come from the
     server's idle clock in quiet-hours.json; sound effects (and everything else, also when the server is down) from
@@ -189,10 +199,14 @@ def safe_to_update(data_dir, now):
     return True, "nothing is playing"
 
 
+def _trigger(entry):
+    return entry.get("trigger") or ("nightly" if entry.get("auto") else "manual")
+
+
 class Updater:
     def __init__(self, app_dir=HERE, data_dir=None, repo_dir=None, remote=None, key_path=None, unit_dir=UNIT_DIR,
                  run=_run, health=None, port=None, clock=time.time, sleep=time.sleep, which=shutil.which, spawn=None,
-                 safe=None, slack=slack_call, environ=None, env_file=None):
+                 safe=None, slack=slack_call, environ=None, env_file=None, uptime=system_uptime):
         self.app_dir = os.path.abspath(app_dir)
         self.data_dir = data_dir or default_data_dir()
         self.repo_dir = repo_dir or os.environ.get("MUSIC_API_UPDATE_REPO") or \
@@ -210,6 +224,7 @@ class Updater:
         self.history_path = os.path.join(self.data_dir, HISTORY_FILE)
         self.safe = safe or (lambda: safe_to_update(self.data_dir, self.clock()))
         self.slack = slack
+        self.uptime = uptime
         self.environ = os.environ if environ is None else environ
         self.env_file = env_file or os.environ.get("MUSIC_API_ENV_FILE") or ENV_FILE
         self.lock = threading.Lock()
@@ -460,7 +475,7 @@ class Updater:
             target = st["build"]
             msg = f"Update requested{who}: {(st['deployed'] or {}).get('short') or 'unknown'} -> {st['build']['short']}"
         run_id = time.strftime("%Y%m%d-%H%M%S") + "-" + secrets.token_hex(2)
-        self.state = {"id": run_id, "action": action, "auto": False, "state": "running",
+        self.state = {"id": run_id, "action": action, "auto": False, "trigger": "manual", "state": "running",
                       "started_at": round(self.clock()), "finished_at": None,
                       "from": (st["deployed"] or {}).get("commit"), "to": target.get("commit"), "result": None,
                       "by": by, "log": []}
@@ -488,7 +503,7 @@ class Updater:
         except Exception as e:  # noqa: BLE001 - history and alerts must never break an update
             print(f"couldn't record the run: {e}", file=sys.stderr, flush=True)
 
-    def update(self, run_id=None, action="update", auto=False, reason=None):
+    def update(self, run_id=None, action="update", auto=False, reason=None, trigger=None):
         os.makedirs(self.data_dir, mode=0o700, exist_ok=True)
         with open(self._lock_path(), "a") as lf:
             try:
@@ -501,10 +516,11 @@ class Updater:
                 self.state["state"] = "running"
             else:
                 self.state = {"id": run_id or time.strftime("%Y%m%d-%H%M%S"), "action": action, "auto": auto,
-                              "state": "running", "started_at": round(self.clock()), "finished_at": None,
+                              "trigger": (trigger or "nightly") if auto else "manual", "state": "running", "started_at": round(self.clock()), "finished_at": None,
                               "from": None, "to": None, "result": None, "by": None, "log": []}
             if auto:
-                self.log(f"Automatic update: {reason or 'scheduled'}")
+                kind = "Update on boot" if trigger == "boot" else "Automatic update"
+                self.log(f"{kind}: {reason or 'scheduled'}")
             try:
                 return self._revert() if self.state.get("action") == "revert" else self._update()
             except Exception as e:  # noqa: BLE001 - always leave a final state for the admin page
@@ -627,19 +643,23 @@ class Updater:
             at = parse_hhmm(saved.get("time") or DEFAULT_AUTO_TIME)
         except UpdateError:
             at = DEFAULT_AUTO_TIME
-        return {"enabled": bool(saved.get("enabled", True)), "time": at,
+        return {"enabled": bool(saved.get("enabled", True)), "time": at, "on_boot": bool(saved.get("on_boot", True)),
                 "updated_by": saved.get("updated_by"), "updated_at": saved.get("updated_at")}
 
-    def save_auto_settings(self, enabled=None, at=None, by=None):
+    def save_auto_settings(self, enabled=None, at=None, by=None, on_boot=None):
         cur = self.auto_settings()
         if enabled is not None:
             if not isinstance(enabled, bool):
                 raise UpdateError("auto must be true or false", 400)
             cur["enabled"] = enabled
+        if on_boot is not None:
+            if not isinstance(on_boot, bool):
+                raise UpdateError("on_boot must be true or false", 400)
+            cur["on_boot"] = on_boot
         if at is not None:
             cur["time"] = parse_hhmm(at)
-        _save_json(self.settings_path, {"enabled": cur["enabled"], "time": cur["time"], "updated_by": by,
-                                        "updated_at": round(self.clock())})
+        _save_json(self.settings_path, {"enabled": cur["enabled"], "time": cur["time"], "on_boot": cur["on_boot"],
+                                        "updated_by": by, "updated_at": round(self.clock())})
         return self.auto_settings()
 
     def _history_file(self):
@@ -654,6 +674,7 @@ class Updater:
         runs = h.get("runs") or []
         last = runs[0] if runs else None
         if collapse and last and last.get("outcome") == "skipped" and last.get("auto") and \
+                _trigger(last) == _trigger(entry) and \
                 last.get("result") == entry["result"] and last.get("to") == entry.get("to"):
             entry = {**entry, "count": last.get("count", 1) + 1}
             runs = runs[1:]
@@ -668,8 +689,8 @@ class Updater:
         else:
             outcome = "rolled_back" if st["state"] == "rolled_back" else "failed"
         return {"id": st["id"], "action": st.get("action") or "update", "auto": bool(st.get("auto")),
-                "outcome": outcome, "result": st.get("result"), "from": st.get("from"), "to": st.get("to"),
-                "started_at": st.get("started_at"), "at": st.get("finished_at"), "by": st.get("by"),
+                "trigger": _trigger(st), "outcome": outcome, "result": st.get("result"), "from": st.get("from"),
+                "to": st.get("to"), "started_at": st.get("started_at"), "at": st.get("finished_at"), "by": st.get("by"),
                 "notes": st.get("notes") or []}
 
     def auto(self):
@@ -687,6 +708,22 @@ class Updater:
             return None
         h["last_night"] = night
         _save_json(self.history_path, h)
+        return self._attempt("nightly", f"auto-{night}")
+
+    def boot(self):
+        """Run by boot-update.timer a few minutes after the Pi boots: the nightly check without the time window.
+        Returns the run's state, a skip entry, or None when it's off or the Pi isn't freshly booted."""
+        if not self.auto_settings()["on_boot"]:
+            print("Update on boot is off")
+            return None
+        up = self.uptime()
+        # Enabling the timer on a running Pi (an update installing it) fires it at once, since OnBootSec has passed.
+        if up is None or up > BOOT_WINDOW:
+            print("Not a fresh boot; nothing to do")
+            return None
+        return self._attempt("boot", f"boot-{time.strftime('%Y%m%d-%H%M%S')}")
+
+    def _attempt(self, trigger, skip_id):
         deployed = self.deployed()
         why, build = None, None
         if self._locked():
@@ -705,11 +742,13 @@ class Updater:
                 why = f"not safe to restart: {reason}"
             else:
                 print(f"Updating: {reason}", flush=True)
+                prefix = "boot" if trigger == "boot" else "auto"
                 try:
-                    return self.update(f"auto-{time.strftime('%Y%m%d-%H%M%S')}", auto=True, reason=reason)
+                    return self.update(f"{prefix}-{time.strftime('%Y%m%d-%H%M%S')}", auto=True, reason=reason,
+                                       trigger=trigger)
                 except UpdateError as e:
                     why = str(e)
-        entry = {"id": f"auto-{night}", "action": "update", "auto": True, "outcome": "skipped",
+        entry = {"id": skip_id, "action": "update", "auto": True, "trigger": trigger, "outcome": "skipped",
                  "result": why[:1].upper() + why[1:], "from": (deployed or {}).get("commit"),
                  "to": (build or {}).get("commit"), "started_at": round(self.clock()), "at": round(self.clock()),
                  "by": None, "notes": []}
@@ -753,7 +792,7 @@ class Updater:
         if st.get("action") == "revert":
             return
         to = (st.get("to") or "")[:7] or "the new build"
-        kind = "Automatic update" if st.get("auto") else "Update"
+        kind = ("Update on boot" if _trigger(st) == "boot" else "Automatic update") if st.get("auto") else "Update"
         if st.get("auto") and st["state"] in ("rolled_back", "failed"):
             self.alert(f"{kind} to {to} {'was rolled back' if st['state'] == 'rolled_back' else 'failed'}: "
                        f"{st.get('result')}\nSee the Updates tab on the admin page for the log.")
@@ -850,7 +889,7 @@ class Updater:
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("command", choices=["setup", "status", "update", "revert", "auto"])
+    ap.add_argument("command", choices=["setup", "status", "update", "revert", "auto", "boot"])
     ap.add_argument("--run-id")
     a = ap.parse_args(argv)
     u = Updater()
@@ -866,8 +905,8 @@ def main(argv=None):
         if a.command == "status":
             print(json.dumps(u.status(fetch=True), indent=1))
             return 0
-        if a.command == "auto":
-            st = u.auto()
+        if a.command in ("auto", "boot"):
+            st = u.auto() if a.command == "auto" else u.boot()
             return 0 if not st or st.get("outcome") == "skipped" or st.get("state") == "succeeded" else 1
         st = u.update(a.run_id, action=a.command)
         return 0 if st["state"] == "succeeded" else 1

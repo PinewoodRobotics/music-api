@@ -1227,9 +1227,10 @@ def _admin_update(q, b):
     GitHub Actions publishes), behind, commits [{commit, short, subject, author, date}] newest first,
     changes {files, restarts, units, enable, notes}, fetched_at, fetch_error, run {id, action: update|revert, auto,
     state: running|succeeded|rolled_back|failed, started_at, finished_at, from, to, result, by, log [{t, msg, level}]},
-    auto {enabled, time: "HH:MM", updated_by, updated_at} (nightly auto-update), history [{id, action: update|revert,
-    auto, outcome: updated|rolled_back|failed|skipped|reverted, result, from, to, started_at, at, by, notes, count}]
-    (last 10 runs, newest first; count = nights a repeated automatic skip covers), previous {commit, short, subject,
+    auto {enabled, time: "HH:MM", on_boot, updated_by, updated_at} (nightly auto-update and update on boot),
+    history [{id, action: update|revert, auto, trigger: manual|nightly|boot, outcome: updated|rolled_back|failed|skipped|
+    reverted, result, from, to, started_at, at, by, notes, count}] (last 10 runs, newest first; count = how many
+    times in a row the same automatic skip happened), previous {commit, short, subject,
     built_at} or null (the tree in music-api-v2.prev)}. Fetches from GitHub if the last fetch is over 10 min old"""
     return updates.status()
 
@@ -1252,11 +1253,12 @@ def _admin_update_start(q, b):
 
 @route("PUT", "/api/admin/update/settings")
 def _admin_update_settings(q, b):
-    """Body {auto?: bool, time?: "HH:MM"} (admins only): turn the nightly auto-update on or off and set when it runs
-    (local time, default 03:00; it updates within the hour after, only when a tested build is newer than the deployed
-    one and quiet hours have the speakers locked or nothing is playing). Saved in the data dir. Returns the same as
-    GET /api/admin/update"""
-    updates.save_auto_settings(b.get("auto"), b.get("time"), _by())
+    """Body {auto?: bool, time?: "HH:MM", on_boot?: bool} (admins only): turn the nightly auto-update on or off and
+    set when it runs (local time, default 03:00; it updates within the hour after, only when a tested build is newer
+    than the deployed one and quiet hours have the speakers locked or nothing is playing), and turn update on boot on
+    or off (default on: the same check once, a few minutes after the Pi boots, at any time of day). Saved in the data
+    dir. Returns the same as GET /api/admin/update"""
+    updates.save_auto_settings(b.get("auto"), b.get("time"), _by(), on_boot=b.get("on_boot"))
     return updates.status(fetch=False)
 
 

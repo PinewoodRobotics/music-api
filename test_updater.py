@@ -1,5 +1,6 @@
 import contextlib
 import datetime
+import fcntl
 import io
 import json
 import os
@@ -109,6 +110,7 @@ class Rig:
         kw.setdefault("environ", {})
         kw.setdefault("slack", self.slack)
         kw.setdefault("safe", lambda: (True, "nothing is playing"))
+        kw.setdefault("uptime", lambda: 120.0)
         u = up.Updater(app_dir=self.app, data_dir=self.data, repo_dir=os.path.join(self.tmp, "repo.git"),
                        remote=self.origin, unit_dir=self.units, run=self.run, health=lambda: self.healthy[0],
                        clock=self.clock, sleep=self.clock.sleep, which=lambda c: "/usr/bin/" + c, **kw)
@@ -363,6 +365,77 @@ class AutoUpdateTest(unittest.TestCase):
             self.assertEqual(e.exception.status, 400)
         self.assertEqual(u.status(fetch=False)["auto"]["time"], "04:30")
 
+    def test_on_boot_setting(self):
+        u = self.rig.updater()
+        self.assertTrue(u.auto_settings()["on_boot"])
+        s = u.save_auto_settings(on_boot=False)
+        self.assertEqual((s["on_boot"], s["enabled"]), (False, True))
+        self.assertFalse(u.save_auto_settings(enabled=False)["on_boot"])
+        with self.assertRaises(up.UpdateError) as e:
+            u.save_auto_settings(on_boot="no")
+        self.assertEqual(e.exception.status, 400)
+
+    def test_boot_updates_outside_the_window(self):
+        self.rig.clock.t = at(12, 0)
+        sha = self.new_build()
+        u = self.rig.updater()
+        self.assertIsNone(u.auto())
+        st = u.boot()
+        self.assertEqual((st["state"], st["auto"], st["trigger"], st["to"]), ("succeeded", True, "boot", sha))
+        self.assertTrue(st["id"].startswith("boot-"))
+        self.assertEqual(self.rig.read("server.py"), "print('v2')\n")
+        h = u.history()[0]
+        self.assertEqual((h["outcome"], h["auto"], h["trigger"]), ("updated", True, "boot"))
+        self.assertIn("Update on boot", st["log"][0]["msg"])
+
+    def test_boot_respects_the_toggle_not_the_nightly_switch(self):
+        self.rig.clock.t = at(12, 0)
+        self.new_build()
+        u = self.rig.updater()
+        u.save_auto_settings(on_boot=False)
+        self.assertIsNone(u.boot())
+        self.assertEqual((u.history(), self.rig.read("server.py")), ([], "print('v1')\n"))
+        u.save_auto_settings(enabled=False, on_boot=True)
+        self.assertEqual(u.boot()["state"], "succeeded")
+
+    def test_boot_does_nothing_long_after_boot(self):
+        self.new_build()
+        for uptime in (lambda: up.BOOT_WINDOW + 1.0, lambda: None):
+            u = self.rig.updater(uptime=uptime)
+            self.assertIsNone(u.boot())
+        self.assertEqual(self.rig.read("server.py"), "print('v1')\n")
+
+    def test_boot_respects_blockers_and_records_its_skips_apart(self):
+        self.new_build()
+        u = self.rig.updater(safe=lambda: (False, "music is playing"))
+        entry = u.auto()
+        self.assertEqual((entry["outcome"], entry["trigger"]), ("skipped", "nightly"))
+        entry = u.boot()
+        self.assertEqual((entry["outcome"], entry["trigger"], entry["auto"]), ("skipped", "boot", True))
+        self.assertIn("music is playing", entry["result"])
+        u.boot()
+        self.assertEqual([(h["trigger"], h.get("count", 1)) for h in u.history()], [("boot", 2), ("nightly", 1)])
+        self.assertEqual(self.rig.read("server.py"), "print('v1')\n")
+        self.rig.commit("Not built yet", {"server.py": "print('v3')\n"})
+        self.assertIn("still building", self.rig.updater().boot()["result"])
+
+    def test_boot_skips_while_an_update_holds_the_lock(self):
+        self.new_build()
+        u = self.rig.updater()
+        os.makedirs(self.rig.data, exist_ok=True)
+        with open(u._lock_path(), "a") as lf:
+            fcntl.flock(lf, fcntl.LOCK_EX)
+            self.assertEqual(self.rig.updater().boot()["result"], "An update was already running")
+        self.assertEqual(self.rig.read("server.py"), "print('v1')\n")
+
+    def test_boot_update_leaves_tonights_nightly_check(self):
+        self.rig.clock.t = at(3, 5)
+        self.new_build()
+        u = self.rig.updater()
+        self.assertEqual(u.boot()["state"], "succeeded")
+        entry = u.auto()
+        self.assertEqual((entry["trigger"], entry["result"]), ("nightly", "Already up to date"))
+
     def test_auto_does_nothing_when_disabled(self):
         self.new_build()
         u = self.rig.updater()
@@ -536,8 +609,7 @@ class AutoUpdateTest(unittest.TestCase):
         self.assertEqual(u.update(run["id"])["state"], "succeeded")
 
     def test_plan_installs_and_enables_the_auto_units(self):
-        self.new_build({"server.py": "print('v2')\n", "deploy/systemd/auto-update.service": "[Service]\n",
-                        "deploy/systemd/auto-update.timer": "[Timer]\n"})
+        self.new_build({"server.py": "print('v2')\n", **{f"deploy/systemd/{n}": "[Unit]\n" for n in up.AUTO_UNITS}})
         u = self.rig.updater()
         plan = u.status(fetch=True)["changes"]
         self.assertEqual(plan["enable"], list(up.AUTO_UNITS))
@@ -545,6 +617,8 @@ class AutoUpdateTest(unittest.TestCase):
         u.update()
         self.assertTrue(os.path.exists(os.path.join(self.rig.units, "auto-update.timer")))
         self.assertIn(["systemctl", "--user", "enable", "--now", "auto-update.timer"], self.rig.calls)
+        self.assertTrue(os.path.exists(os.path.join(self.rig.units, "boot-update.service")))
+        self.assertIn(["systemctl", "--user", "enable", "--now", "boot-update.timer"], self.rig.calls)
         self.assertEqual(u.status(fetch=False)["changes"]["enable"], [])
 
 
