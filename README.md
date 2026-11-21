@@ -291,7 +291,7 @@ cooling needed, but use a proper 5 V / 2.5 A supply (`vcgencmd get_throttled` sh
    ```
    It installs PipeWire, the AirPlay receiver (`NO_AIRPLAY=1` skips it), `ffmpeg` and `pw-play`, enables lingering
    so user services run without a login, installs systemd user units (Soloist, the API, AirPlay, the display, the
-   quiet-hours timer, the nightly auto-update timer and a daily Soloist update) and creates `~/.config/music-api/env`.
+   quiet-hours timer, the nightly and on-boot auto-update timers and a daily Soloist update) and creates `~/.config/music-api/env`.
 2. Fill in `~/.config/music-api/env`: `SOLOIST_API_KEY`, `DEVICE_NAME`, `SPOTIFY_CLIENT_ID`
    (see [`deploy/env.example`](deploy/env.example) for everything else).
 3. Pick the output: `wpctl status`, find the speakers under *Sinks*, then `wpctl set-default <id>` (or put the node
@@ -375,7 +375,7 @@ Admins get **Admin** in the account menu (`/admin`), backed by `/api/admin/*`:
 | **Quiet hours** | Change the window and grace period, skip tonight, or lock now. See [Quiet hours](#quiet-hours). |
 | **Sound effects** | Effects volume and whether they play during quiet hours. See [Sound effects](#sound-effects). |
 | **Admins** | Add admins (people who have signed in, or by Slack ID / email) and ban or unban people. Config admins can't be removed here, and nobody can remove the last admin. |
-| **Updates** | Compares the deployed commit with GitHub and updates without stopping the music. Turn the nightly auto-update on or off and set its time, see the last 10 runs, and roll back to the previous version. See [Updates from GitHub](#updates-from-github). |
+| **Updates** | Compares the deployed commit with GitHub and updates without stopping the music. Turn the nightly auto-update on or off and set its time, turn update on boot on or off, see the last 10 runs, and roll back to the previous version. See [Updates from GitHub](#updates-from-github). |
 | **Services** | Restart Soloist, AirPlay or the display, and read each unit's recent journal. |
 
 ### Updates from GitHub
@@ -403,9 +403,16 @@ is playing" comes from the server's idle clock in `<data-dir>/quiet-hours.json` 
 PipeWire sink activity (sound effects, and everything when the server is down). Otherwise it records a skip with the
 reason and the next night tries again. The setting lives in `<data-dir>/update-settings.json`.
 
-**History and rollback.** The last 10 runs, manual and automatic (updated, rolled back, failed, skipped with the
-reason, or rolled back by hand), are kept in `<data-dir>/update-history.json`; repeated identical skips are merged
-into one entry with a count. "Roll back to previous version" swaps `music-api-v2.prev` back in with the same restarts
+**Update on boot.** `boot-update.timer` runs `updater.py boot` once, two minutes after the Pi boots. It waits up to 5
+minutes for the clock to sync (and gives up for this boot if it doesn't), then makes the same checks as the nightly
+run at any time of day. It has its own switch on the Updates tab ("Update on boot", default on, `on_boot` in
+`update-settings.json`) and is independent of the nightly one: a boot update doesn't use up tonight's attempt, which
+then just finds it's already up to date. It does nothing when the Pi has been up for more than 15 minutes, so enabling
+the timer on a running Pi doesn't trigger an update.
+
+**History and rollback.** The last 10 runs, by hand, nightly or on boot (updated, rolled back, failed, skipped with the
+reason, or rolled back by hand), are kept in `<data-dir>/update-history.json`; repeated identical skips of the same
+kind (nightly or on boot) are merged into one entry with a count. "Roll back to previous version" swaps `music-api-v2.prev` back in with the same restarts
 and health check (the current tree becomes the previous one, so it can be undone the same way).
 
 **Alerts.** When an automatic update rolls back or fails, or any update leaves a note that needs sudo, every admin
@@ -413,14 +420,16 @@ and health check (the current tree becomes the previous one, so it can be undone
 `chat:write`, plus `users:read.email` for admins listed by email) from the environment or `~/.config/music-api/env`
 (`MUSIC_API_ENV_FILE` overrides the path); without a token nothing is sent.
 
-The updater installs and enables `auto-update.timer` itself the first time it runs an update that ships it, so an
-already deployed Pi picks it up after two updates (the first one is still run by the old updater). To turn it on right
-away: `cp ~/.local/share/music-api-v2/deploy/systemd/auto-update.* ~/.config/systemd/user/ && systemctl --user
-daemon-reload && systemctl --user enable --now auto-update.timer`.
+The updater installs and enables `auto-update.timer` and `boot-update.timer` itself the first time it runs an update
+that ships them, so an already deployed Pi picks them up after two updates (the first one is still run by the old
+updater, which may note the new unit as needing a manual install; the next update takes care of it). To turn them on
+right away: `cp ~/.local/share/music-api-v2/deploy/systemd/auto-update.* ~/.local/share/music-api-v2/deploy/systemd/boot-update.*
+~/.config/systemd/user/ && systemctl --user daemon-reload && systemctl --user enable --now auto-update.timer
+boot-update.timer`.
 
 `python3 ~/.local/share/music-api-v2/updater.py status` shows what an update would do, `python3 updater.py update`
 does the same as the button, `python3 updater.py revert` rolls back and `python3 updater.py auto` runs one auto-update
-check. To pull from a fork, set `MUSIC_API_UPDATE_REMOTE`; an SSH remote also needs a deploy
+check (`python3 updater.py boot` the on-boot one, which only acts within 15 minutes of boot). To pull from a fork, set `MUSIC_API_UPDATE_REMOTE`; an SSH remote also needs a deploy
 key, which `python3 updater.py setup` generates. [`deploy/deploy-pi.sh`](deploy/deploy-pi.sh) still works for
 copying straight from a laptop.
 
