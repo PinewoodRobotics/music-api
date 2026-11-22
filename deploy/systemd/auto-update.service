@@ -1,0 +1,10 @@
+[Unit]
+Description=Nightly update from GitHub (only when quiet hours are locked or nothing is playing)
+After=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=-%h/.config/music-api/env
+ExecCondition=%h/.local/share/music-api-v2/deploy/wait-time-sync.sh --check
+ExecStart=/usr/bin/python3 %h/.local/share/music-api-v2/updater.py auto
+TimeoutStartSec=20min

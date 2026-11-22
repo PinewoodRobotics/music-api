@@ -1,0 +1,11 @@
+[Unit]
+Description=Auto-update check every 15 minutes (updater.py auto acts once a night, at the time set on the admin page)
+
+[Timer]
+OnCalendar=*:0/15
+AccuracySec=1min
+# A missed tick needs no catch-up: the next one is 15 minutes away and still inside the hour-long window.
+Persistent=false
+
+[Install]
+WantedBy=timers.target

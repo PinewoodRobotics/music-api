@@ -1,0 +1,10 @@
+[Unit]
+Description=Quiet hours check every minute (holds even when the API is down)
+
+[Timer]
+OnBootSec=15s
+OnCalendar=minutely
+AccuracySec=5s
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,9 @@
+[Unit]
+Description=Update check a few minutes after boot (updater.py boot)
+
+[Timer]
+OnBootSec=2min
+Persistent=false
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Music Remote</title>
+<style>
+  :root { --bg:#fafafa; --fg:#111; --muted:#666; --card:#fff; --line:#e4e4e4; --accent:#1db954; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#121212; --fg:#f2f2f2; --muted:#a0a0a0; --card:#1c1c1c; --line:#2c2c2c; } }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.4 system-ui, sans-serif; }
+  main { max-width:560px; margin:0 auto; padding:16px; }
+  .banner { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:10px 12px; margin-bottom:12px; }
+  .banner a { color:var(--accent); }
+  .now { display:flex; gap:14px; align-items:center; }
+  .now img { width:110px; height:110px; border-radius:8px; object-fit:cover; background:var(--line); flex:none; }
+  .title { font-size:18px; font-weight:600; }
+  .muted { color:var(--muted); font-size:13px; }
+  .bar { height:4px; background:var(--line); border-radius:2px; margin:14px 0 4px; cursor:pointer; }
+  .bar div { height:100%; background:var(--accent); border-radius:2px; width:0; }
+  .times { display:flex; justify-content:space-between; }
+  .controls { display:flex; justify-content:center; align-items:center; gap:10px; margin:10px 0; }
+  button { background:var(--card); color:var(--fg); border:1px solid var(--line); border-radius:999px; padding:8px 14px; font:inherit; cursor:pointer; }
+  button.big { font-size:20px; width:56px; height:56px; padding:0; background:var(--accent); color:#000; border:0; }
+  button.on { border-color:var(--accent); color:var(--accent); }
+  input[type=range] { width:100%; accent-color:var(--accent); }
+  input[type=search], select { width:100%; padding:9px 12px; border-radius:8px; border:1px solid var(--line); background:var(--card); color:var(--fg); font:inherit; }
+  h2 { font-size:14px; text-transform:uppercase; letter-spacing:.05em; color:var(--muted); margin:22px 0 8px; }
+  ul { list-style:none; margin:0; padding:0; }
+  li { display:flex; gap:10px; align-items:center; padding:6px 0; border-bottom:1px solid var(--line); }
+  li img { width:40px; height:40px; border-radius:4px; object-fit:cover; flex:none; background:var(--line); }
+  li .t { flex:1; min-width:0; }
+  li .t div { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  li button { padding:4px 10px; font-size:13px; }
+  .row { display:flex; gap:8px; align-items:center; }
+</style>
+</head>
+<body>
+<main>
+  <div id="banner" class="banner" hidden></div>
+  <div class="now">
+    <img id="art" alt="">
+    <div>
+      <div id="title" class="title">Nothing playing</div>
+      <div id="artist" class="muted"></div>
+      <div id="device" class="muted"></div>
+    </div>
+  </div>
+  <div class="bar" id="bar"><div id="fill"></div></div>
+  <div class="times muted"><span id="pos">0:00</span><span id="dur">0:00</span></div>
+  <div class="controls">
+    <button id="shuffle" title="Shuffle">⤮</button>
+    <button data-cmd="previous" title="Previous">⏮</button>
+    <button class="big" id="pp" title="Play/pause">▶</button>
+    <button data-cmd="next" title="Next">⏭</button>
+    <button id="repeat" title="Repeat">↻</button>
+  </div>
+  <div class="row"><span class="muted">Vol</span><input id="vol" type="range" min="0" max="100"></div>
+
+  <h2>Search</h2>
+  <input id="q" type="search" placeholder="Songs, albums, playlists, artists">
+  <ul id="results"></ul>
+
+  <h2>Up next</h2>
+  <ul id="queue"></ul>
+
+  <h2>Device</h2>
+  <select id="devices"></select>
+</main>
+<script>
+const params = new URLSearchParams(location.search);
+let token = params.get("token");
+try { if (token) localStorage.setItem("token", token); else token = localStorage.getItem("token"); } catch (e) {}
+const tq = token ? "token=" + encodeURIComponent(token) : "";
+const $ = id => document.getElementById(id);
+const fmt = ms => { const s = Math.max(0, Math.floor((ms || 0) / 1000)); return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0"); };
+const who = t => t ? (t.artists || []).map(a => a.name).join(", ") || (t.show || {}).name || "" : "";
+
+async function api(method, path, body) {
+  const r = await fetch(path, { method, headers: { "Content-Type": "application/json", ...(token ? { Authorization: "Bearer " + token } : {}) },
+                                body: body ? JSON.stringify(body) : undefined });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) { showBanner(j.error || r.statusText); throw new Error(j.error); }
+  return j.result;
+}
+function showBanner(html) { $("banner").innerHTML = html; $("banner").hidden = !html; }
+
+let st = null, anchor = 0;
+function render(s) {
+  st = s; anchor = performance.now();
+  const t = s.track;
+  $("title").textContent = t ? t.name : "Nothing playing";
+  $("artist").textContent = t ? who(t) + (t.album && t.album.name ? " · " + t.album.name : "") : "";
+  $("device").textContent = s.device ? "on " + s.device.name + (s.active ? "" : " (inactive)") + " · " + s.backend : s.backend;
+  if (t && t.artwork) $("art").src = t.artwork; else $("art").removeAttribute("src");
+  $("pp").textContent = s.state === "playing" || s.state === "buffering" ? "⏸" : "▶";
+  $("shuffle").classList.toggle("on", !!s.shuffle);
+  $("repeat").classList.toggle("on", s.repeat && s.repeat !== "off");
+  $("repeat").textContent = s.repeat === "track" ? "↻1" : "↻";
+  if (document.activeElement !== $("vol") && s.volume != null) $("vol").value = s.volume;
+  $("dur").textContent = fmt(s.duration_ms);
+  tick();
+}
+function tick() {
+  if (!st) return;
+  const pos = st.position_ms + (st.state === "playing" ? performance.now() - anchor : 0);
+  $("pos").textContent = fmt(pos);
+  $("fill").style.width = st.duration_ms ? Math.min(100, pos / st.duration_ms * 100) + "%" : "0";
+}
+setInterval(tick, 250);
+
+function row(it, actions) {
+  const li = document.createElement("li");
+  li.innerHTML = `<img alt=""><div class="t"><div></div><div class="muted"></div></div>`;
+  if (it.artwork) li.querySelector("img").src = it.artwork;
+  li.querySelector(".t div").textContent = it.name || it.uri;
+  li.querySelector(".t .muted").textContent = [it.type, who(it) || it.owner, it.duration_ms && fmt(it.duration_ms)].filter(Boolean).join(" · ");
+  for (const [label, fn] of actions) {
+    const b = document.createElement("button"); b.textContent = label; b.onclick = fn; li.appendChild(b);
+  }
+  return li;
+}
+
+async function loadQueue() {
+  try {
+    const q = await api("GET", "/api/queue?limit=20");
+    $("queue").replaceChildren(...q.upcoming.filter(e => e.item).map(e => row(e.item, [])));
+  } catch (e) {}
+}
+async function loadDevices() {
+  try {
+    const ds = await api("GET", "/api/devices");
+    $("devices").replaceChildren(...ds.map(d => {
+      const o = document.createElement("option");
+      o.value = d.id || "soloist"; o.textContent = d.name + " (" + d.type + ")"; o.selected = d.active; return o;
+    }));
+  } catch (e) {}
+}
+async function checkAuth() {
+  try {
+    const a = await api("GET", "/auth");
+    if (!a.logged_in) showBanner(`Search, library and playlists need Spotify login: <a href="/auth/login?${tq}">connect Spotify</a>`);
+  } catch (e) {}
+}
+
+document.querySelectorAll("[data-cmd]").forEach(b => b.onclick = () => api("POST", "/api/" + b.dataset.cmd).then(render));
+$("pp").onclick = () => api("POST", "/api/playpause").then(render);
+$("shuffle").onclick = () => api("POST", "/api/shuffle", {}).then(render);
+$("repeat").onclick = () => api("POST", "/api/repeat", {}).then(render);
+$("vol").onchange = e => api("POST", "/api/volume", { volume: +e.target.value }).then(render);
+$("bar").onclick = e => {
+  if (!st || !st.duration_ms) return;
+  const r = e.currentTarget.getBoundingClientRect();
+  api("POST", "/api/seek", { position_ms: Math.round((e.clientX - r.left) / r.width * st.duration_ms) }).then(render);
+};
+$("devices").onchange = e => api("POST", "/api/devices/transfer", { device: e.target.value, play: true }).then(loadDevices);
+
+let searchTimer;
+$("q").oninput = e => {
+  clearTimeout(searchTimer);
+  const q = e.target.value.trim();
+  if (!q) return $("results").replaceChildren();
+  searchTimer = setTimeout(async () => {
+    const res = await api("GET", "/api/search?type=track,album,playlist,artist&q=" + encodeURIComponent(q));
+    const items = [].concat(...["tracks", "albums", "playlists", "artists"].map(k => (res[k] || {}).items || [])).filter(Boolean);
+    $("results").replaceChildren(...items.map(it => row(it, [
+      ["▶", () => api("POST", "/api/play", { uri: it.uri }).then(render)],
+      ...(it.type === "track" ? [["+", () => api("POST", "/api/queue", { uri: it.uri }).then(loadQueue)]] : []),
+    ])));
+  }, 300);
+};
+
+const es = new EventSource("/api/events" + (tq ? "?" + tq : ""));
+es.addEventListener("status", e => render(JSON.parse(e.data)));
+es.addEventListener("track", () => loadQueue());
+es.addEventListener("queue", () => loadQueue());
+api("GET", "/api/status").then(render).catch(() => {});
+loadQueue(); loadDevices(); checkAuth();
+</script>
+</body>
+</html>

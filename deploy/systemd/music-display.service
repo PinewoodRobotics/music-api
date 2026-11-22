@@ -1,0 +1,12 @@
+[Unit]
+Description=HDMI now-playing display
+After=music-api.service
+Wants=music-api.service
+
+[Service]
+ExecStart=/usr/bin/python3 %h/.local/share/music-api-v2/display/now_playing_display.py --token-file %h/.config/music-api/display-token
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=default.target
